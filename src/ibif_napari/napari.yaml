@@ -1,0 +1,22 @@
+name: ibif-napari
+display_name: IBIF napari
+contributions:
+  commands:
+    - id: ibif-napari.get_reader
+      python_name: ibif_napari._reader:napari_get_reader
+      title: Open Nikon ND2
+    - id: ibif-napari.dims_widget
+      python_name: ibif_napari._dims_widget:DimensionsWidget
+      title: Dimensions
+    - id: ibif-napari.cellpose_widget
+      python_name: ibif_napari._cellpose_widget:CellposeWidget
+      title: Cellpose 3D
+  readers:
+    - command: ibif-napari.get_reader
+      filename_patterns: ["*.nd2"]
+      accepts_directories: false
+  widgets:
+    - command: ibif-napari.dims_widget
+      display_name: Dimensions
+    - command: ibif-napari.cellpose_widget
+      display_name: Cellpose 3D

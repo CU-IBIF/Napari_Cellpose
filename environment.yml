@@ -1,0 +1,8 @@
+name: ibif-napari
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - "ibif-napari @ git+https://github.com/CU-IBIF/Napari_Cellpose"
