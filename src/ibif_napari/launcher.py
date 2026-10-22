@@ -6,6 +6,7 @@ This is ordinary napari: other plugins install and run as usual (Plugins menu), 
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
 
@@ -29,6 +30,12 @@ def main(argv=None):
     if args.download_models:
         return download_models(args.model)
 
+    # Show Cellpose's own messages (model loading, 3D progress) in the terminal.
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(asctime)s %(name)s: %(message)s", "%H:%M:%S"))
+    logging.getLogger("cellpose").addHandler(handler)
+    logging.getLogger("cellpose").setLevel(logging.INFO)
+
     # Read by the Cellpose panel when it is created: "0" = don't preload, else a model name.
     os.environ[PRELOAD_ENV] = "0" if args.no_preload else (args.model or "")
 
@@ -51,8 +58,8 @@ def download_models(model=None):
         print("Cellpose is not installed.", file=sys.stderr)
         return 1
     for name in names:
-        print(f"Loading Cellpose model {name!r} (downloads the weights the first time)…")
-        _cellpose.get_model(name, gpu=False)
+        for message in _cellpose.load_model(name, gpu=False):
+            print(message, flush=True)
     print("Done.")
     return 0
 

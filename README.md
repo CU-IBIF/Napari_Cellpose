@@ -54,9 +54,24 @@ Typical 3D workflow:
 3. Leave diameter on *auto* or enter the typical cell diameter in pixels, then
    **Run Cellpose**. Use *Every time point / position* to segment the whole series.
 
-Which models you get depends on the Cellpose version installed. Cellpose 4 has `cpsam`
-only. Cellpose 3 has `cyto3`, `nuclei`, `cyto2` and `cyto`. To use your own trained
+Which models you get depends on the Cellpose version installed. Cellpose 4 has `cpsam_v2`
+(the default) and `cpsam`, plus `cpdino` models in 4.2+. Cellpose 3 has `cyto3`, `nuclei`, `cyto2` and `cyto`. To use your own trained
 model, type its path in the Model box or click **…**.
+
+## Troubleshooting Cellpose
+
+- **First run downloads the model.** Cellpose 4's weights are about 1.2 GB, downloaded
+  from huggingface.co into `~/.cellpose/models` (on Windows
+  `C:\Users\<you>\.cellpose\models`). The panel shows the download progress. If the
+  connection stalls for 60 s you get an error instead of a hang. If your network blocks
+  huggingface.co, download the file (e.g. `cpsam_v2`) on another machine and copy it
+  into that folder. You can also run `ibif-napari --download-models` once in a terminal.
+- **CPU is slow for 3D.** Expect minutes per volume, and CPU use only starts once the
+  status line says "Segmenting…". On CPU the model runs in 32-bit floats, which is much
+  faster than Cellpose's 16-bit default on most CPUs. An NVIDIA GPU (CUDA build of
+  PyTorch) is roughly 10–50× faster.
+- **More detail:** start with `ibif-napari` from a terminal. Cellpose's own log
+  (model loading, 3D progress) is printed there.
 
 ## Development
 

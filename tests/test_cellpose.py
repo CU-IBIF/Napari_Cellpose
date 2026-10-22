@@ -63,3 +63,75 @@ def test_bad_shapes(fake):
         _cellpose.segment(np.zeros((2, 2, 2, 2)))
     with pytest.raises(ValueError):
         _cellpose.segment(np.zeros((2, 4, 4)), np.zeros((3, 4, 4)))
+
+
+@pytest.fixture
+def fake_cp4(monkeypatch, tmp_path):
+    """A stand-in `cellpose.models` (Cellpose 4) whose weights come from a local folder."""
+    import sys
+    import types
+
+    remote = tmp_path / "remote"
+    remote.mkdir()
+    (remote / "cpsam_v2").write_bytes(b"w" * 3_000_000)
+    created = []
+
+    class CellposeModel:
+        def __init__(self, gpu=False, pretrained_model="cpsam_v2", use_bfloat16=True):
+            created.append(dict(gpu=gpu, pretrained_model=pretrained_model, bf16=use_bfloat16))
+
+    mod = types.SimpleNamespace(
+        MODEL_DIR=tmp_path / "models",
+        MODEL_NAMES=["cpsam_v2", "cpsam"],
+        _MODEL_URL=remote.as_uri() + "/",
+        CellposeModel=CellposeModel,
+    )
+    pkg = types.ModuleType("cellpose")
+    pkg.models = mod
+    monkeypatch.setitem(sys.modules, "cellpose", pkg)
+    monkeypatch.setitem(sys.modules, "cellpose.models", mod)
+    monkeypatch.setattr(_cellpose, "cellpose_major", lambda: 4)
+    monkeypatch.setattr(_cellpose, "_models", {})
+    mod.created = created
+    return mod
+
+
+def test_load_model_downloads_then_loads_on_cpu_in_float32(fake_cp4):
+    assert _cellpose.builtin_models() == ["cpsam_v2", "cpsam"]
+    gen = _cellpose.load_model("cpsam_v2", gpu=False)
+    messages = []
+    try:
+        while True:
+            messages.append(next(gen))
+    except StopIteration as stop:
+        model = stop.value
+    assert (fake_cp4.MODEL_DIR / "cpsam_v2").stat().st_size == 3_000_000
+    assert not list(fake_cp4.MODEL_DIR.glob("*.part"))
+    assert any("Downloading" in m or "Connecting" in m for m in messages)
+    assert messages[-1].startswith("Loading Cellpose model")
+    assert fake_cp4.created == [dict(gpu=False, pretrained_model="cpsam_v2", bf16=False)]
+
+    # Already downloaded and loaded: nothing to report, same model object.
+    assert list(_cellpose.load_model("cpsam_v2")) == []
+    assert _cellpose.get_model("cpsam_v2") is model
+
+
+def test_stalled_download_raises_instead_of_hanging(fake_cp4, monkeypatch):
+    import socket
+    import threading
+
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    conns = []
+    threading.Thread(target=lambda: conns.append(server.accept()), daemon=True).start()
+    fake_cp4._MODEL_URL = f"http://127.0.0.1:{server.getsockname()[1]}/"
+    monkeypatch.setattr(_cellpose, "DOWNLOAD_TIMEOUT_S", 1)
+    try:
+        with pytest.raises(RuntimeError, match="could not download"):
+            list(_cellpose.ensure_weights("cpsam"))
+    finally:
+        server.close()
+    assert not (fake_cp4.MODEL_DIR / "cpsam").exists()
+    assert not list(fake_cp4.MODEL_DIR.glob("*.part"))
+    assert not _cellpose._download_lock.locked()

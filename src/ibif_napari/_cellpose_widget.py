@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import time
 
 import numpy as np
 from napari.layers import Image
@@ -132,15 +133,20 @@ class CellposeWidget(QWidget):
 
         @thread_worker
         def load():
-            _cellpose.get_model(name, gpu)
+            yield from _cellpose.load_model(name, gpu)
 
         worker = load()
+        worker.yielded.connect(self._show_preload_status)
         worker.returned.connect(
             lambda _: self.status.setText(f"Cellpose model '{name}' ready ({'GPU' if gpu else 'CPU'}).")
         )
         worker.errored.connect(lambda e: self.status.setText(f"Could not load model '{name}': {e}"))
         self._preload_worker = worker
         worker.start()
+
+    def _show_preload_status(self, message):
+        if self._worker is None:  # a run reports its own progress
+            self.status.setText(message)
 
     def _browse_model(self):
         path, _ = QFileDialog.getOpenFileName(self, "Cellpose model")
@@ -214,6 +220,7 @@ class CellposeWidget(QWidget):
             self.status.setText("The nuclear channel must have the same shape as the image.")
             return
         params = self._params()
+        params["model"] = params["model"] or _cellpose.default_model()
         axes = layer_axes(layer)
         keep = "ZYX" if "Z" in axes else "YX"
         if self.scope.currentText() == SCOPE_CURRENT:
@@ -239,7 +246,8 @@ class CellposeWidget(QWidget):
 
         @thread_worker
         def work():
-            yield (0, 1)
+            yield from _cellpose.load_model(params["model"], params["gpu"])
+            yield _segmenting_message(vol.shape, params)
             return _cellpose.segment(vol, nuc_vol, **params)
 
         worker = work()
@@ -251,6 +259,7 @@ class CellposeWidget(QWidget):
         outer_shape = [layer.data.shape[i] for i in outer]
         @thread_worker
         def work():
+            yield from _cellpose.load_model(params["model"], params["gpu"])
             labels = np.zeros(layer.data.shape, dtype=np.uint32)
             positions = list(np.ndindex(*outer_shape))
             for n, pos in enumerate(positions):
@@ -280,16 +289,26 @@ class CellposeWidget(QWidget):
         return add
 
     def _on_progress(self, value):
+        if isinstance(value, str):
+            self.status.setText(value)
+            return
         done, total = value
-        if total > 1:
-            self.progress.setRange(0, total)
-            self.progress.setValue(done)
-            self.status.setText(f"Segmenting {done + 1} of {total}…")
+        self.progress.setRange(0, total)
+        self.progress.setValue(done)
+        self.status.setText(f"Segmenting {done + 1} of {total}…")
 
     def _on_finished(self):
         self._worker = None
         self.run_btn.setText("Run Cellpose")
         self.progress.setVisible(False)
+
+
+def _segmenting_message(shape, params):
+    device = "GPU" if params["gpu"] else "CPU"
+    mode = "3D" if params["do_3D"] and len(shape) == 3 else "2D"
+    slow = " This can take several minutes on CPU." if device == "CPU" else ""
+    started = time.strftime("%H:%M")
+    return f"Segmenting {mode} volume {shape} on {device} (started {started}).{slow}"
 
 
 def _index_tag(axes, index):

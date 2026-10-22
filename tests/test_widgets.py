@@ -63,6 +63,12 @@ def fake_segment(vol, nuc=None, **params):
 
 def test_cellpose_panel(viewer, qtbot, monkeypatch):
     monkeypatch.setattr(_cellpose, "segment", fake_segment)
+
+    def fake_load(name, gpu=False):
+        yield f"Loading Cellpose model '{name}'"
+
+    monkeypatch.setattr(_cellpose, "load_model", fake_load)
+    monkeypatch.setattr(_cellpose, "default_model", lambda: "cpsam_v2")
     w = CellposeWidget(viewer)
     qtbot.addWidget(w)
     w.image.setCurrentText("s GFP")
