@@ -26,7 +26,7 @@ import logging
 
 from . import _cellpose
 from ._process import Cancelled, get_process
-from ._region import keep_inside, painted_mask_yx, region_crop
+from ._region import ZExtendedRegion, keep_inside, painted_mask_yx, region_crop
 from ._util import current_volume, layer_axes
 
 MODE_3D = "3D (true 3D flows)"
@@ -44,6 +44,7 @@ class CellposeWidget(QWidget):
         self._worker = None
         self._preload_worker = None
         self._cancelling = False
+        self._region_syncs = []  # drawn 3D regions that follow the Z planes setting
         self.process = get_process()  # Cellpose runs here, so Cancel can stop it at once
 
         layout = QVBoxLayout(self)
@@ -134,6 +135,8 @@ class CellposeWidget(QWidget):
         layout.addStretch(1)
 
         self.mode.currentTextChanged.connect(self._update_enabled)
+        self.z_first.valueChanged.connect(self._sync_region_ranges)
+        self.z_last.valueChanged.connect(self._sync_region_ranges)
         self.region.currentTextChanged.connect(self._update_enabled)
         self.image.currentTextChanged.connect(self._on_image_changed)
         self.viewer.layers.events.inserted.connect(self._refresh_layers)
@@ -256,29 +259,54 @@ class CellposeWidget(QWidget):
         self.keep_inside.setEnabled(isinstance(self._layer(self.region.currentText()), Labels))
 
     def add_region_layer(self):
-        """Add a 2D labels layer over the image to paint the area to segment."""
+        """Add a labels layer over the image to paint the area to segment.
+
+        For a Z stack the layer is 3D: what you paint on one plane is shown (and used)
+        on exactly the planes of the Z planes setting.
+        """
         layer = self._layer(self.image.currentText())
         if layer is None:
             self.status.setText("Choose an image layer first.")
             return
         axes = layer_axes(layer)
-        iy, ix = axes.index("Y"), axes.index("X")
-        shape = (layer.data.shape[iy], layer.data.shape[ix])
+        spatial = [axes.index(a) for a in ("ZYX" if "Z" in axes else "YX")]
+        shape = tuple(layer.data.shape[i] for i in spatial)
         region = self.viewer.add_labels(
             np.zeros(shape, dtype=np.uint8),
             name=f"{layer.name} region",
-            scale=[layer.scale[iy], layer.scale[ix]],
-            translate=[layer.translate[iy], layer.translate[ix]],
+            scale=[layer.scale[i] for i in spatial],
+            translate=[layer.translate[i] for i in spatial],
             opacity=0.4,
         )
-        region.brush_size = max(10, min(shape) // 15)
+        region.brush_size = max(10, min(shape[-2:]) // 15)
         region.mode = "paint"
+        if "Z" in axes:
+            sync = ZExtendedRegion(
+                region,
+                (self.z_first.value(), self.z_last.value()),
+                on_range_grown=self._grow_z_range,
+            )
+            self._region_syncs.append(sync)
+            where = "copied to every plane of the Z planes range below"
+        else:
+            where = "the area to segment"
         self.viewer.layers.selection.active = region
         self.region.setCurrentText(region.name)
         self.status.setText(
-            "Paint over the cells to segment (it applies to every plane in the Z range "
-            "below), then Run. Only the bounding box of the painted area is segmented."
+            f"Paint over the cells to segment ({where}), then Run. Only the bounding box "
+            "of the painted area is segmented."
         )
+
+    def _sync_region_ranges(self, *_):
+        live = [s for s in self._region_syncs if s.layer in self.viewer.layers]
+        self._region_syncs = live
+        for sync in live:
+            sync.set_range(self.z_first.value(), self.z_last.value())
+
+    def _grow_z_range(self, first, last):
+        """Painting on a plane outside the Z range widens the range to include it."""
+        self.z_first.setValue(min(first, self.z_first.value()))
+        self.z_last.setValue(max(last, self.z_last.value()))
 
     # ---- running ----------------------------------------------------------------------
 

@@ -117,3 +117,82 @@ def keep_inside(labels, mask_yx, fraction=0.5):
     keep[0] = False
     lut = np.where(keep, np.arange(n), 0).astype(labels.dtype)
     return lut[labels]
+
+
+class ZExtendedRegion:
+    """Keep a 3D (Z, Y, X) region labels layer showing one painted footprint on exactly
+    the planes of a Z range.
+
+    Painting or erasing on any plane in the range changes the footprint on all of them;
+    painting on a plane outside the range calls `on_range_grown(first, last)` so the
+    range can be widened to include it. Call `set_range` when the range changes.
+    """
+
+    def __init__(self, layer, z_range, on_range_grown=None):
+        self.layer = layer
+        self.on_range_grown = on_range_grown
+        self.footprint = np.zeros(layer.data.shape[-2:], dtype=layer.data.dtype)
+        self.z_range = None
+        self.set_range(*z_range)
+        layer.events.paint.connect(self._on_paint)
+        # Undo/redo (Ctrl+Z) restore only the plane that was edited and emit no event:
+        # re-sync the other planes afterwards.
+        for name in ("undo", "redo"):
+            original = getattr(layer, name)
+
+            def wrapped(original=original):
+                original()
+                self._on_paint()
+
+            setattr(layer, name, wrapped)
+
+    def _planes(self):
+        if self.z_range is None:
+            return range(0)
+        first, last = self.z_range
+        return range(max(first, 0), min(last, self.layer.data.shape[0] - 1) + 1)
+
+    def set_range(self, first, last):
+        new = (first, last) if first <= last else None
+        if new == self.z_range:
+            return
+        self.z_range = new
+        data = self.layer.data
+        data[:] = 0
+        planes = self._planes()
+        if len(planes):
+            data[planes.start : planes.stop] = self.footprint
+        self.layer.refresh()
+
+    def _on_paint(self, event=None):
+        data = self.layer.data
+        # napari may announce an edit before writing it (single edits) or after (brush
+        # strokes); applying its (indices, old, new) records first handles both.
+        for atom in getattr(event, "value", None) or []:
+            if isinstance(atom, tuple) and len(atom) == 3:
+                indices, _, value = atom
+                data[indices] = value
+        planes = self._planes()
+        fp = self.footprint
+        new = fp.copy()
+        inside = data[planes.start : planes.stop] if len(planes) else data[:0]
+        for plane in inside[(inside != fp).any(axis=(1, 2))]:
+            changed = plane != fp
+            new[changed] = plane[changed]
+        outside = [z for z in range(data.shape[0]) if z not in planes and data[z].any()]
+        for z in outside:
+            painted = data[z] != 0
+            new[painted] = data[z][painted]
+        changed = new != fp
+        self.footprint = new
+        if outside:
+            first = min([*outside, *([planes.start] if len(planes) else [])])
+            last = max([*outside, *([planes.stop - 1] if len(planes) else [])])
+            if self.on_range_grown is not None:
+                self.on_range_grown(first, last)  # normally calls set_range
+            if self.z_range != (first, last):
+                self.set_range(first, last)
+                return
+        if changed.any() and len(planes):
+            data[planes.start : planes.stop, changed] = new[changed]
+            self.layer.refresh()

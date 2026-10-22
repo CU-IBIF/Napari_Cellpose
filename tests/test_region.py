@@ -82,3 +82,42 @@ def test_keep_inside_drops_cells_mostly_outside(image):
     out = keep_inside(labels, mask)
     assert set(np.unique(out)) == {0, 1, 2}
     assert keep_inside(labels, None) is labels
+
+
+def test_z_extended_region_follows_painting_and_range():
+    from ibif_napari._region import ZExtendedRegion
+
+    layer = Labels(np.zeros((6, 10, 10), np.uint8))
+    grown = []
+    sync = ZExtendedRegion(layer, (1, 3), on_range_grown=lambda a, b: grown.append((a, b)))
+
+    def painted():
+        return [int((layer.data[z] != 0).sum()) for z in range(6)]
+
+    # Paint 4 pixels on plane 2: they appear on planes 1-3 only.
+    layer.data_setitem((np.full(4, 2), np.array([1, 1, 2, 2]), np.array([1, 2, 1, 2])), 3)
+    assert painted() == [0, 4, 4, 4, 0, 0]
+    assert (layer.data[1, 1:3, 1:3] == 3).all()
+
+    # Erasing on another plane in the range erases it everywhere.
+    layer.data_setitem((np.array([3]), np.array([1]), np.array([1])), 0)
+    assert painted() == [0, 3, 3, 3, 0, 0]
+
+    # Undo / redo apply to every plane too.
+    layer.undo()
+    assert painted() == [0, 4, 4, 4, 0, 0]
+    layer.redo()
+    assert painted() == [0, 3, 3, 3, 0, 0]
+
+    # Changing the range moves the shape to the new planes.
+    sync.set_range(0, 1)
+    assert painted() == [3, 3, 0, 0, 0, 0]
+    sync.set_range(2, 1)  # empty range: nothing shown
+    assert painted() == [0] * 6
+    sync.set_range(0, 1)
+
+    # Painting outside the range widens it (the callback normally updates the spinboxes).
+    layer.data_setitem((np.array([4]), np.array([8]), np.array([8])), 3)
+    assert grown == [(0, 4)]
+    assert sync.z_range == (0, 4)
+    assert painted() == [4, 4, 4, 4, 4, 0]

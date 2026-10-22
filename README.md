@@ -74,12 +74,18 @@ Typical 3D workflow:
 **Segmenting only part of the image.** Big volumes are slow, especially on CPU. To
 segment just the cells you care about:
 
-1. Click **Draw…** next to *Region*. This adds a "region" labels layer over the image in
+1. Optionally set **Z planes** (e.g. 10 to 25). You can also change it later.
+2. Click **Draw…** next to *Region*. This adds a "region" labels layer over the image in
    paint mode.
-2. Paint roughly over the cells (any label colour). The painting applies to every Z
-   plane. Alternatively pick an existing Labels layer, or a Shapes layer with a
-   rectangle, as the region.
-3. Optionally narrow **Z planes** (e.g. 10 to 25).
+3. Paint roughly over the cells (any label colour) on any plane. For a Z stack, the
+   shape is copied to every plane of the Z planes range and shown only there, so you
+   see exactly the block that will be segmented.
+   - Erasing or undoing on one plane applies to all of them.
+   - Changing *Z planes* moves the shape to the new planes.
+   - Painting on a plane outside the range widens the range to include it.
+
+   Alternatively pick an existing Labels layer, or a Shapes layer with a rectangle, as
+   the region.
 4. **Run Cellpose.** Only the bounding box of the region, within those Z planes, is read
    and segmented. With *Drop cells mostly outside the painted area* ticked, objects
    that are mostly outside your painted area are removed, so an irregular painted

@@ -134,16 +134,21 @@ def test_cellpose_panel_region(viewer, qtbot, use_process):
     w.image.setCurrentText("s GFP")
     w.add_region_layer()
     region = viewer.layers["s GFP region"]
-    assert region.data.shape == (8, 8) and region.mode == "paint"
+    assert region.data.shape == (4, 8, 8) and region.mode == "paint"  # Z Y X
+    assert list(region.scale) == [2.0, 0.5, 0.5]
     assert w.region.currentText() == "s GFP region"
 
     w.run()  # nothing painted yet
     assert "Nothing to segment" in w.status.text() and not calls
 
-    region.data[2:5, 3:7] = 1
-    region.data[3:5, 5:7] = 0  # L-shape: same bounding box, bottom-right corner unpainted
     w.z_first.setValue(1)
     w.z_last.setValue(2)
+    # Paint an L-shape on plane 1 (as a brush stroke would): same bounding box as the
+    # rectangle, bottom-right corner unpainted. It is copied to planes 1-2 only.
+    yy, xx = np.nonzero(np.pad(np.ones((3, 4), bool), ((2, 3), (3, 1))))
+    keep = ~((yy >= 3) & (xx >= 5))
+    region.data_setitem((np.full(keep.sum(), 1), yy[keep], xx[keep]), 1)
+    assert [int(region.data[z].sum()) for z in range(4)] == [0, 8, 8, 0]
     viewer.dims.set_current_step(0, 0)
     viewer.dims.set_current_step(1, 0)
     w.run()
