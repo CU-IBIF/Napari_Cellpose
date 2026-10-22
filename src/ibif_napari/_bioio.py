@@ -41,6 +41,19 @@ class Scene:
         return " · ".join(parts)
 
 
+def import_reader(module, package, file_type):
+    """The bioio reader class for a format, or an ImportError that says how to install it."""
+    import importlib
+
+    try:
+        return importlib.import_module(module).Reader
+    except ImportError as e:
+        raise ImportError(
+            f"Opening {file_type} files needs the '{package}' package, which is not installed "
+            f"in this environment ({e}). Install it with:  pip install {package}"
+        ) from e
+
+
 def read_scene(reader, index):
     """Lazy data and metadata of one scene (does not read pixels)."""
     reader.set_scene(index)

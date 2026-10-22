@@ -1,7 +1,7 @@
 """Leica LIF reader (via bioio-lif). A project with several images asks which to open."""
 from __future__ import annotations
 
-from ._bioio import NO_LAYERS, read_scene, scene_layers, stem_of
+from ._bioio import NO_LAYERS, import_reader, read_scene, scene_layers, stem_of
 
 # Leica LUT names that are also napari colormaps.
 _LUTS = {"red", "green", "blue", "cyan", "magenta", "yellow", "gray", "grey"}
@@ -11,9 +11,7 @@ def read_lif(path, reader=None, choose=None):
     """Read a LIF file. `reader` (a bioio-lif Reader) and `choose` (the image chooser,
     see `_chooser.choose_images`) can be passed for testing."""
     if reader is None:
-        from bioio_lif import Reader
-
-        reader = Reader(str(path))
+        reader = import_reader("bioio_lif", "bioio-lif", "Leica LIF")(str(path))
     if choose is None:
         from ._chooser import choose_images as choose
     stem = stem_of(path)

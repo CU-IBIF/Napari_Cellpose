@@ -42,6 +42,17 @@ ibif-napari --download-models     # fetch the Cellpose weights once
 
 Alternatively, `conda env create -f environment.yml` does the first and third steps.
 
+## Update
+
+```bash
+conda activate ibif-napari
+pip install --upgrade "git+https://github.com/CU-IBIF/Napari_Cellpose"
+```
+
+This also installs any new dependencies, such as file-format readers. If a file type
+reports a missing package (e.g. `No module named 'bioio_czi'`), install the package the
+message names, e.g. `pip install bioio-czi bioio-lif`.
+
 ## Use
 
 ```bash
@@ -104,6 +115,9 @@ model, type its path in the Model box or click **…**.
 pip install -e ".[dev]"
 pytest
 ```
+
+Bump `version` in `pyproject.toml` and `src/ibif_napari/__init__.py` with each change,
+so `pip install --upgrade` sees a new version and installs new dependencies.
 
 The tests don't need real ND2 files or Cellpose weights. They feed synthetic arrays
 through the reader and replace the model with a stub.

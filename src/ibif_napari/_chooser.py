@@ -95,6 +95,6 @@ def choose_images(title, scenes):
     if app is None:
         return list(range(len(scenes))), False
     dialog = ImageChooser(title, scenes, parent=app.activeWindow())
-    if dialog.exec_() != QDialog.Accepted:
+    if dialog.exec() != QDialog.Accepted:
         return None
     return dialog.selected(), dialog.stack.isChecked()

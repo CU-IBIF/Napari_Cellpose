@@ -5,15 +5,13 @@ separate layers.
 """
 from __future__ import annotations
 
-from ._bioio import read_scene, scene_layers, stem_of
+from ._bioio import import_reader, read_scene, scene_layers, stem_of
 
 
 def read_czi(path, reader=None):
     """Read a CZI file. `reader` (a bioio-czi Reader) can be passed for testing."""
     if reader is None:
-        from bioio_czi import Reader
-
-        reader = Reader(str(path))
+        reader = import_reader("bioio_czi", "bioio-czi", "Zeiss CZI")(str(path))
     scenes = [read_scene(reader, i) for i in range(len(reader.scenes))]
     reader.set_scene(0)
     emissions = _emissions(reader.metadata, len(scenes[0].channel_names))

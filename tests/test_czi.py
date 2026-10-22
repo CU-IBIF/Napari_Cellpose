@@ -114,3 +114,11 @@ def test_unequal_scenes_open_separately():
         ["multi Scene 1 DAPI", "multi Scene 1 mCherry"],
     ]
     assert layers[1][0].shape == (2, 3, 6, 6)
+
+
+def test_missing_reader_package_says_how_to_install(monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "bioio_czi", None)  # import fails as if not installed
+    with pytest.raises(ImportError, match=r"pip install bioio-czi"):
+        read_czi("x.czi")
