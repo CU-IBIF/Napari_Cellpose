@@ -16,5 +16,5 @@ jobs:
           python-version: "3.12"
       - run: sudo apt-get update && sudo apt-get install -y libegl1 libxkbcommon-x11-0 libxcb-cursor0
       # The tests stub Cellpose, so skip installing it (and PyTorch) here.
-      - run: pip install "napari[pyqt5]" nd2 bioio-czi pytest pytest-qt && pip install -e . --no-deps
+      - run: pip install "napari[pyqt5]" nd2 bioio-czi bioio-lif pytest pytest-qt && pip install -e . --no-deps
       - run: pytest -q

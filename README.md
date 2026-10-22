@@ -1,13 +1,15 @@
-# IBIF napari: ND2/CZI + 3D Cellpose
+# IBIF napari: ND2/CZI/LIF + 3D Cellpose
 
 [napari](https://napari.org) with three things built in:
 
-- **Nikon ND2 and Zeiss CZI files** open directly (drag and drop, File > Open, or
-  `ibif-napari file.nd2`). They load lazily, so large time lapses open quickly. Each
+- **Nikon ND2, Zeiss CZI and Leica LIF files** open directly (drag and drop,
+  File > Open, or `ibif-napari file.nd2`). They load lazily, so large time lapses open quickly. Each
   channel becomes its own layer with its name from the file, a colour based on its
   emission wavelength, and the real voxel size in µm. For CZI files, scenes of the same
   size become the "position" slider (scenes of different sizes open as separate layers),
-  and tiled (mosaic) acquisitions are stitched.
+  and tiled (mosaic) acquisitions are stitched. A LIF project with several images opens
+  a chooser listing each image and its size. Tick the ones to open, or double-click one.
+  Images of the same size can optionally be stacked onto the position slider.
 - **Dimensions panel**: labelled sliders for time, stage position and Z. Time is shown in
   s/min and Z in µm. It also has channel on/off switches, a 2D/3D view toggle, a max
   projection over Z, and "Extract current time/position", which copies the current
@@ -21,8 +23,8 @@
 Everything else is ordinary napari. Plugins install and run as usual from
 **Plugins > Install/Uninstall Plugins**, and this package is itself a normal napari
 plugin. You can open the panels from **Plugins > IBIF napari** in any napari, and
-`napari file.nd2` / `napari file.czi` use our readers. If another installed plugin can
-also read CZI (e.g. napari-aicsimageio), napari asks which to use and can remember the
+`napari file.nd2` / `.czi` / `.lif` use our readers. If another installed plugin can
+also read CZI or LIF (e.g. napari-aicsimageio), napari asks which to use and can remember the
 choice.
 
 ## Install
@@ -89,6 +91,10 @@ model, type its path in the Model box or click **…**.
   smaller block. CPU use only starts once the status line says "Segmenting…". On CPU
   the model runs in 32-bit floats, which is much faster than Cellpose's 16-bit default
   on most CPUs. An NVIDIA GPU (CUDA build of PyTorch) is roughly 10–50× faster.
+- **Cancel is immediate.** Cellpose runs in a separate background process that keeps the
+  model loaded. Cancel stops that process at once, which frees the CPU/GPU, and the
+  model is reloaded in the background for the next run. If Cellpose crashes or runs
+  out of memory, napari keeps running and the panel shows the error.
 - **More detail:** start with `ibif-napari` from a terminal. Cellpose's own log
   (model loading, 3D progress) is printed there.
 
