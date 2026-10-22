@@ -5,7 +5,7 @@ import os
 import time
 
 import numpy as np
-from napari.layers import Image
+from napari.layers import Image, Labels, Shapes
 from napari.qt.threading import thread_worker
 from qtpy.QtWidgets import (
     QCheckBox,
@@ -23,6 +23,7 @@ from qtpy.QtWidgets import (
 )
 
 from . import _cellpose
+from ._region import keep_inside, painted_mask_yx, region_crop
 from ._util import current_volume, layer_axes
 
 MODE_3D = "3D (true 3D flows)"
@@ -30,6 +31,7 @@ MODE_STITCH = "2D per plane, stitched"
 SCOPE_CURRENT = "Current time point / position"
 SCOPE_ALL = "Every time point / position"
 NO_NUCLEI = "(none)"
+WHOLE_IMAGE = "(whole image)"
 
 
 class CellposeWidget(QWidget):
@@ -88,6 +90,30 @@ class CellposeWidget(QWidget):
         self.scope.addItems([SCOPE_CURRENT, SCOPE_ALL])
         form.addRow("Run on", self.scope)
 
+        region_row = QHBoxLayout()
+        self.region = QComboBox()
+        self.region.setToolTip(
+            "Segment only this area: a Labels layer (painted) or a Shapes layer (rectangle)"
+        )
+        draw = QPushButton("Draw…")
+        draw.setToolTip("Add a layer to paint the area to segment (applies to all Z planes)")
+        draw.clicked.connect(self.add_region_layer)
+        region_row.addWidget(self.region, 1)
+        region_row.addWidget(draw)
+        form.addRow("Region", region_row)
+
+        z_row = QHBoxLayout()
+        self.z_first = QSpinBox()
+        self.z_last = QSpinBox()
+        z_row.addWidget(self.z_first)
+        z_row.addWidget(QLabel("to"))
+        z_row.addWidget(self.z_last)
+        form.addRow("Z planes", z_row)
+
+        self.keep_inside = QCheckBox("Drop cells mostly outside the painted area")
+        self.keep_inside.setChecked(True)
+        form.addRow("", self.keep_inside)
+
         self.gpu = QCheckBox("Use GPU")
         form.addRow("", self.gpu)
 
@@ -103,6 +129,7 @@ class CellposeWidget(QWidget):
         layout.addStretch(1)
 
         self.mode.currentTextChanged.connect(self._update_enabled)
+        self.region.currentTextChanged.connect(self._update_enabled)
         self.image.currentTextChanged.connect(self._on_image_changed)
         self.viewer.layers.events.inserted.connect(self._refresh_layers)
         self.viewer.layers.events.removed.connect(self._refresh_layers)
@@ -158,9 +185,21 @@ class CellposeWidget(QWidget):
     def _image_layers(self):
         return [l for l in self.viewer.layers if isinstance(l, Image) and not l.rgb]
 
+    def _region_layers(self):
+        return [
+            l
+            for l in self.viewer.layers
+            if isinstance(l, (Labels, Shapes)) and not (l.metadata or {}).get("ibif_cellpose")
+        ]
+
     def _refresh_layers(self, event=None):
         names = [l.name for l in self._image_layers()]
-        for combo, extra in ((self.image, []), (self.nuclei, [NO_NUCLEI])):
+        regions = [l.name for l in self._region_layers()]
+        for combo, extra, names in (
+            (self.image, [], names),
+            (self.nuclei, [NO_NUCLEI], names),
+            (self.region, [WHOLE_IMAGE], regions),
+        ):
             current = combo.currentText()
             combo.blockSignals(True)
             combo.clear()
@@ -180,6 +219,12 @@ class CellposeWidget(QWidget):
             y = layer.scale[axes.index("Y")]
             if y > 0:
                 self.anisotropy.setValue(z / y)
+        nz = layer.data.shape[axes.index("Z")] if "Z" in axes else 1
+        if self.z_last.maximum() != nz - 1 or self.z_last.value() > nz - 1:
+            for spin in (self.z_first, self.z_last):
+                spin.setRange(0, nz - 1)
+            self.z_first.setValue(0)
+            self.z_last.setValue(nz - 1)
         self._update_enabled()
 
     def _layer(self, name):
@@ -191,6 +236,34 @@ class CellposeWidget(QWidget):
         self.mode.setEnabled(is_3d)
         self.anisotropy.setEnabled(is_3d and self.mode.currentText() == MODE_3D)
         self.stitch.setEnabled(is_3d and self.mode.currentText() == MODE_STITCH)
+        self.z_first.setEnabled(is_3d)
+        self.z_last.setEnabled(is_3d)
+        self.keep_inside.setEnabled(isinstance(self._layer(self.region.currentText()), Labels))
+
+    def add_region_layer(self):
+        """Add a 2D labels layer over the image to paint the area to segment."""
+        layer = self._layer(self.image.currentText())
+        if layer is None:
+            self.status.setText("Choose an image layer first.")
+            return
+        axes = layer_axes(layer)
+        iy, ix = axes.index("Y"), axes.index("X")
+        shape = (layer.data.shape[iy], layer.data.shape[ix])
+        region = self.viewer.add_labels(
+            np.zeros(shape, dtype=np.uint8),
+            name=f"{layer.name} region",
+            scale=[layer.scale[iy], layer.scale[ix]],
+            translate=[layer.translate[iy], layer.translate[ix]],
+            opacity=0.4,
+        )
+        region.brush_size = max(10, min(shape) // 15)
+        region.mode = "paint"
+        self.viewer.layers.selection.active = region
+        self.region.setCurrentText(region.name)
+        self.status.setText(
+            "Paint over the cells to segment (it applies to every plane in the Z range "
+            "below), then Run. Only the bounding box of the painted area is segmented."
+        )
 
     # ---- running ----------------------------------------------------------------------
 
@@ -223,10 +296,23 @@ class CellposeWidget(QWidget):
         params["model"] = params["model"] or _cellpose.default_model()
         axes = layer_axes(layer)
         keep = "ZYX" if "Z" in axes else "YX"
+        region = self._layer(self.region.currentText())
+        z_range = (self.z_first.value(), self.z_last.value()) if "Z" in axes else None
+        crop = region_crop(layer, axes, region, z_range)
+        if crop is None:
+            self.status.setText(
+                "Nothing to segment: the region is empty or outside the image, "
+                "or the Z range is empty."
+            )
+            return
+        mask = None
+        if isinstance(region, Labels) and self.keep_inside.isChecked():
+            mask = painted_mask_yx(layer, region, crop)
+        tag = " region" if region is not None else ""
         if self.scope.currentText() == SCOPE_CURRENT:
-            worker = self._run_current(layer, nuc, keep, params)
+            worker = self._run_current(layer, nuc, keep, params, crop, mask, tag)
         else:
-            worker = self._run_all(layer, nuc, axes, keep, params)
+            worker = self._run_all(layer, nuc, axes, keep, params, crop, mask, tag)
         worker.yielded.connect(self._on_progress)
         worker.errored.connect(lambda e: self.status.setText(f"Cellpose failed: {e}"))
         worker.aborted.connect(lambda: self.status.setText("Cancelled."))
@@ -238,50 +324,56 @@ class CellposeWidget(QWidget):
         self.status.setText("Running Cellpose…")
         worker.start()
 
-    def _run_current(self, layer, nuc, keep, params):
-        vol, kept, scale, index = current_volume(self.viewer, layer, keep=keep)
+    def _run_current(self, layer, nuc, keep, params, crop, mask, tag):
+        vol, kept, scale, index = current_volume(self.viewer, layer, keep=keep, crop=crop)
         nuc_vol = np.asarray(nuc.data[index]) if nuc is not None else None
-        translate = [t for t, i in zip(layer.translate, index) if isinstance(i, slice)]
-        tag = _index_tag(layer_axes(layer), index)
+        translate = _crop_translate(layer, index)
+        tag = _index_tag(layer_axes(layer), index) + tag
 
         @thread_worker
         def work():
             yield from _cellpose.load_model(params["model"], params["gpu"])
             yield _segmenting_message(vol.shape, params)
-            return _cellpose.segment(vol, nuc_vol, **params)
+            return keep_inside(_cellpose.segment(vol, nuc_vol, **params), mask)
 
         worker = work()
         worker.returned.connect(self._add_labels_cb(layer, scale, translate, kept, tag))
         return worker
 
-    def _run_all(self, layer, nuc, axes, keep, params):
+    def _run_all(self, layer, nuc, axes, keep, params, crop, mask, tag):
         outer = [i for i, a in enumerate(axes) if a not in keep]
         outer_shape = [layer.data.shape[i] for i in outer]
+        # Kept (spatial) axes are limited to the region; others are looped over.
+        spatial = [slice(*crop[a]) if a in crop else slice(None) for a in axes]
+        out_shape = [len(range(*s.indices(n))) for s, n in zip(spatial, layer.data.shape)]
+        translate = _crop_translate(layer, spatial)
+
         @thread_worker
         def work():
             yield from _cellpose.load_model(params["model"], params["gpu"])
-            labels = np.zeros(layer.data.shape, dtype=np.uint32)
+            labels = np.zeros(out_shape, dtype=np.uint32)
             positions = list(np.ndindex(*outer_shape))
             for n, pos in enumerate(positions):
                 yield (n, len(positions))
-                index = [slice(None)] * layer.ndim
+                index, out_index = list(spatial), [slice(None)] * layer.ndim
                 for i, p in zip(outer, pos):
-                    index[i] = p
+                    index[i] = out_index[i] = p
                 index = tuple(index)
                 vol = np.asarray(layer.data[index])
                 nuc_vol = np.asarray(nuc.data[index]) if nuc is not None else None
-                labels[index] = _cellpose.segment(vol, nuc_vol, **params)
+                masks = keep_inside(_cellpose.segment(vol, nuc_vol, **params), mask)
+                labels[tuple(out_index)] = masks
             return labels
 
         worker = work()
         worker.returned.connect(
-            self._add_labels_cb(layer, list(layer.scale), list(layer.translate), axes, "all")
+            self._add_labels_cb(layer, list(layer.scale), translate, axes, "all" + tag)
         )
         return worker
 
     def _add_labels_cb(self, layer, scale, translate, axes, tag):
         def add(labels):
-            meta = {**(layer.metadata or {}), "ibif_axes": axes}
+            meta = {**(layer.metadata or {}), "ibif_axes": axes, "ibif_cellpose": True}
             name = f"{layer.name} cellpose {tag}".strip()
             self.viewer.add_labels(labels, name=name, scale=scale, translate=translate, metadata=meta)
             self.status.setText(f"{name}: {int(labels.max())} objects (max label).")
@@ -309,6 +401,15 @@ def _segmenting_message(shape, params):
     slow = " This can take several minutes on CPU." if device == "CPU" else ""
     started = time.strftime("%H:%M")
     return f"Segmenting {mode} volume {shape} on {device} (started {started}).{slow}"
+
+
+def _crop_translate(layer, index):
+    """Translate of the sliced axes, so a cropped result sits where it was cut from."""
+    return [
+        t + (i.start or 0) * s
+        for t, i, s in zip(layer.translate, index, layer.scale)
+        if isinstance(i, slice)
+    ]
 
 
 def _index_tag(axes, index):

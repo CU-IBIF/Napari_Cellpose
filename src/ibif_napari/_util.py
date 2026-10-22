@@ -33,18 +33,19 @@ def current_data_index(viewer, layer):
     return [int(np.clip(round(c), 0, s - 1)) for c, s in zip(coords, shape)]
 
 
-def current_volume(viewer, layer, keep="ZYX"):
+def current_volume(viewer, layer, keep="ZYX", crop=None):
     """The slice of `layer` at the current time/position, keeping the axes in `keep`.
 
-    Returns (array, axes_kept, scale_kept, index) where index is the full data index used
-    (kept axes set to slice(None)).
+    `crop` optionally limits kept axes to {axis: (start, stop)}. Returns
+    (array, axes_kept, scale_kept, index) where index is the full data index used.
     """
     axes = layer_axes(layer)
     idx = current_data_index(viewer, layer)
+    crop = crop or {}
     index, kept, scale = [], "", []
     for a, i, s in zip(axes, idx, layer.scale):
         if a in keep:
-            index.append(slice(None))
+            index.append(slice(*crop[a]) if a in crop else slice(None))
             kept += a
             scale.append(s)
         else:

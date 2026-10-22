@@ -90,3 +90,52 @@ def test_cellpose_panel(viewer, qtbot, monkeypatch):
     qtbot.waitUntil(lambda: "s GFP cellpose all" in viewer.layers, timeout=10000)
     assert viewer.layers["s GFP cellpose all"].data.shape == (2, 3, 4, 8, 8)
     assert viewer.layers["s GFP cellpose all"].data.max() == 1
+
+
+def test_cellpose_panel_region(viewer, qtbot, monkeypatch):
+    calls = []
+
+    def fake(vol, nuc=None, **params):
+        calls.append(vol.shape)
+        out = np.zeros(vol.shape, dtype=np.uint16)
+        out[:, :2, :2] = 1  # inside the painted corner
+        out[:, -2:, -2:] = 2  # outside the painted area
+        return out
+
+    monkeypatch.setattr(_cellpose, "segment", fake)
+    monkeypatch.setattr(_cellpose, "load_model", lambda name, gpu=False: iter(()))
+    w = CellposeWidget(viewer)
+    qtbot.addWidget(w)
+    w.image.setCurrentText("s GFP")
+    w.add_region_layer()
+    region = viewer.layers["s GFP region"]
+    assert region.data.shape == (8, 8) and region.mode == "paint"
+    assert w.region.currentText() == "s GFP region"
+
+    w.run()  # nothing painted yet
+    assert "Nothing to segment" in w.status.text() and not calls
+
+    region.data[2:5, 3:7] = 1
+    region.data[3:5, 5:7] = 0  # L-shape: same bounding box, bottom-right corner unpainted
+    w.z_first.setValue(1)
+    w.z_last.setValue(2)
+    viewer.dims.set_current_step(0, 0)
+    viewer.dims.set_current_step(1, 0)
+    w.run()
+    qtbot.waitUntil(lambda: "s GFP cellpose T0 P0 region" in viewer.layers, timeout=10000)
+    assert calls == [(2, 3, 4)]  # Z 1..2, Y 2..4, X 3..6
+    out = viewer.layers["s GFP cellpose T0 P0 region"]
+    assert out.data.shape == (2, 3, 4)
+    assert list(out.translate) == [2.0, 1.0, 1.5]  # 1 plane * 2 um, 2 px * 0.5, 3 px * 0.5
+    assert set(np.unique(out.data)) == {0, 1}  # object 2 sits outside the paint
+    assert "s GFP cellpose T0 P0 region" not in [w.region.itemText(i) for i in range(w.region.count())]
+
+    qtbot.waitUntil(lambda: w._worker is None, timeout=10000)
+    w.keep_inside.setChecked(False)
+    w.scope.setCurrentText(SCOPE_ALL)
+    w.run()
+    qtbot.waitUntil(lambda: "s GFP cellpose all region" in viewer.layers, timeout=10000)
+    out = viewer.layers["s GFP cellpose all region"]
+    assert out.data.shape == (2, 3, 2, 3, 4)
+    assert list(out.translate) == [0.0, 0.0, 2.0, 1.0, 1.5]
+    assert set(np.unique(out.data)) == {0, 1, 2}

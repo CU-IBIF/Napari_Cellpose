@@ -58,6 +58,21 @@ Typical 3D workflow:
 3. Leave diameter on *auto* or enter the typical cell diameter in pixels, then
    **Run Cellpose**. Use *Every time point / position* to segment the whole series.
 
+**Segmenting only part of the image.** Big volumes are slow, especially on CPU. To
+segment just the cells you care about:
+
+1. Click **Draw…** next to *Region*. This adds a "region" labels layer over the image in
+   paint mode.
+2. Paint roughly over the cells (any label colour). The painting applies to every Z
+   plane. Alternatively pick an existing Labels layer, or a Shapes layer with a
+   rectangle, as the region.
+3. Optionally narrow **Z planes** (e.g. 10 to 25).
+4. **Run Cellpose.** Only the bounding box of the region, within those Z planes, is read
+   and segmented. With *Drop cells mostly outside the painted area* ticked, objects
+   that are mostly outside your painted area are removed, so an irregular painted
+   region is fine. The result is a labels layer of just that block, positioned over the
+   image.
+
 Which models you get depends on the Cellpose version installed. Cellpose 4 has `cpsam_v2`
 (the default) and `cpsam`, plus `cpdino` models in 4.2+. Cellpose 3 has `cyto3`, `nuclei`, `cyto2` and `cyto`. To use your own trained
 model, type its path in the Model box or click **…**.
@@ -70,10 +85,10 @@ model, type its path in the Model box or click **…**.
   connection stalls for 60 s you get an error instead of a hang. If your network blocks
   huggingface.co, download the file (e.g. `cpsam_v2`) on another machine and copy it
   into that folder. You can also run `ibif-napari --download-models` once in a terminal.
-- **CPU is slow for 3D.** Expect minutes per volume, and CPU use only starts once the
-  status line says "Segmenting…". On CPU the model runs in 32-bit floats, which is much
-  faster than Cellpose's 16-bit default on most CPUs. An NVIDIA GPU (CUDA build of
-  PyTorch) is roughly 10–50× faster.
+- **CPU is slow for 3D.** Expect minutes per volume; use *Region* to segment a
+  smaller block. CPU use only starts once the status line says "Segmenting…". On CPU
+  the model runs in 32-bit floats, which is much faster than Cellpose's 16-bit default
+  on most CPUs. An NVIDIA GPU (CUDA build of PyTorch) is roughly 10–50× faster.
 - **More detail:** start with `ibif-napari` from a terminal. Cellpose's own log
   (model loading, 3D progress) is printed there.
 
