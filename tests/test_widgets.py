@@ -1,9 +1,12 @@
+import time
+
 import numpy as np
 import pytest
 
 pytest.importorskip("napari")
 
 from ibif_napari import _cellpose  # noqa: E402
+from ibif_napari import _cellpose_widget as cellpose_widget  # noqa: E402
 from ibif_napari._cellpose_widget import SCOPE_ALL, CellposeWidget  # noqa: E402
 from ibif_napari._dims_widget import DimensionsWidget  # noqa: E402
 from ibif_napari._reader import layer_data  # noqa: E402
@@ -61,14 +64,37 @@ def fake_segment(vol, nuc=None, **params):
     return out
 
 
-def test_cellpose_panel(viewer, qtbot, monkeypatch):
-    monkeypatch.setattr(_cellpose, "segment", fake_segment)
+class FakeProcess:
+    """In-thread stand-in for the Cellpose process (same generator API)."""
 
-    def fake_load(name, gpu=False):
+    def __init__(self, segment):
+        self.segment = segment
+
+    def load(self, name, gpu=False):
         yield f"Loading Cellpose model '{name}'"
 
-    monkeypatch.setattr(_cellpose, "load_model", fake_load)
+    def call(self, op, *args, **kwargs):
+        yield None
+        return self.segment(*args, **kwargs)
+
+    def cancel(self):
+        pass
+
+
+@pytest.fixture
+def use_process(monkeypatch):
+    monkeypatch.setattr(_cellpose, "ensure_weights", lambda name: iter(()))
     monkeypatch.setattr(_cellpose, "default_model", lambda: "cpsam_v2")
+
+    def use(process):
+        monkeypatch.setattr(cellpose_widget, "get_process", lambda: process)
+        return process
+
+    return use
+
+
+def test_cellpose_panel(viewer, qtbot, use_process):
+    use_process(FakeProcess(fake_segment))
     w = CellposeWidget(viewer)
     qtbot.addWidget(w)
     w.image.setCurrentText("s GFP")
@@ -92,7 +118,7 @@ def test_cellpose_panel(viewer, qtbot, monkeypatch):
     assert viewer.layers["s GFP cellpose all"].data.max() == 1
 
 
-def test_cellpose_panel_region(viewer, qtbot, monkeypatch):
+def test_cellpose_panel_region(viewer, qtbot, use_process):
     calls = []
 
     def fake(vol, nuc=None, **params):
@@ -102,8 +128,7 @@ def test_cellpose_panel_region(viewer, qtbot, monkeypatch):
         out[:, -2:, -2:] = 2  # outside the painted area
         return out
 
-    monkeypatch.setattr(_cellpose, "segment", fake)
-    monkeypatch.setattr(_cellpose, "load_model", lambda name, gpu=False: iter(()))
+    use_process(FakeProcess(fake))
     w = CellposeWidget(viewer)
     qtbot.addWidget(w)
     w.image.setCurrentText("s GFP")
@@ -139,3 +164,34 @@ def test_cellpose_panel_region(viewer, qtbot, monkeypatch):
     assert out.data.shape == (2, 3, 2, 3, 4)
     assert list(out.translate) == [0.0, 0.0, 2.0, 1.0, 1.5]
     assert set(np.unique(out.data)) == {0, 1, 2}
+
+
+def test_cancel_stops_cellpose_at_once(viewer, qtbot, use_process, monkeypatch):
+    from ibif_napari._process import CellposeProcess
+
+    process = use_process(CellposeProcess(backend="_fake_cellpose"))
+    reloads = []
+    monkeypatch.setattr(CellposeWidget, "preload_model", lambda self, name=None: reloads.append(1))
+    w = CellposeWidget(viewer)
+    qtbot.addWidget(w)
+    try:
+        w.image.setCurrentText("s GFP")
+        w.model.setEditText("slow")  # the stand-in sleeps for 60 s
+        w.run()
+        qtbot.waitUntil(lambda: w.status.text().startswith("Segmenting"), timeout=30000)
+        child = process._proc
+        t = time.monotonic()
+        w.run()  # the Run button reads "Cancel" while running
+        qtbot.waitUntil(lambda: w._worker is None, timeout=10000)
+        assert time.monotonic() - t < 5
+        assert not child.is_alive()
+        assert w.run_btn.text() == "Run Cellpose"
+        assert w.status.text().startswith("Cancelled")
+        assert reloads == [1]
+        assert not any("cellpose" in l.name for l in viewer.layers)
+
+        w.model.setEditText("fast")  # and the next run works in a fresh process
+        w.run()
+        qtbot.waitUntil(lambda: any("cellpose" in l.name for l in viewer.layers), timeout=30000)
+    finally:
+        process.close()

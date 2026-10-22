@@ -22,7 +22,10 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+import logging
+
 from . import _cellpose
+from ._process import Cancelled, get_process
 from ._region import keep_inside, painted_mask_yx, region_crop
 from ._util import current_volume, layer_axes
 
@@ -40,6 +43,8 @@ class CellposeWidget(QWidget):
         self.viewer = napari_viewer
         self._worker = None
         self._preload_worker = None
+        self._cancelling = False
+        self.process = get_process()  # Cellpose runs here, so Cancel can stop it at once
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
@@ -160,20 +165,30 @@ class CellposeWidget(QWidget):
 
         @thread_worker
         def load():
-            yield from _cellpose.load_model(name, gpu)
+            yield from _cellpose.ensure_weights(name)
+            try:
+                yield from self.process.load(name, gpu)
+            except Cancelled:
+                return
 
         worker = load()
         worker.yielded.connect(self._show_preload_status)
         worker.returned.connect(
             lambda _: self.status.setText(f"Cellpose model '{name}' ready ({'GPU' if gpu else 'CPU'}).")
         )
-        worker.errored.connect(lambda e: self.status.setText(f"Could not load model '{name}': {e}"))
+        worker.errored.connect(lambda e: self._show_error(f"Could not load model '{name}'", e))
         self._preload_worker = worker
         worker.start()
 
     def _show_preload_status(self, message):
-        if self._worker is None:  # a run reports its own progress
+        if message and self._worker is None:  # a run reports its own progress
             self.status.setText(message)
+
+    def _show_error(self, what, error):
+        # Errors from the Cellpose process carry its traceback after a blank line.
+        summary = str(error).split("\n\n")[0]
+        logging.getLogger("ibif_napari").error("%s: %s", what, error)
+        self.status.setText(f"{what}: {summary}")
 
     def _browse_model(self):
         path, _ = QFileDialog.getOpenFileName(self, "Cellpose model")
@@ -282,7 +297,10 @@ class CellposeWidget(QWidget):
 
     def run(self):
         if self._worker is not None:
+            self._cancelling = True
             self._worker.quit()
+            self.process.cancel()  # stops Cellpose at once; the model is reloaded after
+            self.status.setText("Cancelling…")
             return
         layer = self._layer(self.image.currentText())
         if layer is None:
@@ -314,8 +332,7 @@ class CellposeWidget(QWidget):
         else:
             worker = self._run_all(layer, nuc, axes, keep, params, crop, mask, tag)
         worker.yielded.connect(self._on_progress)
-        worker.errored.connect(lambda e: self.status.setText(f"Cellpose failed: {e}"))
-        worker.aborted.connect(lambda: self.status.setText("Cancelled."))
+        worker.errored.connect(lambda e: self._show_error("Cellpose failed", e))
         worker.finished.connect(self._on_finished)
         self._worker = worker
         self.run_btn.setText("Cancel")
@@ -332,9 +349,13 @@ class CellposeWidget(QWidget):
 
         @thread_worker
         def work():
-            yield from _cellpose.load_model(params["model"], params["gpu"])
-            yield _segmenting_message(vol.shape, params)
-            return keep_inside(_cellpose.segment(vol, nuc_vol, **params), mask)
+            try:
+                yield from self._load(params)
+                yield _segmenting_message(vol.shape, params)
+                masks = yield from self.process.call("segment", vol, nuc_vol, **params)
+            except Cancelled:
+                return None
+            return keep_inside(masks, mask)
 
         worker = work()
         worker.returned.connect(self._add_labels_cb(layer, scale, translate, kept, tag))
@@ -350,7 +371,10 @@ class CellposeWidget(QWidget):
 
         @thread_worker
         def work():
-            yield from _cellpose.load_model(params["model"], params["gpu"])
+            try:
+                yield from self._load(params)
+            except Cancelled:
+                return None
             labels = np.zeros(out_shape, dtype=np.uint32)
             positions = list(np.ndindex(*outer_shape))
             for n, pos in enumerate(positions):
@@ -361,8 +385,11 @@ class CellposeWidget(QWidget):
                 index = tuple(index)
                 vol = np.asarray(layer.data[index])
                 nuc_vol = np.asarray(nuc.data[index]) if nuc is not None else None
-                masks = keep_inside(_cellpose.segment(vol, nuc_vol, **params), mask)
-                labels[tuple(out_index)] = masks
+                try:
+                    masks = yield from self.process.call("segment", vol, nuc_vol, **params)
+                except Cancelled:
+                    return None
+                labels[tuple(out_index)] = keep_inside(masks, mask)
             return labels
 
         worker = work()
@@ -371,8 +398,14 @@ class CellposeWidget(QWidget):
         )
         return worker
 
+    def _load(self, params):
+        yield from _cellpose.ensure_weights(params["model"])
+        yield from self.process.load(params["model"], params["gpu"])
+
     def _add_labels_cb(self, layer, scale, translate, axes, tag):
         def add(labels):
+            if labels is None or self._cancelling:
+                return
             meta = {**(layer.metadata or {}), "ibif_axes": axes, "ibif_cellpose": True}
             name = f"{layer.name} cellpose {tag}".strip()
             self.viewer.add_labels(labels, name=name, scale=scale, translate=translate, metadata=meta)
@@ -381,6 +414,8 @@ class CellposeWidget(QWidget):
         return add
 
     def _on_progress(self, value):
+        if value is None or self._cancelling:
+            return
         if isinstance(value, str):
             self.status.setText(value)
             return
@@ -393,6 +428,10 @@ class CellposeWidget(QWidget):
         self._worker = None
         self.run_btn.setText("Run Cellpose")
         self.progress.setVisible(False)
+        if self._cancelling:
+            self._cancelling = False
+            self.status.setText("Cancelled. Reloading the model in the background…")
+            self.preload_model()
 
 
 def _segmenting_message(shape, params):
