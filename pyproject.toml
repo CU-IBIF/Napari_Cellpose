@@ -5,12 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ibif-napari"
 version = "0.1.0"
-description = "napari with Nikon ND2 support, a dimension panel and 3D Cellpose built in"
+description = "napari with Nikon ND2 and Zeiss CZI support, a dimension panel and 3D Cellpose built in"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "napari[all]>=0.5",
     "nd2>=0.10",
+    "bioio-czi>=2",
     "dask[array]",
     "numpy",
     "qtpy",

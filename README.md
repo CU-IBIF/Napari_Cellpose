@@ -1,11 +1,13 @@
-# IBIF napari: ND2 + 3D Cellpose
+# IBIF napari: ND2/CZI + 3D Cellpose
 
 [napari](https://napari.org) with three things built in:
 
-- **Nikon ND2 files** open directly (drag and drop, File > Open, or `ibif-napari file.nd2`).
-  They load lazily, so large time lapses open quickly. Each channel becomes its own layer
-  with its Nikon name, a colour based on its emission wavelength, and the real voxel size
-  in µm.
+- **Nikon ND2 and Zeiss CZI files** open directly (drag and drop, File > Open, or
+  `ibif-napari file.nd2`). They load lazily, so large time lapses open quickly. Each
+  channel becomes its own layer with its name from the file, a colour based on its
+  emission wavelength, and the real voxel size in µm. For CZI files, scenes of the same
+  size become the "position" slider (scenes of different sizes open as separate layers),
+  and tiled (mosaic) acquisitions are stitched.
 - **Dimensions panel**: labelled sliders for time, stage position and Z. Time is shown in
   s/min and Z in µm. It also has channel on/off switches, a 2D/3D view toggle, a max
   projection over Z, and "Extract current time/position", which copies the current
@@ -19,7 +21,9 @@
 Everything else is ordinary napari. Plugins install and run as usual from
 **Plugins > Install/Uninstall Plugins**, and this package is itself a normal napari
 plugin. You can open the panels from **Plugins > IBIF napari** in any napari, and
-`napari file.nd2` uses the ND2 reader.
+`napari file.nd2` / `napari file.czi` use our readers. If another installed plugin can
+also read CZI (e.g. napari-aicsimageio), napari asks which to use and can remember the
+choice.
 
 ## Install
 

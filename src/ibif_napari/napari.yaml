@@ -4,7 +4,7 @@ contributions:
   commands:
     - id: ibif-napari.get_reader
       python_name: ibif_napari._reader:napari_get_reader
-      title: Open Nikon ND2
+      title: Open Nikon ND2 / Zeiss CZI
     - id: ibif-napari.dims_widget
       python_name: ibif_napari._dims_widget:DimensionsWidget
       title: Dimensions
@@ -13,7 +13,7 @@ contributions:
       title: Cellpose 3D
   readers:
     - command: ibif-napari.get_reader
-      filename_patterns: ["*.nd2"]
+      filename_patterns: ["*.nd2", "*.czi"]
       accepts_directories: false
   widgets:
     - command: ibif-napari.dims_widget

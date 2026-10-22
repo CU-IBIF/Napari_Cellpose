@@ -1,5 +1,7 @@
 """Nikon ND2 reader: one image layer per channel, lazily loaded, with physical scale.
 
+`layer_data` also builds the layers for the CZI reader (`_czi.py`).
+
 Each layer's metadata records the axes it keeps (e.g. "TPZYX") so the Dimensions and
 Cellpose panels know which axis is time, stage position or Z.
 """
@@ -19,9 +21,14 @@ def napari_get_reader(path):
         if len(path) != 1:
             return None
         path = path[0]
-    if not str(path).lower().endswith(".nd2"):
-        return None
-    return read_nd2
+    suffix = str(path).lower().rsplit(".", 1)[-1]
+    if suffix == "nd2":
+        return read_nd2
+    if suffix == "czi":
+        from ._czi import read_czi
+
+        return read_czi
+    return None
 
 
 def read_nd2(path):
