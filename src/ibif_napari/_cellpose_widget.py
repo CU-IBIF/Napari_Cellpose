@@ -231,14 +231,20 @@ class CellposeWidget(QWidget):
     def preload_model(self, name=None):
         """Load (and if needed download) the model in the background so the first run is quick."""
         name = name or self.model.currentText()
-        if not name:
+        if not name and not self.remote:
             return
         gpu = self.gpu.isChecked()
         process = self.process
-        self.status.setText(f"Loading Cellpose model '{name}'…")
+        self.status.setText(f"Loading Cellpose model '{name}'…" if name else f"Connecting to {process.name}…")
 
         @thread_worker
         def load():
+            nonlocal name
+            if not name:
+                # No Cellpose here, so no model list yet: use the server's first model.
+                name = (process.status().get("models") or [None])[0]
+                if not name:
+                    return
             if getattr(process, "local", True):
                 yield from _cellpose.ensure_weights(name)
             try:
