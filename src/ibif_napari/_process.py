@@ -86,11 +86,13 @@ class CellposeProcess:
             # Another request (e.g. the model preload) is still running.
             yield None if waited else "Waiting for the model to finish loading…"
             waited = True
+        pending = None  # the pipe while our request is unanswered
         try:
             self._cancelled = False
             self._start()
             proc, conn = self._proc, self._conn
             conn.send((op, args, kwargs))
+            pending = conn
             while True:
                 try:
                     ready = conn.poll(self.poll_interval)
@@ -99,6 +101,7 @@ class CellposeProcess:
                 if ready:
                     try:
                         status, value = conn.recv()
+                        pending = None
                         break
                     except (EOFError, OSError):
                         status, value = "died", None
@@ -121,9 +124,15 @@ class CellposeProcess:
                 self.loaded.add((args[0], bool(args[1]) if len(args) > 1 else False))
             return value
         finally:
+            owned = False
             with self._mutex:
                 if self._owner is token:
                     self._owner = None
+                    owned = True
+            if owned and pending is not None and self._conn is pending:
+                # Abandoned mid-request (generator closed): its reply would reach the next
+                # request, so stop this child; the next request starts a fresh one.
+                self.cancel()
 
     def load(self, name, gpu=False):
         if (name, bool(gpu)) not in self.loaded:

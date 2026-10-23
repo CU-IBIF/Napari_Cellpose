@@ -56,3 +56,12 @@ def test_crash_is_an_error_not_a_hang(proc):
     with pytest.raises(RuntimeError, match="stopped unexpectedly"):
         wait(proc.call("segment", np.zeros((4, 4)), model="crash"), timeout=60)
     assert wait(proc.call("segment", np.zeros((4, 4)), model="x"), timeout=60).shape == (4, 4)
+
+
+def test_closing_a_request_midway_does_not_mix_up_replies(proc):
+    wait(proc.load("cpsam"), timeout=60)
+    gen = proc.call("segment", np.zeros((8, 8)), model="slow")
+    next(gen)
+    gen.close()  # abandoned without cancel()
+    out = wait(proc.call("segment", np.zeros((5, 5)), model="x"), timeout=60)
+    assert out.shape == (5, 5)
