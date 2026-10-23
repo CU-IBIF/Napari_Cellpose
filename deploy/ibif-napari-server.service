@@ -1,0 +1,18 @@
+# systemd unit for a Linux facility GPU workstation.
+# Edit User, the conda environment path and the --allow network, then:
+#   sudo cp ibif-napari-server.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now ibif-napari-server
+#   journalctl -u ibif-napari-server -f        # follow the log
+[Unit]
+Description=IBIF napari Cellpose server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ibif
+ExecStart=/opt/conda/envs/ibif-napari/bin/ibif-napari-server run --allow 10.0.0.0/8
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

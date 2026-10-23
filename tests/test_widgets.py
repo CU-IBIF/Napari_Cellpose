@@ -200,3 +200,61 @@ def test_cancel_stops_cellpose_at_once(viewer, qtbot, use_process, monkeypatch):
         qtbot.waitUntil(lambda: any("cellpose" in l.name for l in viewer.layers), timeout=30000)
     finally:
         process.close()
+
+
+def test_cellpose_panel_on_a_server(viewer, qtbot, use_process, monkeypatch, tmp_path):
+    """End to end: the panel runs Cellpose on an ibif-napari-server (stand-in Cellpose)."""
+    import threading
+
+    from ibif_napari import _remote
+    from ibif_napari._server import CellposeServer, Users, make_http_server
+
+    for var in ("http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY"):
+        monkeypatch.delenv(var, raising=False)
+    users = Users(tmp_path / "users.json")
+    token = users.add("alice")
+    app = CellposeServer(users, backend="_fake_cellpose", gpu=False,
+                         model_names=lambda: ["cpsam_v2", "slow"], prepare=lambda n: iter(()))
+    httpd = make_http_server(app, "127.0.0.1", 0)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    monkeypatch.setattr(_remote, "CONFIG", tmp_path / "servers.json")
+    _remote.save_servers([{"name": "Facility GPU", "url": f"http://127.0.0.1:{httpd.server_address[1]}",
+                           "token": token}])
+    use_process(FakeProcess(fake_segment))  # the local process, which must not be used
+    w = CellposeWidget(viewer)
+    qtbot.addWidget(w)
+    try:
+        assert [w.run_on.itemText(i) for i in range(w.run_on.count())] == ["This computer", "Facility GPU"]
+        w.run_on.setCurrentText("Facility GPU")
+        assert w.remote and not w.gpu.isEnabled()
+        qtbot.waitUntil(lambda: w.status.text().startswith("Connected to Facility GPU as alice"), timeout=30000)
+        assert [w.model.itemText(i) for i in range(w.model.count())] == ["cpsam_v2", "slow"]
+
+        w.image.setCurrentText("s GFP")
+        w.model.setCurrentText("cpsam_v2")
+        viewer.dims.set_current_step(0, 1)
+        viewer.dims.set_current_step(1, 0)
+        w.run()
+        assert not w.run_on.isEnabled()
+        qtbot.waitUntil(lambda: "s GFP cellpose T1 P0" in viewer.layers, timeout=30000)
+        assert viewer.layers["s GFP cellpose T1 P0"].data.shape == (4, 8, 8)
+        qtbot.waitUntil(lambda: w._worker is None, timeout=10000)
+        assert w.run_on.isEnabled()
+
+        # Cancel on the server is immediate too.
+        w.model.setCurrentText("slow")
+        w.run()
+        qtbot.waitUntil(lambda: w.status.text().startswith("Segmenting"), timeout=30000)
+        t = time.monotonic()
+        w.run()
+        qtbot.waitUntil(lambda: w._worker is None, timeout=10000)
+        assert time.monotonic() - t < 5
+        assert w.status.text().startswith("Cancelled")
+        qtbot.waitUntil(lambda: app.current is None, timeout=10000)
+
+        w.run_on.setCurrentText("This computer")
+        assert not w.remote and w.gpu.isEnabled()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        app.close()

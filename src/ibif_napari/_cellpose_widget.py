@@ -26,6 +26,7 @@ import logging
 
 from . import _cellpose
 from ._process import Cancelled, get_process
+from ._remote import RemoteProcess, load_servers
 from ._region import ZExtendedRegion, keep_inside, painted_mask_yx, region_crop
 from ._util import current_volume, layer_axes
 
@@ -35,6 +36,7 @@ SCOPE_CURRENT = "Current time point / position"
 SCOPE_ALL = "Every time point / position"
 NO_NUCLEI = "(none)"
 WHOLE_IMAGE = "(whole image)"
+THIS_COMPUTER = "This computer"
 
 
 class CellposeWidget(QWidget):
@@ -45,7 +47,8 @@ class CellposeWidget(QWidget):
         self._preload_worker = None
         self._cancelling = False
         self._region_syncs = []  # drawn 3D regions that follow the Z planes setting
-        self.process = get_process()  # Cellpose runs here, so Cancel can stop it at once
+        # Cellpose runs in a separate process (or on a server), so Cancel stops it at once.
+        self.local_process = self.process = get_process()
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
@@ -55,6 +58,15 @@ class CellposeWidget(QWidget):
         self.nuclei = QComboBox()
         form.addRow("Image", self.image)
         form.addRow("Nuclear channel", self.nuclei)
+
+        run_on_row = QHBoxLayout()
+        self.run_on = QComboBox()
+        self.run_on.setToolTip("Where Cellpose runs: here, or on a facility GPU server")
+        servers_btn = QPushButton("Servers…")
+        servers_btn.clicked.connect(self.edit_servers)
+        run_on_row.addWidget(self.run_on, 1)
+        run_on_row.addWidget(servers_btn)
+        form.addRow("Run on", run_on_row)
 
         model_row = QHBoxLayout()
         self.model = QComboBox()
@@ -145,16 +157,74 @@ class CellposeWidget(QWidget):
         self._refresh_layers()
         self._update_enabled()
 
-        if _cellpose.cellpose_major() is None:
-            self.status.setText("Cellpose is not installed: pip install cellpose")
+        self._local_available = _cellpose.cellpose_major() is not None
+        if self._local_available:
+            self.gpu.setChecked(_cellpose.gpu_available())
+        self._refresh_servers()
+        self.run_on.currentTextChanged.connect(self._set_run_on)
+        if not self._local_available:
+            self.status.setText(
+                "Cellpose is not installed on this computer: choose a server under Run on "
+                "(Servers… to add one), or pip install cellpose"
+            )
             self.run_btn.setEnabled(False)
             return
-        self.gpu.setChecked(_cellpose.gpu_available())
         preload = os.environ.get(_cellpose.PRELOAD_ENV, "")
         if preload != "0":
             if preload:
                 self.model.setEditText(preload)
             self.preload_model()
+
+    # ---- where Cellpose runs ----------------------------------------------------------
+
+    @property
+    def remote(self):
+        return not getattr(self.process, "local", True)
+
+    def _refresh_servers(self):
+        current = self.run_on.currentText() or THIS_COMPUTER
+        self._servers = {s["name"]: s for s in load_servers()}
+        names = [THIS_COMPUTER, *self._servers]
+        self.run_on.blockSignals(True)
+        self.run_on.clear()
+        self.run_on.addItems(names)
+        self.run_on.setCurrentText(current if current in names else THIS_COMPUTER)
+        self.run_on.blockSignals(False)
+        return current in names
+
+    def edit_servers(self):
+        from ._servers_dialog import ServersDialog
+
+        before = self.run_on.currentText()
+        ServersDialog(self).exec()
+        if not self._refresh_servers() or before != THIS_COMPUTER:
+            self._set_run_on(self.run_on.currentText())  # server details may have changed
+
+    def _set_run_on(self, name):
+        if name == THIS_COMPUTER or name not in self._servers:
+            self.process = self.local_process
+            self.gpu.setEnabled(True)
+            self.gpu.setToolTip("")
+            self.run_btn.setEnabled(self._local_available)
+            if self._local_available:
+                self._set_models(_cellpose.builtin_models())
+                self.status.setText("Running Cellpose on this computer.")
+            return
+        s = self._servers[name]
+        self.process = RemoteProcess(s["url"], s["token"], name=name, cafile=s.get("cafile"))
+        self.gpu.setEnabled(False)
+        self.gpu.setToolTip("The server uses its own GPU")
+        self.run_btn.setEnabled(True)
+        self.preload_model()
+
+    def _set_models(self, names):
+        current = self.model.currentText()
+        self.model.blockSignals(True)
+        self.model.clear()
+        self.model.addItems(names)
+        if current in names or (current and not names):
+            self.model.setEditText(current)
+        self.model.blockSignals(False)
 
     # ---- model ------------------------------------------------------------------------
 
@@ -164,21 +234,34 @@ class CellposeWidget(QWidget):
         if not name:
             return
         gpu = self.gpu.isChecked()
+        process = self.process
         self.status.setText(f"Loading Cellpose model '{name}'…")
 
         @thread_worker
         def load():
-            yield from _cellpose.ensure_weights(name)
+            if getattr(process, "local", True):
+                yield from _cellpose.ensure_weights(name)
             try:
-                yield from self.process.load(name, gpu)
+                yield from process.load(name, gpu)
             except Cancelled:
                 return
 
+        def ready(_):
+            if process is not self.process:
+                return  # switched elsewhere meanwhile
+            info = getattr(process, "info", None)
+            if info:
+                self._set_models(info.get("models") or [])
+                self.status.setText(
+                    f"Connected to {process.name} as {info.get('user')}: {info.get('device')}, "
+                    f"Cellpose {info.get('cellpose')}. Model '{name}' ready."
+                )
+            else:
+                self.status.setText(f"Cellpose model '{name}' ready ({'GPU' if gpu else 'CPU'}).")
+
         worker = load()
         worker.yielded.connect(self._show_preload_status)
-        worker.returned.connect(
-            lambda _: self.status.setText(f"Cellpose model '{name}' ready ({'GPU' if gpu else 'CPU'}).")
-        )
+        worker.returned.connect(ready)
         worker.errored.connect(lambda e: self._show_error(f"Could not load model '{name}'", e))
         self._preload_worker = worker
         worker.start()
@@ -364,6 +447,7 @@ class CellposeWidget(QWidget):
         worker.finished.connect(self._on_finished)
         self._worker = worker
         self.run_btn.setText("Cancel")
+        self.run_on.setEnabled(False)
         self.progress.setVisible(True)
         self.progress.setRange(0, 0)
         self.status.setText("Running Cellpose…")
@@ -379,7 +463,8 @@ class CellposeWidget(QWidget):
         def work():
             try:
                 yield from self._load(params)
-                yield _segmenting_message(vol.shape, params)
+                if not self.remote:  # a server reports its own progress
+                    yield _segmenting_message(vol.shape, params)
                 masks = yield from self.process.call("segment", vol, nuc_vol, **params)
             except Cancelled:
                 return None
@@ -427,7 +512,8 @@ class CellposeWidget(QWidget):
         return worker
 
     def _load(self, params):
-        yield from _cellpose.ensure_weights(params["model"])
+        if not self.remote:
+            yield from _cellpose.ensure_weights(params["model"])
         yield from self.process.load(params["model"], params["gpu"])
 
     def _add_labels_cb(self, layer, scale, translate, axes, tag):
@@ -454,12 +540,16 @@ class CellposeWidget(QWidget):
 
     def _on_finished(self):
         self._worker = None
+        self.run_on.setEnabled(True)
         self.run_btn.setText("Run Cellpose")
         self.progress.setVisible(False)
         if self._cancelling:
             self._cancelling = False
-            self.status.setText("Cancelled. Reloading the model in the background…")
-            self.preload_model()
+            if self.remote:  # the server reloads its own model
+                self.status.setText(f"Cancelled on {self.process.name}.")
+            else:
+                self.status.setText("Cancelled. Reloading the model in the background…")
+                self.preload_model()
 
 
 def _segmenting_message(shape, params):

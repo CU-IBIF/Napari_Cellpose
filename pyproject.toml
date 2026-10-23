@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ibif-napari"
-version = "0.6.0"
+version = "0.7.0"
 description = "napari with Nikon ND2, Zeiss CZI and Leica LIF support, a dimension panel and 3D Cellpose built in"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -24,6 +24,7 @@ dev = ["pytest>=8", "pytest-qt"]
 
 [project.scripts]
 ibif-napari = "ibif_napari.launcher:main"
+ibif-napari-server = "ibif_napari._server:main"
 
 [project.entry-points."napari.manifest"]
 ibif-napari = "ibif_napari:napari.yaml"

@@ -42,9 +42,15 @@ def builtin_models():
         try:
             from cellpose import models
 
-            return list(models.MODEL_NAMES)
+            names = list(models.MODEL_NAMES)
         except (ImportError, AttributeError):
             return ["cpsam"]
+        # cpdino models need the separate dinov3 package; hide them without it.
+        from importlib.util import find_spec
+
+        if find_spec("dinov3") is None:
+            names = [n for n in names if not n.startswith("cpdino")]
+        return names
     return ["cyto3", "nuclei", "cyto2", "cyto"]
 
 

@@ -135,3 +135,14 @@ def test_stalled_download_raises_instead_of_hanging(fake_cp4, monkeypatch):
     assert not (fake_cp4.MODEL_DIR / "cpsam").exists()
     assert not list(fake_cp4.MODEL_DIR.glob("*.part"))
     assert not _cellpose._download_lock.locked()
+
+
+def test_cpdino_models_hidden_without_dinov3(fake_cp4, monkeypatch):
+    import importlib.util
+
+    fake_cp4.MODEL_NAMES = ["cpsam_v2", "cpdino", "cpdino-vitb", "cpsam"]
+    real = importlib.util.find_spec
+    monkeypatch.setattr(importlib.util, "find_spec", lambda n, *a: None if n == "dinov3" else real(n, *a))
+    assert _cellpose.builtin_models() == ["cpsam_v2", "cpsam"]
+    monkeypatch.setattr(importlib.util, "find_spec", lambda n, *a: object() if n == "dinov3" else real(n, *a))
+    assert _cellpose.builtin_models() == ["cpsam_v2", "cpdino", "cpdino-vitb", "cpsam"]

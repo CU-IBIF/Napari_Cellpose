@@ -1,6 +1,7 @@
 # IBIF napari: ND2/CZI/LIF + 3D Cellpose
 
-[napari](https://napari.org) with three things built in:
+[napari](https://napari.org) with three things built in, plus an optional
+[facility GPU server](docs/facility-server.md) for Cellpose:
 
 - **Nikon ND2, Zeiss CZI and Leica LIF files** open directly (drag and drop,
   File > Open, or `ibif-napari file.nd2`). They load lazily, so large time lapses open quickly. Each
@@ -93,8 +94,21 @@ segment just the cells you care about:
    image.
 
 Which models you get depends on the Cellpose version installed. Cellpose 4 has `cpsam_v2`
-(the default) and `cpsam`, plus `cpdino` models in 4.2+. Cellpose 3 has `cyto3`, `nuclei`, `cyto2` and `cyto`. To use your own trained
-model, type its path in the Model box or click **…**.
+(the default) and `cpsam`; its `cpdino` models appear once the separate `dinov3` package
+is installed. Cellpose 3 has `cyto3`, `nuclei`, `cyto2` and `cyto`. To use your own trained
+model, type its path in the Model box or click **…**. On a facility server, custom models
+are placed in the server's `--models-dir` folder and appear in the list by file name.
+
+## Facility GPU server
+
+A facility GPU workstation can run Cellpose for everyone. Install the same package on it
+and start `ibif-napari-server`. Users then choose it under **Run on** in the Cellpose panel
+(add it with **Servers…** and the access token the facility gives them). Only the
+selected region is sent; Cancel stops the run on the server at once. Users do not need
+Cellpose or a GPU on their own computers to use it.
+
+Setup, users, HTTPS, firewall and running it at start-up:
+[docs/facility-server.md](docs/facility-server.md).
 
 ## Troubleshooting Cellpose
 
