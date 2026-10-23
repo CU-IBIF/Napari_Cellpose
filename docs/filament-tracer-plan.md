@@ -1,7 +1,38 @@
 # Plan: a filament tracer for IBIF napari
 
-Status: **draft for review**. No code has been written yet. The questions in the last
-section decide the scope.
+Status: **phases 1 and 3 implemented in 0.8.0** (see the README, "Filament tracing").
+Phase 2 (series) and phase 4 are not started.
+
+## Decisions (from review)
+
+- Samples: neurons and microtubules, mostly 3D fixed.
+- Statistics: a common Imaris-style set. Per filament, segment and point, plus Sholl.
+- Automatic tracing and click-to-trace together, from the start.
+- `skan` is a core dependency. Runs locally for now, with no server support.
+- Option A and option B both: the existing plugins are installed by default.
+
+## What was built, and changes from the plan
+
+- **Option A.** `napari-tracing` and `napari-filaments` (Python ≥ 3.11) are dependencies,
+  so they show up under Plugins. skan's own Skeleton Widget comes with `skan`.
+  `napari-filament-annotator` was left out: it cannot be installed, because it depends
+  on the deprecated `sklearn` PyPI package.
+- **Filter.** Instead of scikit-image's `sato`/`meijering`/`frangi`, the panel uses its
+  own multi-scale Hessian "tubeness", as Fiji's Tubeness does, with blob suppression.
+  The scikit-image filters take one sigma for all axes. This one works in µm per axis,
+  so anisotropic Z needs no resampling. Its derivative kernels are corrected so that a
+  flat background gives exactly zero, which matters at sub-voxel Z sigmas. The
+  eigenvalues are computed in closed form, which is more than twice as fast as numpy's
+  `eigvalsh`.
+- **Click to trace.** This uses scikit-image's compiled minimum-cost path
+  (`MCP_Geometric`, with voxel spacing) over the tubeness of a box around the two clicks,
+  rather than brightest-path-lib, which is pure-Python A\*. brightest-path-lib still
+  comes in through napari-tracing.
+- **Code.** `src/ibif_napari/_filaments.py` holds the pure functions and
+  `_filament_widget.py` the panel. The tests are `tests/test_filaments.py` and
+  `tests/test_filament_widget.py`, run on synthetic filaments with known lengths.
+- **Not done yet.** "Every time point / position" (phase 2), choosing the root by hand,
+  spine and soma detection, and running on the facility server or GPU.
 
 ## Goal
 

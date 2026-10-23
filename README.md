@@ -1,6 +1,6 @@
-# IBIF napari: ND2/CZI/LIF + 3D Cellpose
+# IBIF napari: ND2/CZI/LIF + 3D Cellpose + filament tracing
 
-[napari](https://napari.org) with three things built in, plus an optional
+[napari](https://napari.org) with four things built in, plus an optional
 [facility GPU server](docs/facility-server.md) for Cellpose:
 
 - **Nikon ND2, Zeiss CZI and Leica LIF files** open directly (drag and drop,
@@ -20,6 +20,11 @@
   stitching. It runs on the current time point/position or on all of them, and writes a
   labels layer. The Cellpose model is loaded in the background at startup, so the first
   run doesn't wait for it.
+- **Filament Tracer panel**: traces neurons, microtubules and other filaments in 2D or 3D,
+  automatically and/or by clicking along them. It reports Imaris-style statistics (length,
+  segments, branch and terminal points, diameter, volume, straightness, branch depth,
+  Sholl) and exports them as CSV, with the tracing as SWC. See
+  [Filament tracing](#filament-tracing).
 
 Everything else is ordinary napari. Plugins install and run as usual from
 **Plugins > Install/Uninstall Plugins**, and this package is itself a normal napari
@@ -57,7 +62,7 @@ message names, e.g. `pip install bioio-czi bioio-lif`.
 ## Use
 
 ```bash
-ibif-napari                      # napari with both panels docked
+ibif-napari                      # napari with the panels docked
 ibif-napari sample.nd2           # ...and open a file
 ibif-napari --model nuclei       # preload a different model (Cellpose 3)
 ibif-napari --no-preload         # start without loading Cellpose
@@ -98,6 +103,80 @@ Which models you get depends on the Cellpose version installed. Cellpose 4 has `
 is installed. Cellpose 3 has `cyto3`, `nuclei`, `cyto2` and `cyto`. To use your own trained
 model, type its path in the Model box or click **…**. On a facility server, custom models
 are placed in the server's `--models-dir` folder and appear in the list by file name.
+
+## Filament tracing
+
+The **Filament Tracer** panel works on the current time point/position, like Cellpose, and
+can be limited to a **Region** and **Z planes** in the same way.
+
+Two other filament plugins are installed too and appear under **Plugins**:
+**napari-tracing** (click-to-trace with SWC files) and, on Python 3.11 or newer,
+**napari-filaments** (2D spline tracing of single filaments). skan's **Skeleton Widget**
+is also there. The panel below is the one that knows about voxel sizes, regions and the
+dimension sliders.
+
+**Automatic tracing**
+
+1. Choose the image (the channel with the neurons or microtubules).
+2. Set **Diameter (µm)** to the range of filament thicknesses to find. Typical ranges
+   are 0.3 to 1.5 for dendrites and 0.2 to 0.6 for microtubules.
+3. Click **Trace automatically**. Filaments are found with a multi-scale "tubeness"
+   filter, which uses the real voxel size so anisotropic Z is handled. The result is
+   thresholded, skeletonized and cleaned up, then measured.
+
+   Results:
+   - a **filaments** labels layer, coloured by filament;
+   - a **filament points** layer: root (yellow), branch points (magenta) and terminal
+     points (cyan);
+   - a table of filaments in the panel.
+4. The status line shows the threshold used. Raise **Threshold** to keep only bright,
+   clear filaments, or lower it to find faint ones, then trace again. The slow filtering
+   step is reused, so this is quick.
+
+   Other settings:
+   - **Prune spurs** trims short side branches caused by noise.
+   - **Min length** drops short fragments.
+
+**Click to trace** works on its own or to fix up an automatic trace:
+
+1. Click **Click to trace**. A "trace clicks" points layer is added in add mode.
+2. In the 2D view, click along a filament on the plane where it is in focus. Each click
+   traces the brightest path from the previous click, also across Z planes.
+   - A click near an already traced filament joins it, so you can add missing branches.
+   - **New filament** starts the next click somewhere new.
+   - **Undo last** removes the last traced piece.
+3. The statistics update after each click.
+
+To remove wrong pieces, select the filaments layer and use napari's eraser, then click
+**Measure**. Note that **Trace automatically** replaces the filaments layer, including
+click traces. Do the automatic trace first, then fix it up.
+
+**Statistics.** **Export…** saves four CSV files plus an SWC file:
+
+- `<name>_filaments.csv`, one row per filament: total length, number of segments, branch
+  points and terminal points, length-weighted mean diameter, volume and surface area,
+  mean intensity, maximum branch depth, straightness, and the position of the root
+  (beginning point).
+- `<name>_segments.csv`, one row per segment (between branch/terminal points): type,
+  length, straight-line distance, straightness, mean diameter, volume, area, mean
+  intensity, branch depth, distance from the root along the filament, elevation angle
+  from the XY plane, and start/end positions.
+- `<name>_points.csv`: root, branch and terminal points.
+- `<name>_sholl.csv`: Sholl intersections every **Sholl step** µm from the root.
+- `<name>.swc`: the tracing for neuron-morphology tools such as NeuroMorpho, SNT or
+  neuTube.
+
+How the measurements are made:
+
+- Lengths and positions are in µm in the image's coordinates.
+- Diameters come from the distance to the edge of the segmented filament. They are
+  approximate, especially near the resolution limit.
+- The root is the thickest node of each filament, which is usually the soma for a
+  neuron.
+- Branch depth counts the branch points between the root and a segment.
+
+**Speed.** Filtering a 30 × 512 × 512 stack takes about 30 s on a laptop CPU. Use
+**Region** for larger stacks.
 
 ## Facility GPU server
 
