@@ -1,4 +1,6 @@
-"""`ibif-napari`: napari with the Dimensions and Cellpose panels docked and a model preloaded.
+"""`ibif-napari`: napari with the Dimensions, Cellpose and Filament Tracer panels docked.
+
+Cellpose's model is preloaded in the background.
 
 This is ordinary napari: other plugins install and run as usual (Plugins menu), and
 `napari file.nd2` also works because the ND2 reader is a regular napari plugin.
@@ -44,6 +46,7 @@ def main(argv=None):
     viewer = napari.Viewer(title="IBIF napari")
     viewer.window.add_plugin_dock_widget(PLUGIN, "Dimensions")
     viewer.window.add_plugin_dock_widget(PLUGIN, "Cellpose 3D", tabify=True)
+    viewer.window.add_plugin_dock_widget(PLUGIN, "Filament Tracer", tabify=True)
     for path in args.files:
         ours = path.lower().endswith((".nd2", ".czi", ".lif"))
         viewer.open(path, plugin=PLUGIN if ours else None)
