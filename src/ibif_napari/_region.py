@@ -119,6 +119,27 @@ def keep_inside(labels, mask_yx, fraction=0.5):
     return lut[labels]
 
 
+def add_region_layer(viewer, image, axes, z_range, on_range_grown=None):
+    """Add a labels layer over `image` (axis letters `axes`) to paint a region on.
+
+    For a Z stack the layer is 3D: what is painted on one plane is shown (and used) on
+    exactly the planes of `z_range`. Returns (layer, ZExtendedRegion or None).
+    """
+    spatial = [axes.index(a) for a in ("ZYX" if "Z" in axes else "YX")]
+    shape = tuple(image.data.shape[i] for i in spatial)
+    region = viewer.add_labels(
+        np.zeros(shape, dtype=np.uint8),
+        name=f"{image.name} region",
+        scale=[image.scale[i] for i in spatial],
+        translate=[image.translate[i] for i in spatial],
+        opacity=0.4,
+    )
+    region.brush_size = max(10, min(shape[-2:]) // 15)
+    region.mode = "paint"
+    sync = ZExtendedRegion(region, z_range, on_range_grown) if "Z" in axes else None
+    return region, sync
+
+
 class ZExtendedRegion:
     """Keep a 3D (Z, Y, X) region labels layer showing one painted footprint on exactly
     the planes of a Z range.

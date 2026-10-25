@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ibif-napari"
-version = "0.7.0"
-description = "napari with Nikon ND2, Zeiss CZI and Leica LIF support, a dimension panel and 3D Cellpose built in"
+version = "0.8.0"
+description = "napari with Nikon ND2, Zeiss CZI and Leica LIF support, a dimension panel, 3D Cellpose and a filament tracer built in"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -17,6 +17,16 @@ dependencies = [
     "numpy",
     "qtpy",
     "cellpose>=3.0",
+    # Filament Tracer panel
+    "scikit-image>=0.22",
+    "scipy",
+    "pandas",
+    "networkx",
+    "skan>=0.12",
+    # Filament plugins that also appear under Plugins: click-to-trace with SWC files,
+    # and 2D spline tracing of single filaments (Python 3.11+ only)
+    "napari-tracing",
+    "napari-filaments; python_version >= '3.11'",
 ]
 
 [project.optional-dependencies]

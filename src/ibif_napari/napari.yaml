@@ -11,6 +11,9 @@ contributions:
     - id: ibif-napari.cellpose_widget
       python_name: ibif_napari._cellpose_widget:CellposeWidget
       title: Cellpose 3D
+    - id: ibif-napari.filament_widget
+      python_name: ibif_napari._filament_widget:FilamentWidget
+      title: Filament Tracer
   readers:
     - command: ibif-napari.get_reader
       filename_patterns: ["*.nd2", "*.czi", "*.lif"]
@@ -20,3 +23,5 @@ contributions:
       display_name: Dimensions
     - command: ibif-napari.cellpose_widget
       display_name: Cellpose 3D
+    - command: ibif-napari.filament_widget
+      display_name: Filament Tracer

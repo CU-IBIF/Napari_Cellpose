@@ -27,7 +27,7 @@ import logging
 from . import _cellpose
 from ._process import Cancelled, get_process
 from ._remote import RemoteProcess, load_servers
-from ._region import ZExtendedRegion, keep_inside, painted_mask_yx, region_crop
+from ._region import add_region_layer, keep_inside, painted_mask_yx, region_crop
 from ._util import current_volume, layer_axes
 
 MODE_3D = "3D (true 3D flows)"
@@ -231,14 +231,20 @@ class CellposeWidget(QWidget):
     def preload_model(self, name=None):
         """Load (and if needed download) the model in the background so the first run is quick."""
         name = name or self.model.currentText()
-        if not name:
+        if not name and not self.remote:
             return
         gpu = self.gpu.isChecked()
         process = self.process
-        self.status.setText(f"Loading Cellpose model '{name}'…")
+        self.status.setText(f"Loading Cellpose model '{name}'…" if name else f"Connecting to {process.name}…")
 
         @thread_worker
         def load():
+            nonlocal name
+            if not name:
+                # No Cellpose here, so no model list yet: use the server's first model.
+                name = (process.status().get("models") or [None])[0]
+                if not name:
+                    return
             if getattr(process, "local", True):
                 yield from _cellpose.ensure_weights(name)
             try:
@@ -290,7 +296,9 @@ class CellposeWidget(QWidget):
         return [
             l
             for l in self.viewer.layers
-            if isinstance(l, (Labels, Shapes)) and not (l.metadata or {}).get("ibif_cellpose")
+            if isinstance(l, (Labels, Shapes))
+            and not (l.metadata or {}).get("ibif_cellpose")
+            and not (l.metadata or {}).get("ibif_filaments")
         ]
 
     def _refresh_layers(self, event=None):
@@ -352,23 +360,10 @@ class CellposeWidget(QWidget):
             self.status.setText("Choose an image layer first.")
             return
         axes = layer_axes(layer)
-        spatial = [axes.index(a) for a in ("ZYX" if "Z" in axes else "YX")]
-        shape = tuple(layer.data.shape[i] for i in spatial)
-        region = self.viewer.add_labels(
-            np.zeros(shape, dtype=np.uint8),
-            name=f"{layer.name} region",
-            scale=[layer.scale[i] for i in spatial],
-            translate=[layer.translate[i] for i in spatial],
-            opacity=0.4,
+        region, sync = add_region_layer(
+            self.viewer, layer, axes, (self.z_first.value(), self.z_last.value()), self._grow_z_range
         )
-        region.brush_size = max(10, min(shape[-2:]) // 15)
-        region.mode = "paint"
-        if "Z" in axes:
-            sync = ZExtendedRegion(
-                region,
-                (self.z_first.value(), self.z_last.value()),
-                on_range_grown=self._grow_z_range,
-            )
+        if sync is not None:
             self._region_syncs.append(sync)
             where = "copied to every plane of the Z planes range below"
         else:
