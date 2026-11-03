@@ -1,7 +1,8 @@
 # IBIF napari: ND2/CZI/LIF + 3D Cellpose + filament tracing
 
-[napari](https://napari.org) with four things built in, plus an optional
-[facility GPU server](docs/facility-server.md) for Cellpose:
+[napari](https://napari.org) with four things built in, plus optional GPU help for
+Cellpose from a [facility GPU server](docs/facility-server.md) or a
+[GPU cluster](docs/cluster.md):
 
 - **Nikon ND2, Zeiss CZI and Leica LIF files** open directly (drag and drop,
   File > Open, or `ibif-napari file.nd2`). They load lazily, so large time lapses open quickly. Each
@@ -188,6 +189,14 @@ Cellpose or a GPU on their own computers to use it.
 
 Setup, users, HTTPS, firewall and running it at start-up:
 [docs/facility-server.md](docs/facility-server.md).
+
+## GPU clusters
+
+Cellpose can also run as a GPU job on a Slurm cluster, such as an NSF ACCESS system. Add the
+cluster with **Clusters…**, install the server there once, then choose it under **Run on**
+and click **Connect**. One SSH login (with two-factor if the cluster asks) submits the job,
+waits for it in the queue and tunnels to it. **Disconnect** ends the job; it also ends by
+itself when unused. See [docs/cluster.md](docs/cluster.md).
 
 ## Troubleshooting Cellpose
 

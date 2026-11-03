@@ -1,0 +1,6 @@
+#!/bin/bash
+# Stand-in for scancel ID (tests): stops the job's process group.
+state=${FAKE_SLURM_DIR:-$HOME/.fake-slurm}
+pid=$(cat "$state/$1.pid" 2>/dev/null) || exit 0
+kill -TERM -- -"$pid" 2>/dev/null
+echo "$1" >> "$state/cancelled"

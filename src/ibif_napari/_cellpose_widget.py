@@ -1,7 +1,9 @@
 """Cellpose panel: 3D (or 2D) segmentation of the current or every time point/position."""
 from __future__ import annotations
 
+import atexit
 import os
+import threading
 import time
 
 import numpy as np
@@ -47,6 +49,11 @@ class CellposeWidget(QWidget):
         self._preload_worker = None
         self._cancelling = False
         self._region_syncs = []  # drawn 3D regions that follow the Z planes setting
+        self._sessions = {}  # cluster label -> connected ClusterSession
+        self._connect_worker = None
+        self._connecting = None
+        self._prompts = None
+        atexit.register(self._stop_sessions)  # end cluster jobs when napari quits
         # Cellpose runs in a separate process (or on a server), so Cancel stops it at once.
         self.local_process = self.process = get_process()
 
@@ -62,10 +69,18 @@ class CellposeWidget(QWidget):
         run_on_row = QHBoxLayout()
         self.run_on = QComboBox()
         self.run_on.setToolTip("Where Cellpose runs: here, or on a facility GPU server")
+        self.connect_btn = QPushButton("Connect")
+        self.connect_btn.setToolTip("Start (or end) a GPU job on the cluster")
+        self.connect_btn.clicked.connect(self.toggle_cluster)
+        self.connect_btn.setVisible(False)
         servers_btn = QPushButton("Servers…")
         servers_btn.clicked.connect(self.edit_servers)
+        clusters_btn = QPushButton("Clusters…")
+        clusters_btn.clicked.connect(self.edit_clusters)
         run_on_row.addWidget(self.run_on, 1)
+        run_on_row.addWidget(self.connect_btn)
         run_on_row.addWidget(servers_btn)
+        run_on_row.addWidget(clusters_btn)
         form.addRow("Run on", run_on_row)
 
         model_row = QHBoxLayout()
@@ -182,9 +197,12 @@ class CellposeWidget(QWidget):
         return not getattr(self.process, "local", True)
 
     def _refresh_servers(self):
+        from ._cluster import load_profiles
+
         current = self.run_on.currentText() or THIS_COMPUTER
         self._servers = {s["name"]: s for s in load_servers()}
-        names = [THIS_COMPUTER, *self._servers]
+        self._clusters = {f"{p.name} (cluster)": p for p in load_profiles()}
+        names = [THIS_COMPUTER, *self._servers, *self._clusters]
         self.run_on.blockSignals(True)
         self.run_on.clear()
         self.run_on.addItems(names)
@@ -200,7 +218,41 @@ class CellposeWidget(QWidget):
         if not self._refresh_servers() or before != THIS_COMPUTER:
             self._set_run_on(self.run_on.currentText())  # server details may have changed
 
+    def edit_clusters(self):
+        from ._cluster_ui import ClustersDialog
+
+        ClustersDialog(self, prompts=self._qt_prompts()).exec()
+        self._refresh_servers()
+        self._set_run_on(self.run_on.currentText())
+
+    def _qt_prompts(self):
+        if self._prompts is None:
+            from ._cluster_ui import QtPrompts
+
+            self._prompts = QtPrompts(self)
+        return self._prompts
+
     def _set_run_on(self, name):
+        self.connect_btn.setVisible(name in self._clusters)
+        if name in self._clusters:
+            self.gpu.setEnabled(False)
+            self.gpu.setToolTip("The cluster job's GPU")
+            session = self._sessions.get(name)
+            if session is not None:
+                self.process = session.process
+                self.run_btn.setEnabled(True)
+                self.connect_btn.setText("Disconnect")
+                self.preload_model()
+            else:
+                self.process = None
+                self.run_btn.setEnabled(False)
+                self.connect_btn.setText("Cancel" if self._connecting == name else "Connect")
+                if self._connecting != name:
+                    self.status.setText(
+                        f"Click Connect to start a GPU job on {self._clusters[name].name}. It may wait in "
+                        "the cluster queue; it ends on Disconnect or when unused."
+                    )
+            return
         if name == THIS_COMPUTER or name not in self._servers:
             self.process = self.local_process
             self.gpu.setEnabled(True)
@@ -217,6 +269,85 @@ class CellposeWidget(QWidget):
         self.run_btn.setEnabled(True)
         self.preload_model()
 
+    def toggle_cluster(self):
+        name = self.run_on.currentText()
+        if self._connecting is not None:  # Cancel while connecting
+            session = self._connecting_session
+            threading.Thread(target=session.stop, daemon=True).start()
+            if self._connect_worker is not None:
+                self._connect_worker.quit()
+            self.status.setText("Cancelling: ending the cluster job…")
+            return
+        if name in self._sessions:
+            self.disconnect_cluster(name)
+        elif name in self._clusters:
+            self.connect_cluster(name)
+
+    def connect_cluster(self, name):
+        from ._cluster import ClusterSession
+
+        profile = self._clusters[name]
+        session = ClusterSession(profile, prompts=self._qt_prompts())
+        self._connecting, self._connecting_session = name, session
+
+        # Errors are shown in the status line (not also as a napari error popup).
+        @thread_worker(ignore_errors=True)
+        def work():
+            try:
+                return (yield from session.start())
+            except Cancelled:
+                return None
+
+        outcome = {"settled": False}
+
+        def connected(process):
+            outcome["settled"] = True
+            if process is None:
+                self.status.setText("Connection cancelled; the cluster job was removed.")
+                return
+            self._sessions[name] = session
+            if self.run_on.currentText() == name:
+                self._set_run_on(name)
+
+        def failed(e):
+            outcome["settled"] = True
+            if session._stopped:
+                self.status.setText("Connection cancelled; the cluster job was removed.")
+            else:
+                self._show_error(f"Could not connect to {profile.name}", e)
+
+        def finished():
+            if not outcome["settled"]:  # quit() while connecting: no result, no error
+                self.status.setText("Connection cancelled; the cluster job was removed.")
+            self._connecting = self._connect_worker = None
+            self.run_on.setEnabled(True)
+            if self.run_on.currentText() == name:
+                self.connect_btn.setText("Disconnect" if name in self._sessions else "Connect")
+
+        worker = work()
+        worker.yielded.connect(lambda m: m and self.status.setText(m))
+        worker.returned.connect(connected)
+        worker.errored.connect(failed)
+        worker.finished.connect(finished)
+        self._connect_worker = worker
+        self.run_on.setEnabled(False)
+        self.connect_btn.setText("Cancel")
+        worker.start()
+
+    def disconnect_cluster(self, name):
+        session = self._sessions.pop(name, None)
+        if session is None:
+            return
+        threading.Thread(target=session.stop, daemon=True).start()  # scancel over SSH
+        if self.run_on.currentText() == name:
+            self._set_run_on(name)
+            self.status.setText(f"Disconnected: the job on {session.profile.name} was ended.")
+
+    def _stop_sessions(self):
+        for session in self._sessions.values():
+            session.stop()
+        self._sessions.clear()
+
     def _set_models(self, names):
         current = self.model.currentText()
         self.model.blockSignals(True)
@@ -231,7 +362,7 @@ class CellposeWidget(QWidget):
     def preload_model(self, name=None):
         """Load (and if needed download) the model in the background so the first run is quick."""
         name = name or self.model.currentText()
-        if not name and not self.remote:
+        if self.process is None or (not name and not self.remote):
             return
         gpu = self.gpu.isChecked()
         process = self.process
@@ -258,6 +389,14 @@ class CellposeWidget(QWidget):
             info = getattr(process, "info", None)
             if info:
                 self._set_models(info.get("models") or [])
+                session = self._sessions.get(self.run_on.currentText())
+                if session is not None:
+                    self.status.setText(
+                        f"Connected to {process.name}, job {session.job_id}: {info.get('device')}, "
+                        f"Cellpose {info.get('cellpose')}. Model '{name}' ready. The job ends on "
+                        f"Disconnect, or after {session.profile.idle_minutes} min unused."
+                    )
+                    return
                 self.status.setText(
                     f"Connected to {process.name} as {info.get('user')}: {info.get('device')}, "
                     f"Cellpose {info.get('cellpose')}. Model '{name}' ready."
@@ -279,6 +418,13 @@ class CellposeWidget(QWidget):
     def _show_error(self, what, error):
         # Errors from the Cellpose process carry its traceback after a blank line.
         summary = str(error).split("\n\n")[0]
+        name = self.run_on.currentText()
+        if name in self._sessions and "cannot reach" in summary:
+            # The job ended (unused, time limit or preempted): forget it so Connect starts a new one.
+            threading.Thread(target=self._sessions.pop(name).stop, daemon=True).start()
+            self._set_run_on(name)
+            summary += (". The connection to the cluster job was lost (the job ends by itself when "
+                        "unused); click Connect to start a new one")
         logging.getLogger("ibif_napari").error("%s: %s", what, error)
         self.status.setText(f"{what}: {summary}")
 
@@ -443,6 +589,7 @@ class CellposeWidget(QWidget):
         self._worker = worker
         self.run_btn.setText("Cancel")
         self.run_on.setEnabled(False)
+        self.connect_btn.setEnabled(False)
         self.progress.setVisible(True)
         self.progress.setRange(0, 0)
         self.status.setText("Running Cellpose…")
@@ -536,6 +683,7 @@ class CellposeWidget(QWidget):
     def _on_finished(self):
         self._worker = None
         self.run_on.setEnabled(True)
+        self.connect_btn.setEnabled(True)
         self.run_btn.setText("Run Cellpose")
         self.progress.setVisible(False)
         if self._cancelling:

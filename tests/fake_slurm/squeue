@@ -1,0 +1,8 @@
+#!/bin/bash
+# Stand-in for squeue -h -j ID -o FORMAT (tests): '%T|%R|%N' or '%T'.
+state=${FAKE_SLURM_DIR:-$HOME/.fake-slurm}
+while [ $# -gt 0 ]; do case $1 in -j) id=$2; shift;; -o) fmt=$2; shift;; esac; shift; done
+pid=$(cat "$state/$id.pid" 2>/dev/null) || exit 0
+kill -0 "$pid" 2>/dev/null || exit 0
+if [ "$(cat "$state/$id.state")" = running ]; then T=RUNNING; R=None; N=${FAKE_SLURM_NODE:-localhost}; else T=PENDING; R=Priority; N=; fi
+if [[ $fmt == *"|"* ]]; then echo "$T|$R|$N"; else echo "$T"; fi

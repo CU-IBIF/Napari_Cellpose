@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import secrets
+import socket
 import ssl
 import sys
 import threading
@@ -77,10 +78,17 @@ class Users:
     """User names and SHA-256 hashes of their tokens, in a JSON file (tokens are not stored)."""
 
     def __init__(self, path):
-        self.path = Path(path)
+        self.path = Path(path) if path else None
         self.hashes = {}
-        if self.path.exists():
+        if self.path and self.path.exists():
             self.hashes = json.loads(self.path.read_text()).get("users", {})
+
+    @classmethod
+    def single(cls, name, token):
+        """One user with a known token, kept in memory only (cluster jobs)."""
+        users = cls(None)
+        users.hashes = {name: _hash(token)}
+        return users
 
     def save(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -168,6 +176,7 @@ class CellposeServer:
         self.queue = collections.deque()
         self.current = None
         self.last_model = None
+        self.last_activity = time.monotonic()
         self._cond = threading.Condition()
         self._stop = False
         self._worker = threading.Thread(target=self._work, name="cellpose-jobs", daemon=True)
@@ -414,6 +423,7 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
     def _handle(self, method):
+        self.app.last_activity = time.monotonic()
         try:
             allowed = self.server.allowed
             if allowed and not any(ipaddress.ip_address(self.client_address[0]) in n for n in allowed):
@@ -534,6 +544,12 @@ def main(argv=None):
     run.add_argument("--preload", default="", help="model to load at start (default: the newest built-in)")
     run.add_argument("--max-mb", type=float, default=2048, help="largest upload in MB (default 2048)")
     run.add_argument("--log-file", help="also write the log here (useful when run as a service)")
+    run.add_argument("--token-file", help="single-user mode: accept only the token in this file "
+                     "(used by cluster jobs; no users file needed)")
+    run.add_argument("--ready-file", help="write host and port here (JSON) once listening; "
+                     "with --port 0 the system picks a free port")
+    run.add_argument("--idle-exit", type=float, metavar="MINUTES",
+                     help="stop after this many minutes without requests (ends a cluster job)")
     run.add_argument("-v", "--verbose", action="store_true")
     add = sub.add_parser("add-user", help="add a user (or replace their token) and print the token")
     add.add_argument("name")
@@ -542,7 +558,10 @@ def main(argv=None):
     sub.add_parser("list-users", help="list users")
     args = parser.parse_args(argv)
 
-    users = Users(Path(args.config_dir) / "users.json")
+    if args.command == "run" and args.token_file:
+        users = Users.single("cluster", Path(args.token_file).read_text().strip())
+    else:
+        users = Users(Path(args.config_dir) / "users.json")
     if args.command == "add-user":
         token = users.add(args.name)
         print(f"Access token for {args.name} (shown once; give it to them privately):\n\n  {token}\n")
@@ -575,12 +594,23 @@ def main(argv=None):
     if args.keyfile and not args.certfile:
         parser.error("--keyfile needs --certfile")
     gpu = {"auto": None, "gpu": True, "cpu": False}[args.device]
-    app = CellposeServer(users, gpu=gpu, models_dir=args.models_dir, max_mb=args.max_mb)
-    threading.Thread(target=_reload_users, args=(app,), daemon=True).start()
+    # IBIF_NAPARI_SERVER_BACKEND swaps in a stand-in Cellpose module (tests only).
+    backend = os.environ.get("IBIF_NAPARI_SERVER_BACKEND", BACKEND)
+    app = CellposeServer(users, backend=backend, gpu=gpu, models_dir=args.models_dir, max_mb=args.max_mb)
+    if users.path:
+        threading.Thread(target=_reload_users, args=(app,), daemon=True).start()
     httpd = make_http_server(app, args.host, args.port, args.allow, args.certfile, args.keyfile)
+    port = httpd.server_address[1]
     scheme = "https" if args.certfile else "http"
+    # Import Cellpose/PyTorch now (it can take a minute on a cluster's shared disk), so
+    # the first request after "ready" is answered at once.
+    app.status()
+    if args.ready_file:
+        _write_ready(args.ready_file, {"host": socket.gethostname(), "port": port, "pid": os.getpid()})
+    if args.idle_exit:
+        threading.Thread(target=_exit_when_idle, args=(app, httpd, args.idle_exit * 60), daemon=True).start()
     log.info("ibif-napari-server %s on %s://%s:%s, %s, %d users%s",
-             __version__, scheme, args.host, args.port, app.device_name(), len(users.hashes),
+             __version__, scheme, args.host, port, app.device_name(), len(users.hashes),
              f", allowing {', '.join(args.allow)}" if args.allow else "")
     if not args.certfile:
         log.warning("serving plain HTTP: use only on a trusted network, or add --certfile/--keyfile")
@@ -596,7 +626,29 @@ def main(argv=None):
     finally:
         httpd.server_close()
         app.close()
+        if args.ready_file:
+            Path(args.ready_file).unlink(missing_ok=True)
     return 0
+
+
+def _write_ready(path, info):
+    path = Path(path)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(info))
+    os.replace(tmp, path)
+
+
+def _exit_when_idle(app, httpd, idle_s, interval=15):
+    """Shut the server down after `idle_s` without requests or jobs (frees a cluster GPU)."""
+    while True:
+        time.sleep(min(interval, idle_s))
+        busy = app.current is not None or bool(app.queue)
+        if busy:
+            app.last_activity = time.monotonic()
+        elif time.monotonic() - app.last_activity > idle_s:
+            log.info("idle for %.0f min: stopping", idle_s / 60)
+            httpd.shutdown()
+            return
 
 
 def _reload_users(app, interval=60):

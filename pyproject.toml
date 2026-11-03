@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ibif-napari"
-version = "0.8.0"
-description = "napari with Nikon ND2, Zeiss CZI and Leica LIF support, a dimension panel, 3D Cellpose and a filament tracer built in"
+version = "0.9.0"
+description = "napari with Nikon ND2, Zeiss CZI and Leica LIF support, a dimension panel, 3D Cellpose (local, facility GPU server or GPU cluster) and a filament tracer built in"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -27,6 +27,7 @@ dependencies = [
     # and 2D spline tracing of single filaments (Python 3.11+ only)
     "napari-tracing",
     "napari-filaments; python_version >= '3.11'",
+    "paramiko>=3.2",
 ]
 
 [project.optional-dependencies]
@@ -35,6 +36,7 @@ dev = ["pytest>=8", "pytest-qt"]
 [project.scripts]
 ibif-napari = "ibif_napari.launcher:main"
 ibif-napari-server = "ibif_napari._server:main"
+ibif-napari-cluster = "ibif_napari._cluster:main"
 
 [project.entry-points."napari.manifest"]
 ibif-napari = "ibif_napari:napari.yaml"

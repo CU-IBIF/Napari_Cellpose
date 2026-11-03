@@ -1,0 +1,13 @@
+#!/bin/bash
+# Stand-in for Slurm's sbatch (tests): runs the job script in the background.
+# FAKE_SLURM_PENDING=<seconds> keeps the job "PENDING" that long first.
+state=${FAKE_SLURM_DIR:-$HOME/.fake-slurm}; mkdir -p "$state"
+script="${@: -1}"
+id=$(( $(cat "$state/next" 2>/dev/null || echo 1000) + 1 )); echo $id > "$state/next"
+log=$(grep -m1 '^#SBATCH --output=' "$script" | cut -d= -f2- | sed "s/%j/$id/")
+log=$(eval echo "$log"); [ -n "$log" ] || log="$state/slurm-$id.out"
+echo pending > "$state/$id.state"
+SLURM_JOB_ID=$id setsid bash -c "sleep ${FAKE_SLURM_PENDING:-0}; echo running > '$state/$id.state'; exec bash '$script'" \
+    > "$log" 2>&1 < /dev/null &
+echo $! > "$state/$id.pid"
+echo $id
