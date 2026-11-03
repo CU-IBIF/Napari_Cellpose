@@ -75,6 +75,35 @@ Then:
 Allocation credits are charged while the job runs, including the idle minutes, so
 disconnect when you are finished and keep the idle time short.
 
+## Batch jobs: a whole series, napari closed
+
+For long time lapses or many positions, send the whole series as one **batch job** instead
+of segmenting interactively:
+
+1. Under **Run on**, choose the cluster (no need to Connect). Set the image, model,
+   region and Z planes as usual.
+2. Click **Submit batch job**. Every time point / position (cropped to the region) is
+   uploaded over SSH, with a progress bar, and a GPU job is submitted with the profile's
+   **Batch job time limit** (default 12 hours). **Cancel upload** stops and removes
+   everything uploaded so far.
+3. You can close napari. The job may wait in the queue and run overnight. Each
+   position's labels are saved on the cluster as soon as they are done.
+4. Later, from any napari session, click **Batch jobs…**. It lists your batches with
+   their status (*queued*, *running 40/120*, *done*, *failed*, or *stopped*). Select one and:
+   - **Fetch results**: downloads the labels, adds them as a layer in the right place,
+     and saves a compressed TIFF next to the image (or in `~/ibif-napari-results` if that
+     folder cannot be written). Positions without a result yet are left empty and counted.
+   - **Cancel job**: ends the job; results so far are kept.
+   - **Resubmit**: runs the batch again, skipping positions already done. Use it after a
+     job hit its time limit.
+   - **Remove**: deletes the batch's files on the cluster and forgets it.
+
+The same from a terminal: `ibif-napari-cluster batches`, `fetch <id>`, `cancel <id>` and
+`resubmit <id>`.
+
+Uploaded images and results stay in `batch-<id>` folders in your work folder on the
+cluster until you remove them; check your cluster's storage quota for large series.
+
 ## Security
 
 - Everything travels over your SSH login. Nothing is opened to the internet.

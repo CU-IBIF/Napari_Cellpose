@@ -196,7 +196,9 @@ Cellpose can also run as a GPU job on a Slurm cluster, such as an NSF ACCESS sys
 cluster with **Clusters…**, install the server there once, then choose it under **Run on**
 and click **Connect**. One SSH login (with two-factor if the cluster asks) submits the job,
 waits for it in the queue and tunnels to it. **Disconnect** ends the job; it also ends by
-itself when unused. See [docs/cluster.md](docs/cluster.md).
+itself when unused. For a whole series, **Submit batch job** uploads it and runs it as one
+GPU job (napari can be closed); **Batch jobs…** follows it and fetches the labels as a layer
+and a TIFF. See [docs/cluster.md](docs/cluster.md).
 
 ## Troubleshooting Cellpose
 

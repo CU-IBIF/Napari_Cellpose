@@ -1,13 +1,10 @@
-import getpass
 import json
 import os
-import shutil
 import socket
 import subprocess
 import sys
 import threading
 import time
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -25,30 +22,7 @@ from ibif_napari._cluster import (  # noqa: E402
 )
 from ibif_napari._process import Cancelled, wait  # noqa: E402
 
-TESTS = Path(__file__).parent
-FAKE_SLURM = TESTS / "fake_slurm"
-
-
-class Prompts:
-    """Answers prompts automatically and records them."""
-
-    def __init__(self, answers=(), confirm=True):
-        self.answers, self.confirm_answer = list(answers), confirm
-        self.asked, self.confirmed = [], []
-
-    def ask(self, title, instructions, prompts):
-        self.asked.append((title, instructions, [p for p, _ in prompts]))
-        return [self.answers.pop(0) for _ in prompts]
-
-    def confirm(self, title, text):
-        self.confirmed.append(title)
-        return self.confirm_answer
-
-
-def free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+from _ssh_helpers import TESTS, Prompts, free_port, run_messages  # noqa: E402
 
 
 # ---- profile and job script ------------------------------------------------------------
@@ -155,70 +129,6 @@ def test_key_then_two_factor_login(tmp_path):
 
 
 # ---- end to end through a real OpenSSH server and stand-in Slurm ----------------------
-
-
-@pytest.fixture(scope="module")
-def sshd(tmp_path_factory):
-    if not shutil.which("sshd") and not Path("/usr/sbin/sshd").exists():
-        pytest.skip("OpenSSH server not installed")
-    if os.geteuid() != 0:
-        pytest.skip("needs root to run a throwaway sshd")
-    d = tmp_path_factory.mktemp("sshd")
-    for name in ("host", "client"):
-        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(d / name)], check=True)
-    shutil.copy(d / "client.pub", d / "authorized_keys")
-    port = free_port()
-    (d / "sshd_config").write_text(
-        f"Port {port}\nListenAddress 127.0.0.1\nHostKey {d / 'host'}\nAuthorizedKeysFile {d / 'authorized_keys'}\n"
-        f"PermitRootLogin yes\nStrictModes no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\n"
-        f"UsePAM no\nPidFile {d / 'sshd.pid'}\nAllowTcpForwarding yes\nSubsystem sftp internal-sftp\n"
-    )
-    Path("/run/sshd").mkdir(parents=True, exist_ok=True)
-    proc = subprocess.Popen(["/usr/sbin/sshd", "-D", "-f", str(d / "sshd_config"), "-E", str(d / "log")])
-    for _ in range(50):
-        try:
-            socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
-            break
-        except OSError:
-            time.sleep(0.1)
-    yield d, port
-    proc.terminate()
-    proc.wait(5)
-
-
-@pytest.fixture
-def profile(sshd, tmp_path):
-    d, port = sshd
-    (tmp_path / "models").mkdir()
-    (tmp_path / "models" / "fake").write_text("weights")
-    state = tmp_path / "slurm"
-    setup = "\n".join([
-        f"export PATH={FAKE_SLURM}:$PATH",
-        f"export FAKE_SLURM_DIR={state}",
-        f"export PYTHONPATH={TESTS}",
-        "export IBIF_NAPARI_SERVER_BACKEND=_fake_cellpose",
-        "unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY",
-    ])
-    p = ClusterProfile(
-        name="Test cluster", host="127.0.0.1", port=port, user=getpass.getuser(), key_file=str(d / "client"),
-        setup=setup, workdir=str(tmp_path / "work"), activate=f"source {Path(sys.executable).parent}/activate",
-        gpus="", server_args=f"--models-dir {tmp_path / 'models'} --preload fake --device cpu",
-    )
-    p.state = state
-    return p
-
-
-def run_messages(gen, messages, timeout=120):
-    start = time.monotonic()
-    try:
-        while True:
-            m = next(gen)
-            if m:
-                messages.append(m)
-            if time.monotonic() - start > timeout:
-                raise TimeoutError(messages)
-    except StopIteration as stop:
-        return stop.value
 
 
 def test_session_end_to_end(profile, tmp_path):
@@ -458,3 +368,54 @@ def test_refused_tunnel_is_explained(profile, sshd, tmp_path):
         assert (profile.state / "cancelled").exists()  # the job was ended
     finally:
         proc.terminate()
+
+
+def test_panel_batch_submit_and_fetch(panel, profile, qtbot, tmp_path, monkeypatch):
+    from ibif_napari import _batch
+    from ibif_napari._reader import layer_data
+
+    monkeypatch.setattr(_batch, "RECORDS", tmp_path / "batches.json")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))  # where the TIFF goes (no source file)
+    w, viewer = panel
+    data = np.random.randint(0, 100, (3, 4, 8, 8), dtype=np.uint16)  # T Z Y X
+    (ld,) = layer_data(data, {"T": 3, "Z": 4, "Y": 8, "X": 8}, ["GFP"], [520], (2.0, 0.5, 0.5), 60.0, "t3", "t3")
+    viewer._add_layer_from_data(*ld)
+    w.run_on.setCurrentText("Test cluster (cluster)")
+    assert w.batch_btn.isVisibleTo(w) and w.jobs_btn.isVisibleTo(w)
+    w.image.setCurrentText("t3 GFP")
+    w.model.setEditText("fake")
+    w.z_first.setValue(1)
+    w.z_last.setValue(2)
+
+    w.submit_batch()  # no Connect needed
+    assert w.batch_btn.text() == "Cancel upload"
+    qtbot.waitUntil(lambda: w.status.text().startswith("Batch job "), timeout=60000)
+    assert "3 positions" in w.status.text() and w.batch_btn.text() == "Submit batch job"
+    (record,) = _batch.load_records()
+    assert record.out_shape == [3, 2, 8, 8] and record.outer == [0] and record.name == "t3 GFP cellpose batch"
+    assert record.translate == [0.0, 2.0, 0.0, 0.0]  # Z planes 1-2: one plane (2 um) down
+
+    w.show_batch_jobs()
+    dlg = w._jobs_dialog
+    qtbot.waitUntil(lambda: not dlg._busy, timeout=60000)
+    for _ in range(60):
+        st = dlg.statuses.get(record.id)
+        if isinstance(st, dict) and st["state"] == "done":
+            break
+        dlg.refresh()
+        qtbot.waitUntil(lambda: not dlg._busy, timeout=60000)
+        qtbot.wait(300)
+    assert dlg.statuses[record.id]["state"] == "done"
+    assert dlg.table.item(0, 5).text().startswith("done: 3/3")
+
+    dlg.table.selectRow(0)
+    dlg.fetch()
+    qtbot.waitUntil(lambda: "t3 GFP cellpose batch" in viewer.layers, timeout=60000)
+    out = viewer.layers["t3 GFP cellpose batch"]
+    assert out.data.shape == (3, 2, 8, 8) and out.data.max() == 2
+    assert list(out.translate) == [0.0, 2.0, 0.0, 0.0] and list(out.scale) == [1.0, 2.0, 0.5, 0.5]
+    qtbot.waitUntil(lambda: not dlg._busy, timeout=10000)
+    tif = tmp_path / "home" / "ibif-napari-results" / f"t3 GFP cellpose batch batch {record.id}.tif"
+    assert tif.exists() and _batch.load_records()[0].fetched == str(tif)
+    assert "Saved" in dlg.message.text()
+    dlg.close()

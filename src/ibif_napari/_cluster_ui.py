@@ -111,6 +111,7 @@ _LABELS = {
     "extra_sbatch": "Extra #SBATCH lines",
     "idle_minutes": "Stop after idle (min)",
     "server_args": "Extra server options",
+    "batch_time": "Batch job time limit",
 }
 _HINTS = {
     "host": "e.g. login.example-cluster.org",
@@ -120,6 +121,7 @@ _HINTS = {
     "account": "your ACCESS allocation account on this system",
     "extra_sbatch": "#SBATCH --qos=... (one per line)",
     "server_args": "e.g. --models-dir /shared/cellpose-models",
+    "batch_time": "for whole series, e.g. 12:00:00",
 }
 
 

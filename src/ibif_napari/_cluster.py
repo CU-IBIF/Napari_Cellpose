@@ -57,6 +57,7 @@ class ClusterProfile:
     extra_sbatch: str = ""  # more "#SBATCH ..." lines, e.g. a QOS or constraint
     idle_minutes: int = 15
     server_args: str = ""  # extra ibif-napari-server options, e.g. --models-dir
+    batch_time: str = "12:00:00"  # time limit of batch jobs (whole series, may run overnight)
 
     @classmethod
     def from_dict(cls, d):
@@ -70,23 +71,33 @@ class ClusterProfile:
         """`command` with the profile's setup lines run first, for a non-interactive shell."""
         return "bash -lc " + shlex.quote(f"{self.setup}\n{command}" if self.setup.strip() else command)
 
-    def job_script(self, session):
-        lines = ["#!/bin/bash", "#SBATCH --job-name=ibif-napari"]
+    def _header(self, job_name, time_limit, log):
+        lines = ["#!/bin/bash", f"#SBATCH --job-name={job_name}"]
         for opt, value in (("partition", self.partition), ("account", self.account), ("gpus", self.gpus),
-                           ("time", self.time), ("mem", self.mem)):
+                           ("time", time_limit), ("mem", self.mem)):
             if str(value).strip():
                 lines.append(f"#SBATCH --{opt}={value}")
         if self.cpus:
             lines.append(f"#SBATCH --cpus-per-task={self.cpus}")
-        lines.append(f"#SBATCH --output={self._abs('job-%j.log')}")
+        lines.append(f"#SBATCH --output={log}")
         lines += [l.strip() for l in self.extra_sbatch.splitlines() if l.strip()]
         lines += ["", self.setup.strip(), self.activate_line(), ""]
+        return lines
+
+    def job_script(self, session):
+        lines = self._header("ibif-napari", self.time, self._abs("job-%j.log"))
         lines.append(
             "exec ibif-napari-server run --host 0.0.0.0 --port 0"
             f" --token-file {self._abs(f'token-{session}')}"
             f" --ready-file {self._abs(f'ready-{session}.json')}"
             f" --idle-exit {self.idle_minutes} {self.server_args}".rstrip()
         )
+        return "\n".join(lines) + "\n"
+
+    def batch_script(self, folder):
+        """Job script of a batch: segments every position in `folder` (absolute path)."""
+        lines = self._header("ibif-napari-batch", self.batch_time, f"{folder}/job-%j.log")
+        lines.append(f"exec python -m ibif_napari._batch run {shlex.quote(folder)}")
         return "\n".join(lines) + "\n"
 
     def install_script(self):
@@ -308,15 +319,38 @@ class SSH:
         return out
 
     def write_file(self, path, text, mode=0o600):
-        sftp = self.paramiko.SFTPClient.from_transport(self.transport)
+        self.put_bytes(path, text.encode(), mode)
+
+    def sftp(self):
+        if getattr(self, "_sftp", None) is None:
+            self._sftp = self.paramiko.SFTPClient.from_transport(self.transport)
+        return self._sftp
+
+    def put_bytes(self, path, data, mode=0o600):
+        """Write a file on the cluster (written under a temporary name, then renamed)."""
+        sftp = self.sftp()
+        tmp = path + ".part"
+        with sftp.open(tmp, "wb") as f:
+            f.set_pipelined(True)
+            f.write(data)
+        sftp.chmod(tmp, mode)
+        sftp.posix_rename(tmp, path)
+
+    def get_bytes(self, path):
+        with self.sftp().open(path, "rb") as f:
+            f.prefetch()
+            return f.read()
+
+    def listdir(self, path):
         try:
-            with sftp.open(path, "w") as f:
-                f.write(text)
-            sftp.chmod(path, mode)
-        finally:
-            sftp.close()
+            return self.sftp().listdir(path)
+        except OSError:
+            return []
 
     def close(self):
+        if getattr(self, "_sftp", None) is not None:
+            self._sftp.close()
+            self._sftp = None
         if self.transport is not None:
             self.transport.close()
             self.transport = None
@@ -544,7 +578,16 @@ def main(argv=None):
                         ("connect", "start a GPU job and keep a tunnel open until Ctrl+C"), ("script", "print the job script")):
         sp = sub.add_parser(name, help=help_)
         sp.add_argument("name")
+    sub.add_parser("batches", help="list batch jobs and their status")
+    for name, help_ in (("fetch", "download a batch's labels as a TIFF"), ("cancel", "cancel a batch job"),
+                        ("resubmit", "submit a batch again (finished positions are skipped)")):
+        sp = sub.add_parser(name, help=help_)
+        sp.add_argument("batch", help="batch ID (see: batches)")
+        if name == "fetch":
+            sp.add_argument("--folder", help="where to save the TIFF (default: next to the image)")
     args = parser.parse_args(argv)
+    if args.command in ("batches", "fetch", "cancel", "resubmit"):
+        return _batch_command(args)
 
     profiles = load_profiles()
     if args.command == "list":
@@ -590,6 +633,64 @@ def main(argv=None):
         print(f"Error: {e}", file=sys.stderr)
         return 1
     return 0
+
+
+def _batch_command(args):
+    from . import _batch
+
+    records = _batch.load_records()
+    profiles = {p.name: p for p in load_profiles()}
+    clients = {}
+
+    def client(rec):
+        if rec.cluster not in profiles:
+            raise ClusterError(f"no cluster profile named {rec.cluster!r}")
+        if rec.cluster not in clients:
+            clients[rec.cluster] = _batch.BatchClient(profiles[rec.cluster])
+        return clients[rec.cluster]
+
+    try:
+        if args.command == "batches":
+            if not records:
+                print("No batch jobs.")
+            for rec in records:
+                try:
+                    st = client(rec).status(rec)
+                    state = f"{st['state']} {st['done']}/{st['total']}: {st['message']}"
+                except (ClusterError, OSError) as e:
+                    state = f"unknown ({e})"
+                print(f"{rec.id}  {rec.cluster}  job {rec.job_id}  {rec.name}  {state}"
+                      + (f"  fetched: {rec.fetched}" if rec.fetched else ""))
+            return 0
+        rec = next((r for r in records if r.id == args.batch), None)
+        if rec is None:
+            print(f"No batch {args.batch!r} (see: ibif-napari-cluster batches)", file=sys.stderr)
+            return 1
+        if args.command == "cancel":
+            client(rec).cancel(rec)
+            print(f"Cancelled job {rec.job_id}.")
+        elif args.command == "resubmit":
+            client(rec).resubmit(rec)
+            print(f"Resubmitted as job {rec.job_id}.")
+        else:
+            gen = client(rec).fetch(rec)
+            try:
+                while True:
+                    done, total = next(gen)
+                    print(f"\rDownloading {done}/{total}", end="", flush=True)
+            except StopIteration as stop:
+                labels, missing = stop.value
+            path = _batch.save_tiff(labels, rec, args.folder)
+            rec.fetched = str(path)
+            _batch.update_record(rec)
+            print(f"\nSaved {path}" + (f" ({len(missing)} positions had no result yet)" if missing else ""))
+        return 0
+    except ClusterError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    finally:
+        for c in clients.values():
+            c.close()
 
 
 if __name__ == "__main__":

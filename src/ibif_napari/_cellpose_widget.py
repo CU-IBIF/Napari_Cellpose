@@ -53,6 +53,9 @@ class CellposeWidget(QWidget):
         self._connect_worker = None
         self._connecting = None
         self._prompts = None
+        self._batch_worker = None
+        self._batch_stop = None
+        self._jobs_dialog = None
         atexit.register(self._stop_sessions)  # end cluster jobs when napari quits
         # Cellpose runs in a separate process (or on a server), so Cancel stops it at once.
         self.local_process = self.process = get_process()
@@ -153,6 +156,20 @@ class CellposeWidget(QWidget):
         self.run_btn = QPushButton("Run Cellpose")
         self.run_btn.clicked.connect(self.run)
         layout.addWidget(self.run_btn)
+        batch_row = QHBoxLayout()
+        self.batch_btn = QPushButton("Submit batch job")
+        self.batch_btn.setToolTip(
+            "Segment every time point / position as one cluster job (no Connect needed). "
+            "napari can be closed meanwhile; fetch the labels later under Batch jobs."
+        )
+        self.batch_btn.clicked.connect(self.submit_batch)
+        self.jobs_btn = QPushButton("Batch jobs…")
+        self.jobs_btn.clicked.connect(self.show_batch_jobs)
+        batch_row.addWidget(self.batch_btn)
+        batch_row.addWidget(self.jobs_btn)
+        layout.addLayout(batch_row)
+        self.batch_btn.setVisible(False)
+        self.jobs_btn.setVisible(False)
         self.progress = QProgressBar()
         self.progress.setVisible(False)
         layout.addWidget(self.progress)
@@ -234,6 +251,8 @@ class CellposeWidget(QWidget):
 
     def _set_run_on(self, name):
         self.connect_btn.setVisible(name in self._clusters)
+        self.batch_btn.setVisible(name in self._clusters)
+        self.jobs_btn.setVisible(bool(self._clusters))
         if name in self._clusters:
             self.gpu.setEnabled(False)
             self.gpu.setToolTip("The cluster job's GPU")
@@ -342,6 +361,101 @@ class CellposeWidget(QWidget):
         if self.run_on.currentText() == name:
             self._set_run_on(name)
             self.status.setText(f"Disconnected: the job on {session.profile.name} was ended.")
+
+    # ---- batch jobs (whole series on a cluster) ---------------------------------------
+
+    def submit_batch(self):
+        if self._batch_worker is not None:  # "Cancel upload"
+            self._batch_stop.set()
+            self.status.setText("Cancelling the upload…")
+            return
+        name = self.run_on.currentText()
+        if name not in self._clusters:
+            return
+        req = self._prepare()
+        if req is None:
+            return
+        layer = req["layer"]
+        outer, out_shape, translate, volumes = self._series(
+            layer, req["nuc"], req["axes"], req["keep"], req["crop"]
+        )
+        count = int(np.prod([out_shape[i] for i in outer])) if outer else 1
+        info = dict(
+            name=f"{layer.name} cellpose batch{req['tag']}",
+            source=str((layer.metadata or {}).get("ibif_source") or ""),
+            axes=req["axes"],
+            scale=[float(x) for x in layer.scale],
+            translate=[float(t) for t in translate],
+            out_shape=[int(n) for n in out_shape],
+            outer=outer,
+            count=count,
+        )
+        from ._batch import BatchClient
+
+        profile = self._clusters[name]
+        client = BatchClient(profile, self._qt_prompts())
+        stop = self._batch_stop = threading.Event()
+
+        @thread_worker(ignore_errors=True)
+        def work():
+            try:
+                return (yield from client.submit(volumes(stop), req["params"], req["mask"], info))
+            except Cancelled:
+                return None
+            finally:
+                client.close()
+
+        def progress(value):
+            if isinstance(value, str):
+                self.status.setText(value)
+            else:
+                done, total = value
+                self.progress.setVisible(True)
+                self.progress.setRange(0, total)
+                self.progress.setValue(done)
+                self.status.setText(f"Uploading position {min(done + 1, total)} of {total} to {profile.name}…")
+
+        def submitted(record):
+            if record is None:
+                self.status.setText("Batch upload cancelled; nothing was left on the cluster.")
+                return
+            self.status.setText(
+                f"Batch job {record.job_id} submitted on {profile.name}: {record.count} positions. "
+                "napari can be closed; follow it and fetch the labels under Batch jobs…"
+            )
+
+        def finished():
+            self._batch_worker = self._batch_stop = None
+            self.batch_btn.setText("Submit batch job")
+            self.progress.setVisible(False)
+            self.run_on.setEnabled(True)
+
+        worker = work()
+        worker.yielded.connect(progress)
+        worker.returned.connect(submitted)
+        worker.errored.connect(lambda e: self._show_error(f"Could not submit the batch to {profile.name}", e))
+        worker.finished.connect(finished)
+        self._batch_worker = worker
+        self.batch_btn.setText("Cancel upload")
+        self.run_on.setEnabled(False)
+        self.status.setText(f"Preparing a batch of {count} positions…")
+        worker.start()
+
+    def show_batch_jobs(self):
+        from ._batch_ui import BatchJobsDialog
+
+        if self._jobs_dialog is not None and self._jobs_dialog.isVisible():
+            self._jobs_dialog.raise_()
+            return
+        self._jobs_dialog = BatchJobsDialog(
+            self, prompts=self._qt_prompts(), on_labels=self._add_batch_labels,
+            clusters=list(self._clusters.values()),
+        )
+        self._jobs_dialog.show()
+
+    def _add_batch_labels(self, record, labels, path):
+        meta = {"ibif_axes": record.axes, "ibif_cellpose": True, "ibif_batch": record.id}
+        self.viewer.add_labels(labels, name=record.name, scale=record.scale, translate=record.translate, metadata=meta)
 
     def _stop_sessions(self):
         for session in self._sessions.values():
@@ -554,31 +668,12 @@ class CellposeWidget(QWidget):
             self.process.cancel()  # stops Cellpose at once; the model is reloaded after
             self.status.setText("Cancelling…")
             return
-        layer = self._layer(self.image.currentText())
-        if layer is None:
-            self.status.setText("Choose an image layer first.")
+        req = self._prepare()
+        if req is None:
             return
-        nuc = self._layer(self.nuclei.currentText())
-        if nuc is not None and nuc.data.shape != layer.data.shape:
-            self.status.setText("The nuclear channel must have the same shape as the image.")
-            return
-        params = self._params()
-        params["model"] = params["model"] or _cellpose.default_model()
-        axes = layer_axes(layer)
-        keep = "ZYX" if "Z" in axes else "YX"
-        region = self._layer(self.region.currentText())
-        z_range = (self.z_first.value(), self.z_last.value()) if "Z" in axes else None
-        crop = region_crop(layer, axes, region, z_range)
-        if crop is None:
-            self.status.setText(
-                "Nothing to segment: the region is empty or outside the image, "
-                "or the Z range is empty."
-            )
-            return
-        mask = None
-        if isinstance(region, Labels) and self.keep_inside.isChecked():
-            mask = painted_mask_yx(layer, region, crop)
-        tag = " region" if region is not None else ""
+        layer, nuc, axes, keep, params, crop, mask, tag = (
+            req[k] for k in ("layer", "nuc", "axes", "keep", "params", "crop", "mask", "tag")
+        )
         if self.scope.currentText() == SCOPE_CURRENT:
             worker = self._run_current(layer, nuc, keep, params, crop, mask, tag)
         else:
@@ -594,6 +689,58 @@ class CellposeWidget(QWidget):
         self.progress.setRange(0, 0)
         self.status.setText("Running Cellpose…")
         worker.start()
+
+    def _prepare(self):
+        """What a run segments (layer, settings, region crop and painted mask), or None
+        with the reason shown in the status line."""
+        layer = self._layer(self.image.currentText())
+        if layer is None:
+            self.status.setText("Choose an image layer first.")
+            return None
+        nuc = self._layer(self.nuclei.currentText())
+        if nuc is not None and nuc.data.shape != layer.data.shape:
+            self.status.setText("The nuclear channel must have the same shape as the image.")
+            return None
+        params = self._params()
+        params["model"] = params["model"] or _cellpose.default_model()
+        axes = layer_axes(layer)
+        keep = "ZYX" if "Z" in axes else "YX"
+        region = self._layer(self.region.currentText())
+        z_range = (self.z_first.value(), self.z_last.value()) if "Z" in axes else None
+        crop = region_crop(layer, axes, region, z_range)
+        if crop is None:
+            self.status.setText(
+                "Nothing to segment: the region is empty or outside the image, "
+                "or the Z range is empty."
+            )
+            return None
+        mask = None
+        if isinstance(region, Labels) and self.keep_inside.isChecked():
+            mask = painted_mask_yx(layer, region, crop)
+        tag = " region" if region is not None else ""
+        return dict(layer=layer, nuc=nuc, axes=axes, keep=keep, params=params, crop=crop, mask=mask, tag=tag)
+
+    @staticmethod
+    def _series(layer, nuc, axes, keep, crop):
+        """Every time point / position of `layer`, cropped: (outer axes, out_shape, translate,
+        generator of (image, nuclei)) in np.ndindex order."""
+        outer = [i for i, a in enumerate(axes) if a not in keep]
+        outer_shape = [layer.data.shape[i] for i in outer]
+        spatial = [slice(*crop[a]) if a in crop else slice(None) for a in axes]
+        out_shape = [len(range(*s.indices(n))) for s, n in zip(spatial, layer.data.shape)]
+
+        def volumes(stop=None):
+            for pos in np.ndindex(*outer_shape):
+                if stop is not None and stop.is_set():
+                    raise Cancelled()
+                index = list(spatial)
+                for i, p in zip(outer, pos):
+                    index[i] = p
+                index = tuple(index)
+                yield (np.asarray(layer.data[index]),
+                       np.asarray(nuc.data[index]) if nuc is not None else None)
+
+        return outer, out_shape, _crop_translate(layer, spatial), volumes
 
     def _run_current(self, layer, nuc, keep, params, crop, mask, tag):
         vol, kept, scale, index = current_volume(self.viewer, layer, keep=keep, crop=crop)
