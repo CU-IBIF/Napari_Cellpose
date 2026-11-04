@@ -46,6 +46,7 @@ def main(argv=None):
     viewer = napari.Viewer(title="IBIF napari")
     viewer.window.add_plugin_dock_widget(PLUGIN, "Dimensions")
     viewer.window.add_plugin_dock_widget(PLUGIN, "Cellpose 3D", tabify=True)
+    viewer.window.add_plugin_dock_widget(PLUGIN, "Secondary objects", tabify=True)
     viewer.window.add_plugin_dock_widget(PLUGIN, "Filament Tracer", tabify=True)
     for path in args.files:
         ours = path.lower().endswith((".nd2", ".czi", ".lif"))

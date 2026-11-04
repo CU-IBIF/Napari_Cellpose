@@ -14,6 +14,9 @@ contributions:
     - id: ibif-napari.filament_widget
       python_name: ibif_napari._filament_widget:FilamentWidget
       title: Filament Tracer
+    - id: ibif-napari.secondary_widget
+      python_name: ibif_napari._secondary_widget:SecondaryWidget
+      title: Secondary objects
   readers:
     - command: ibif-napari.get_reader
       filename_patterns: ["*.nd2", "*.czi", "*.lif"]
@@ -25,3 +28,5 @@ contributions:
       display_name: Cellpose 3D
     - command: ibif-napari.filament_widget
       display_name: Filament Tracer
+    - command: ibif-napari.secondary_widget
+      display_name: Secondary objects

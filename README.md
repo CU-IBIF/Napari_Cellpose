@@ -1,6 +1,6 @@
 # IBIF napari: ND2/CZI/LIF + 3D Cellpose + filament tracing
 
-[napari](https://napari.org) with four things built in, plus optional GPU help for
+[napari](https://napari.org) with five things built in, plus optional GPU help for
 Cellpose from a [facility GPU server](docs/facility-server.md) or a
 [GPU cluster](docs/cluster.md):
 
@@ -21,6 +21,14 @@ Cellpose from a [facility GPU server](docs/facility-server.md) or a
   stitching. It runs on the current time point/position or on all of them, and writes a
   labels layer. The Cellpose model is loaded in the background at startup, so the first
   run doesn't wait for it.
+- **Secondary objects panel**: builds on a first segmentation (e.g. Cellpose nuclei).
+  *Expand* grows every object by a distance without merging neighbours; *Ring* makes a
+  band around each object (gap + width); *Rim* the band just inside its edge; *Whole cells
+  from these seeds* grows each nucleus into its cell in one channel or the average of
+  several (a seeded watershed for membrane or cytoplasm stains, inside an Otsu / Li /
+  Triangle / manual foreground, optionally limited to a maximum distance), with an
+  optional cytoplasm layer (cell minus nucleus). Every new object keeps its seed's label
+  number; distances are in µm using the real voxel size, so 3D stacks work too.
 - **Filament Tracer panel**: traces neurons, microtubules and other filaments in 2D or 3D,
   automatically and/or by clicking along them. It reports Imaris-style statistics (length,
   segments, branch and terminal points, diameter, volume, straightness, branch depth,
