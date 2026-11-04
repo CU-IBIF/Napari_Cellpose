@@ -86,27 +86,48 @@ def _project(mask, n):
     return mask
 
 
-def painted_mask_yx(image, region, crop):
-    """Painted area of a labels region on the image's YX grid inside `crop`, or None
-    (shapes regions use their bounding box only)."""
+def painted_mask(image, region, crop):
+    """Painted area of a labels region on the image's grid inside `crop`, or None (shapes
+    regions use their bounding box only).
+
+    A region painted in 3D (different shapes on different planes) gives a Z Y X mask; one
+    painted on a single plane, or copied to every plane of the Z range, gives a Y X mask
+    used on every plane.
+    """
     if region is None or region._type_string != "labels":
         return None
     mask = _project(np.asarray(region.data) != 0, 2 if np.ndim(region.data) < 3 else 3)
     if mask.ndim == 3:
+        painted = mask[mask.any(axis=(1, 2))]
+        if "Z" in crop and len(painted) > 1 and not (painted == painted[:1]).all():
+            return _resample(image, region, mask, [crop["Z"], crop["Y"], crop["X"]])
         mask = mask.any(axis=0)
-    (y0, y1), (x0, x1) = crop["Y"], crop["X"]
-    yy, xx = np.meshgrid(np.arange(y0, y1), np.arange(x0, x1), indexing="ij")
-    world = _to_world(image, np.stack([yy, xx], axis=-1), 2)
-    ry, rx = np.round(_to_image(region, world, 2)).astype(int).transpose(2, 0, 1)
-    inside = (ry >= 0) & (ry < mask.shape[0]) & (rx >= 0) & (rx < mask.shape[1])
-    out = np.zeros(yy.shape, bool)
-    out[inside] = mask[ry[inside], rx[inside]]
-    return out
+    return _resample(image, region, mask, [crop["Y"], crop["X"]])
+
+
+def _resample(image, region, mask, ranges):
+    """`mask` (the region's last len(ranges) axes) on the image's pixels in `ranges`."""
+    n = len(ranges)
+    out = np.ones([b - a for a, b in ranges], bool)
+    index = []
+    for k, (a, b) in enumerate(ranges):
+        axis = k - n  # from the end
+        world = np.arange(a, b) * image.scale[axis] + image.translate[axis]
+        r = np.round((world - region.translate[axis]) / region.scale[axis]).astype(int)
+        inside = (r >= 0) & (r < mask.shape[axis])
+        shape = [1] * n
+        shape[k] = len(r)
+        out &= inside.reshape(shape)
+        index.append(np.clip(r, 0, mask.shape[axis] - 1))
+    return out & mask[np.ix_(*index)]
+
+
+painted_mask_yx = painted_mask  # older name
 
 
 def keep_inside(labels, mask_yx, fraction=0.5):
-    """Remove objects with less than `fraction` of their pixels inside `mask_yx`
-    (applied to every Z plane)."""
+    """Remove objects with less than `fraction` of their pixels inside the mask: a Y X
+    mask applies to every Z plane, a Z Y X mask to the volume."""
     if mask_yx is None or not labels.any():
         return labels
     inside_mask = np.broadcast_to(mask_yx, labels.shape)
@@ -123,7 +144,8 @@ def add_region_layer(viewer, image, axes, z_range, on_range_grown=None):
     """Add a labels layer over `image` (axis letters `axes`) to paint a region on.
 
     For a Z stack the layer is 3D: what is painted on one plane is shown (and used) on
-    exactly the planes of `z_range`. Returns (layer, ZExtendedRegion or None).
+    exactly the planes of `z_range`, until it is painted with the 3D brush on the image
+    (then it keeps the shape painted). Returns (layer, ZExtendedRegion or None).
     """
     spatial = [axes.index(a) for a in ("ZYX" if "Z" in axes else "YX")]
     shape = tuple(image.data.shape[i] for i in spatial)
@@ -148,6 +170,9 @@ class ZExtendedRegion:
     Painting or erasing on any plane in the range changes the footprint on all of them;
     painting on a plane outside the range calls `on_range_grown(first, last)` so the
     range can be widened to include it. Call `set_range` when the range changes.
+
+    Once the layer is painted in 3D (metadata "ibif_region_3d", set by the 3D brush) it
+    is left as painted.
     """
 
     def __init__(self, layer, z_range, on_range_grown=None):
@@ -174,9 +199,14 @@ class ZExtendedRegion:
         first, last = self.z_range
         return range(max(first, 0), min(last, self.layer.data.shape[0] - 1) + 1)
 
+    @property
+    def free(self):
+        return bool((self.layer.metadata or {}).get("ibif_region_3d"))
+
     def set_range(self, first, last):
         new = (first, last) if first <= last else None
-        if new == self.z_range:
+        if new == self.z_range or (self.free and self.z_range is not None):
+            self.z_range = new
             return
         self.z_range = new
         data = self.layer.data
@@ -187,6 +217,8 @@ class ZExtendedRegion:
         self.layer.refresh()
 
     def _on_paint(self, event=None):
+        if self.free:
+            return
         data = self.layer.data
         # napari may announce an edit before writing it (single edits) or after (brush
         # strokes); applying its (indices, old, new) records first handles both.

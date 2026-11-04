@@ -6,6 +6,7 @@ from napari.layers import Image
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -57,17 +58,27 @@ class DimensionsWidget(QWidget):
         view.addWidget(self.btn_extract)
 
         # Drawing labels in the 3D view: napari's brush there only re-paints existing
-        # labels, so new ones are drawn on a Z plane, shown through the image.
-        from ._draw3d import DrawingPlane
+        # labels; the 3D brush paints on the image surface or on a Z plane instead.
+        from ._draw3d import BRUSH_MODES, PLANE, brush_for
 
-        self.plane = DrawingPlane(self.viewer)
-        self.draw_plane = QCheckBox("Draw labels on a plane (3D)")
-        self.draw_plane.setToolTip(
-            "In the 3D view, the image shows one Z plane and the labels brush paints on it. "
-            "Move the plane with the slider below."
+        self.plane = brush_for(self.viewer)
+        brush_row = QHBoxLayout()
+        brush_row.addWidget(QLabel("3D brush"))
+        self.brush_mode = QComboBox()
+        for text, mode in BRUSH_MODES.items():
+            self.brush_mode.addItem(text, mode)
+        self.brush_mode.setToolTip(
+            "How the labels brush paints in the 3D view.\n"
+            "On the image: a ball where the mouse points at the signal you see (rotate the "
+            "view to paint around an object).\n"
+            "On a Z plane: the image shows one Z plane and the brush paints a disc on it; "
+            "move the plane with the slider below.\n"
+            "napari default: only re-paints existing labels."
         )
-        self.draw_plane.toggled.connect(self._toggle_plane)
-        view.addWidget(self.draw_plane)
+        self.brush_mode.setCurrentIndex(max(self.brush_mode.findData(self.plane.mode), 0))
+        self.brush_mode.currentIndexChanged.connect(self._brush_mode_changed)
+        brush_row.addWidget(self.brush_mode, 1)
+        view.addLayout(brush_row)
         plane_row = QHBoxLayout()
         self.plane_slider = QSlider(Qt.Horizontal)
         self.plane_slider.valueChanged.connect(self._move_plane)
@@ -80,6 +91,7 @@ class DimensionsWidget(QWidget):
         self._plane_widgets = (self.plane_slider, self.plane_label)
         for w in self._plane_widgets:
             w.setEnabled(False)
+        self._PLANE = PLANE
         layout.addWidget(view_box)
         layout.addStretch(1)
 
@@ -175,15 +187,23 @@ class DimensionsWidget(QWidget):
 
     # ---- drawing plane ------------------------------------------------------------------
 
-    def _toggle_plane(self, on):
-        if not on:
-            self.plane.disable()
+    def set_brush_mode(self, mode):
+        """Switch the 3D brush ("surface", "plane" or "off"), as the drop-down does."""
+        self.brush_mode.setCurrentIndex(self.brush_mode.findData(mode))
+
+    def _brush_mode_changed(self, index):
+        mode = self.brush_mode.itemData(index)
+        if mode != self._PLANE:
+            try:
+                self.plane.set_mode(mode)
+            except RuntimeError:
+                pass
             for w in self._plane_widgets:
                 w.setEnabled(False)
             self.plane_label.clear()
             return
         if self.viewer.dims.ndim < 3 or self.plane.z_axis() is None:
-            self.draw_plane.setChecked(False)
+            self.set_brush_mode(self.plane.mode if self.plane.mode != self._PLANE else "surface")
             return
         self._set_ndisplay(3)
         axis = self.plane.z_axis()

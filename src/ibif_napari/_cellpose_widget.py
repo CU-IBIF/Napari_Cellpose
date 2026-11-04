@@ -29,7 +29,7 @@ import logging
 from . import _cellpose
 from ._process import Cancelled, get_process
 from ._remote import RemoteProcess, load_servers
-from ._region import add_region_layer, keep_inside, painted_mask_yx, region_crop
+from ._region import add_region_layer, keep_inside, painted_mask, region_crop
 from ._util import current_volume, layer_axes
 
 MODE_3D = "3D (true 3D flows)"
@@ -49,6 +49,9 @@ class CellposeWidget(QWidget):
         self._preload_worker = None
         self._cancelling = False
         self._region_syncs = []  # drawn 3D regions that follow the Z planes setting
+        from ._draw3d import brush_for
+
+        brush_for(self.viewer)  # labels (e.g. a region) can be painted in the 3D view
         self._sessions = {}  # cluster label -> connected ClusterSession
         self._connect_worker = None
         self._connecting = None
@@ -132,7 +135,11 @@ class CellposeWidget(QWidget):
             "Segment only this area: a Labels layer (painted) or a Shapes layer (rectangle)"
         )
         draw = QPushButton("Draw…")
-        draw.setToolTip("Add a layer to paint the area to segment (applies to all Z planes)")
+        draw.setToolTip(
+            "Add a layer to paint the area to segment. In 2D what you paint is used on all "
+            "the Z planes below; in the 3D view the brush paints a ball on the image and the "
+            "region keeps that 3D shape"
+        )
         draw.clicked.connect(self.add_region_layer)
         region_row.addWidget(self.region, 1)
         region_row.addWidget(draw)
@@ -625,7 +632,8 @@ class CellposeWidget(QWidget):
         )
         if sync is not None:
             self._region_syncs.append(sync)
-            where = "copied to every plane of the Z planes range below"
+            where = ("in 2D it is copied to every plane of the Z planes range below; in the 3D "
+                     "view the brush paints balls on the image and the region keeps that shape")
         else:
             where = "the area to segment"
         self.viewer.layers.selection.active = region
@@ -716,7 +724,7 @@ class CellposeWidget(QWidget):
             return None
         mask = None
         if isinstance(region, Labels) and self.keep_inside.isChecked():
-            mask = painted_mask_yx(layer, region, crop)
+            mask = painted_mask(layer, region, crop)
         tag = " region" if region is not None else ""
         return dict(layer=layer, nuc=nuc, axes=axes, keep=keep, params=params, crop=crop, mask=mask, tag=tag)
 

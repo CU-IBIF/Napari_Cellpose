@@ -15,9 +15,18 @@ Cellpose from a [facility GPU server](docs/facility-server.md) or a
 - **Dimensions panel**: labelled sliders for time, stage position and Z. Time is shown in
   s/min and Z in µm. It also has channel on/off switches, a 2D/3D view toggle, a max
   projection over Z, and "Extract current time/position", which copies the current
-  volume out as new layers. **Draw labels on a plane (3D)** lets you draw new labels in
-  the 3D view: the image shows one Z plane (moved with the *Plane Z* slider) and the
-  brush paints on it. napari's own brush in 3D only re-paints existing labels.
+  volume out as new layers.
+- **Painting labels in the 3D view** works on any labels layer (napari's own brush in 3D
+  only re-paints existing labels). The *3D brush* setting in the Dimensions panel picks
+  how:
+  - **On the image** (the default): the brush paints a ball where the mouse points at
+    the signal you see (the brightest point for a max projection, otherwise the front
+    of the signal). The ball is round in µm, so it covers fewer planes when Z steps are
+    larger than pixels. Rotate the view to paint around an object. Erasing removes the
+    label in front.
+  - **On a Z plane**: the image shows one Z plane (moved with the *Plane Z* slider) and
+    the brush paints a disc on it.
+  - **napari default**: napari's own brush.
 - **Cellpose 3D panel**: segments the selected channel, optionally with a nuclear channel.
   You can run true 3D (anisotropy is filled in from the voxel size) or 2D per plane with
   stitching. It runs on the current time point/position or on all of them, and writes a
@@ -113,6 +122,12 @@ segment just the cells you care about:
    - Erasing or undoing on one plane applies to all of them.
    - Changing *Z planes* moves the shape to the new planes.
    - Painting on a plane outside the range widens the range to include it.
+
+   **Or paint it in 3D:** switch to the 3D view and paint on the image. The brush paints
+   balls on the cells you point at, and the region keeps that 3D shape instead of
+   being copied to every plane. The *Z planes* setting then only limits it. With *Drop
+   cells mostly outside the painted area* ticked, cells mostly outside the painted 3D
+   volume are removed.
 
    Alternatively pick an existing Labels layer, or a Shapes layer with a rectangle, as
    the region.
