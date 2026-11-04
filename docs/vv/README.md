@@ -34,7 +34,7 @@ Useful options for `run` and `all`:
 
 | Option | What it does |
 |---|---|
-| `--quick` (`generate`, `all`) | Smaller scenes. The full suite takes about 10–20 min on a CPU, the quick one a few minutes. |
+| `--quick` (`generate`, `all`) | Smaller scenes. The full suite with Cellpose takes about 35 min on a 4-core CPU (GitHub's runner), much less on a GPU; the quick one is a few times faster. |
 | `--backend cellpose` | The default. Uses the plugin's Cellpose segmentation with the panel's defaults. |
 | `--backend baseline` | A classical threshold + watershed segmenter. It needs no model weights, so it can try the suite anywhere; it does **not** verify Cellpose. |
 | `--backend truth` | An oracle that returns the truth. Every segmentation metric must then be perfect: a self-check of the suite. |
