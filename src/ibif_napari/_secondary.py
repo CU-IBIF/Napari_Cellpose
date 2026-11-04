@@ -1,0 +1,162 @@
+"""Secondary objects from a first segmentation (e.g. Cellpose nuclei).
+
+- `expand`: grow every object by a distance, without overlapping its neighbours.
+- `ring`: a band around every object (gap + width), or just inside its edge.
+- `seeded_cells`: whole cells from seeds (nuclei) in another channel, by a seeded
+  watershed inside a thresholded foreground (like CellProfiler's IdentifySecondaryObjects).
+
+Every secondary object keeps the label number of the object it came from, so nucleus 17
+and cell 17 belong together. Distances are in physical units with per-axis `spacing`
+(e.g. µm for Z, Y, X), so anisotropic 3D stacks are handled correctly.
+"""
+from __future__ import annotations
+
+import numpy as np
+from scipy import ndimage as ndi
+
+THRESHOLDS = ("otsu", "li", "triangle", "manual", "none")
+CHANNEL_KINDS = ("membrane", "cytoplasm", "distance")
+
+
+def _spacing(labels, spacing):
+    if spacing is None:
+        return (1.0,) * labels.ndim
+    spacing = tuple(float(s) for s in spacing)
+    if len(spacing) != labels.ndim:
+        raise ValueError(f"spacing has {len(spacing)} values for a {labels.ndim}D image")
+    return spacing
+
+
+def nearest_object(labels, spacing=None):
+    """(label of the nearest object, distance to it) for every pixel; objects map to
+    themselves at distance 0."""
+    background = labels == 0
+    if not background.any():
+        return labels.copy(), np.zeros(labels.shape)
+    if background.all():
+        return labels.copy(), np.full(labels.shape, np.inf)
+    distance, index = ndi.distance_transform_edt(background, sampling=_spacing(labels, spacing),
+                                                 return_indices=True)
+    return labels[tuple(index)], distance
+
+
+def expand(labels, distance, spacing=None):
+    """Grow every object by `distance`; where two objects meet, each pixel goes to the
+    nearer one (no overlap, no merging)."""
+    labels = np.asarray(labels)
+    nearest, dist = nearest_object(labels, spacing)
+    out = np.where(dist <= distance, nearest, 0)
+    return out.astype(labels.dtype, copy=False)
+
+
+def ring(labels, width, gap=0.0, spacing=None, inside=False):
+    """A band of `width` around each object, starting `gap` from its edge.
+
+    With `inside=True` the band is inside each object instead: the pixels within `width`
+    of its edge (a rim or shell), with `gap` ignored.
+    """
+    labels = np.asarray(labels)
+    sp = _spacing(labels, spacing)
+    if inside:
+        from skimage.segmentation import find_boundaries
+
+        # Distance inside each object to its own edge (background or another object).
+        edge = find_boundaries(labels, mode="inner") & (labels > 0)
+        if not edge.any():
+            return np.zeros_like(labels)
+        dist = ndi.distance_transform_edt(~edge, sampling=sp)
+        return np.where((labels > 0) & (dist < width), labels, 0).astype(labels.dtype, copy=False)
+    nearest, dist = nearest_object(labels, sp)
+    band = (labels == 0) & (dist > gap) & (dist <= gap + width)
+    return np.where(band, nearest, 0).astype(labels.dtype, copy=False)
+
+
+def combine_channels(channels):
+    """Average of the channels after scaling each to 0-1 (0.5th-99.8th percentile), so a
+    dim and a bright stain count equally."""
+    out = None
+    for c in channels:
+        c = np.asarray(c, dtype=np.float32)
+        lo, hi = np.percentile(c, (0.5, 99.8))
+        scaled = np.clip((c - lo) / (hi - lo), 0, 1) if hi > lo else np.zeros_like(c)
+        out = scaled if out is None else out + scaled
+    if out is None:
+        raise ValueError("choose at least one channel")
+    return out / len(channels)
+
+
+def foreground(image, method="otsu", value=None, factor=1.0):
+    """Pixels belonging to cells: image above a threshold (times `factor`).
+    `method` is otsu / li / triangle, manual (`value`), or none (everything)."""
+    if method == "none":
+        return np.ones(image.shape, bool), None
+    if method == "manual":
+        if value is None:
+            raise ValueError("enter a threshold value")
+        threshold = float(value)
+    else:
+        from skimage import filters
+
+        func = {"otsu": filters.threshold_otsu, "li": filters.threshold_li,
+                "triangle": filters.threshold_triangle}[method]
+        threshold = float(func(image)) * factor
+    return image > threshold, threshold
+
+
+def seeded_cells(seeds, image, spacing=None, kind="membrane", threshold="otsu", value=None,
+                 factor=1.0, max_distance=None, smooth=1.0):
+    """Whole cells grown from `seeds` (e.g. nuclei labels) in `image` (one channel, or the
+    combined channels), keeping each seed's label number.
+
+    kind: "membrane" (bright cell borders: the watershed runs on the image),
+          "cytoplasm" (bright cell interior: it runs on the image's gradient), or
+          "distance" (ignore intensity: each foreground pixel goes to the nearest seed).
+    The cells are limited to the foreground (`threshold`, see `foreground`) and, if given,
+    to `max_distance` from their seed. `smooth` is a Gaussian sigma in the same units as
+    `spacing`. Returns (cells, threshold used).
+    """
+    from skimage import filters
+    from skimage.segmentation import watershed
+
+    seeds = np.asarray(seeds)
+    image = np.asarray(image, dtype=np.float32)
+    if image.shape != seeds.shape:
+        raise ValueError(f"the channel ({image.shape}) and the seeds ({seeds.shape}) differ in size")
+    if kind not in CHANNEL_KINDS:
+        raise ValueError(f"unknown channel kind {kind!r}")
+    sp = _spacing(seeds, spacing)
+    if smooth:
+        image = ndi.gaussian_filter(image, sigma=[smooth / s for s in sp])
+    mask, used = foreground(image, threshold, value, factor)
+    mask |= seeds > 0
+    nearest, dist = nearest_object(seeds, sp)
+    if max_distance:
+        mask &= dist <= max_distance
+    if not seeds.any():
+        return np.zeros_like(seeds), used
+    if kind == "distance":
+        cells = np.where(mask, nearest, 0)
+    else:
+        landscape = image if kind == "membrane" else filters.sobel(image)
+        cells = watershed(landscape, markers=seeds, mask=mask)
+    # A pixel is only kept if it is connected to its own seed (no stray islands).
+    return _connected_to_seed(cells, seeds).astype(seeds.dtype, copy=False), used
+
+
+def _connected_to_seed(cells, seeds):
+    out = np.zeros_like(cells)
+    for label, sl in enumerate(ndi.find_objects(cells), start=1):
+        if sl is None:
+            continue
+        piece = cells[sl] == label
+        parts, n = ndi.label(piece)
+        if n > 1:
+            keep = np.unique(parts[(seeds[sl] == label) & piece])
+            piece = np.isin(parts, keep[keep > 0])
+        out[sl][piece] = label
+    return out
+
+
+def cytoplasm(cells, nuclei):
+    """Cells minus their nuclei."""
+    return np.where(nuclei > 0, 0, cells).astype(cells.dtype, copy=False)

@@ -19,7 +19,7 @@ PLUGIN = "ibif-napari"
 
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="ibif-napari", description=__doc__.splitlines()[0])
-    parser.add_argument("files", nargs="*", help="ND2, CZI, LIF (or any napari-readable) files to open")
+    parser.add_argument("files", nargs="*", help="ND2, CZI, LIF files, .ibif workspaces (or any napari-readable files) to open")
     parser.add_argument("--model", help="Cellpose model to preload (default: the newest built-in)")
     parser.add_argument("--no-preload", action="store_true", help="don't load Cellpose at startup")
     parser.add_argument(
@@ -46,9 +46,12 @@ def main(argv=None):
     viewer = napari.Viewer(title="IBIF napari")
     viewer.window.add_plugin_dock_widget(PLUGIN, "Dimensions")
     viewer.window.add_plugin_dock_widget(PLUGIN, "Cellpose 3D", tabify=True)
+    viewer.window.add_plugin_dock_widget(PLUGIN, "Secondary objects", tabify=True)
+    viewer.window.add_plugin_dock_widget(PLUGIN, "Measurements", tabify=True)
+    viewer.window.add_plugin_dock_widget(PLUGIN, "Workspace", tabify=True)
     viewer.window.add_plugin_dock_widget(PLUGIN, "Filament Tracer", tabify=True)
     for path in args.files:
-        ours = path.lower().endswith((".nd2", ".czi", ".lif"))
+        ours = path.lower().rstrip("/\\").endswith((".nd2", ".czi", ".lif", ".ibif"))
         viewer.open(path, plugin=PLUGIN if ours else None)
     napari.run()
     return 0
