@@ -238,6 +238,21 @@ itself when unused. For a whole series, **Submit batch job** uploads it and runs
 GPU job (napari can be closed); **Batch jobs…** follows it and fetches the labels as a layer
 and a TIFF. See [docs/cluster.md](docs/cluster.md).
 
+## Verification & validation
+
+`ibif-napari-vv` checks the tool against synthetic images whose true content is known: it
+generates the test data, runs segmentation (Cellpose), secondary objects, measurements, file
+reading and workspace saving on them, scores the results with standard metrics (F1, AP, IoU,
+PQ…), and writes a report (`report.html`) that explains, requirement by requirement, why the
+tool can be trusted:
+
+```bash
+ibif-napari-vv all vv          # then open vv/results/report.html
+```
+
+The requirements, the test data and how to read the report are described in
+[docs/vv/README.md](docs/vv/README.md) and [docs/vv/requirements.md](docs/vv/requirements.md).
+
 ## Troubleshooting Cellpose
 
 - **First run downloads the model.** Cellpose 4's weights are about 1.2 GB, downloaded

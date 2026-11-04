@@ -1,0 +1,56 @@
+name: V&V (Cellpose)
+
+# Runs the verification & validation suite with real Cellpose (CPU) on synthetic data and
+# attaches the report. Runs on pull requests that touch what it checks, and by hand
+# (Actions > V&V (Cellpose) > Run workflow).
+on:
+  workflow_dispatch:
+    inputs:
+      quick:
+        description: "Smaller scenes (faster)"
+        type: boolean
+        default: false
+  pull_request:
+    paths:
+      - "src/ibif_napari/vv/**"
+      - "src/ibif_napari/_cellpose.py"
+      - "src/ibif_napari/_secondary.py"
+      - "src/ibif_napari/_measure.py"
+      - "src/ibif_napari/_region.py"
+      - "src/ibif_napari/_reader.py"
+      - "src/ibif_napari/_bioio.py"
+      - "src/ibif_napari/_czi.py"
+      - "src/ibif_napari/_lif.py"
+      - "src/ibif_napari/_workspace.py"
+      - ".github/workflows/vv.yml"
+
+jobs:
+  vv:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0 libfontconfig1 libdbus-1-3
+      # CPU-only PyTorch (the default Linux wheel bundles CUDA, several GB).
+      - run: pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install cellpose "napari[pyqt6]" nd2 bioio-czi bioio-lif pylibCZIrw skan paramiko matplotlib && pip install -e . --no-deps
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cellpose/models
+          key: cellpose-models-v1
+      - name: Generate truth, run the checks, write the report
+        run: ibif-napari-vv all vv-out --strict ${{ inputs.quick && '--quick' || '' }}
+      - name: Report summary
+        if: always()
+        run: test -f vv-out/results/report.md && cat vv-out/results/report.md >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vv-report
+          path: vv-out/results
+          if-no-files-found: ignore

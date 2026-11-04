@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ibif-napari"
-version = "0.15.0"
+version = "0.16.0"
 description = "napari with Nikon ND2, Zeiss CZI and Leica LIF support, a dimension panel, 3D Cellpose (local, facility GPU server or GPU cluster) and a filament tracer built in"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -32,11 +32,14 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-qt"]
+# V&V suite: plots and TIFF files (installed with napari[all] anyway)
+vv = ["matplotlib", "tifffile"]
 
 [project.scripts]
 ibif-napari = "ibif_napari.launcher:main"
 ibif-napari-server = "ibif_napari._server:main"
 ibif-napari-cluster = "ibif_napari._cluster:main"
+ibif-napari-vv = "ibif_napari.vv.cli:main"
 
 [project.entry-points."napari.manifest"]
 ibif-napari = "ibif_napari:napari.yaml"
