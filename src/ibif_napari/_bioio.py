@@ -80,12 +80,25 @@ def scene_layers(scenes, stem, path, stack):
     if len(scenes) > 1 and stack and same:
         stacked = da.stack([s.data for s in scenes])
         data, axes = _squeeze(*_positions_after_time(stacked, "P" + first.axes))
-        return _layers(first, data, axes, stem, path)
+        return _tag(_layers(first, data, axes, stem, path), [s.index for s in scenes], True)
     layers = []
     for s in scenes:
         data, axes = _squeeze(s.data, s.axes)
-        layers += _layers(s, data, axes, stem if len(scenes) == 1 else f"{stem} {s.name}", path)
+        name = stem if len(scenes) == 1 else f"{stem} {s.name}"
+        layers += _tag(_layers(s, data, axes, name, path), [s.index], False)
     return layers
+
+
+def _tag(layer_data, indices, stacked):
+    """Record which scene(s) a layer came from, so a saved workspace can reopen exactly
+    the same selection (and names) without asking."""
+    for _, kwargs, _ in layer_data:
+        metas = kwargs.get("metadata")
+        for meta in metas if isinstance(metas, list) else [metas]:
+            if isinstance(meta, dict):
+                meta["ibif_scenes"] = list(indices)
+                meta["ibif_stacked"] = stacked
+    return layer_data
 
 
 def _layers(scene, data, axes, name, path):

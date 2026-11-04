@@ -20,7 +20,7 @@ from qtpy.QtWidgets import (
 )
 
 from . import _secondary
-from ._util import current_data_index
+from ._util import aligned_image, spatial_ndim  # noqa: F401  (aligned_image is re-exported)
 
 EXPAND = "Expand (dilate)"
 RING = "Ring around each object"
@@ -33,43 +33,6 @@ KINDS = {
 }
 THRESHOLDS = {"Otsu": "otsu", "Li": "li", "Triangle": "triangle", "Manual": "manual",
               "None (whole image)": "none"}
-
-
-def spatial_ndim(layer):
-    axes = (layer.metadata or {}).get("ibif_axes")
-    if axes and len(axes) == layer.ndim:
-        return sum(a in "ZYX" for a in axes)
-    return 3 if layer.ndim >= 3 else 2
-
-
-def aligned_image(viewer, image, labels, lead_index):
-    """The pixels of `image` under one block of `labels` (its spatial volume at
-    `lead_index` of its time/position axes). Image axes the labels do not have follow
-    the viewer's current position. The two must share pixel size."""
-    n_sp = spatial_ndim(labels)
-    current = current_data_index(viewer, image)
-    index = list(current)
-    for k in range(1, image.ndim + 1):
-        ia, la = image.ndim - k, labels.ndim - k
-        if la < 0:
-            continue
-        ls, isc = float(labels.scale[la]), float(image.scale[ia])
-        if abs(ls - isc) > 1e-6 * max(abs(ls), abs(isc), 1e-12):
-            raise ValueError(f"{image.name} and {labels.name} have different pixel sizes")
-        spatial = k <= n_sp
-        start = float(labels.translate[la]) + (0 if spatial else lead_index[la] * ls)
-        i0 = int(round((start - float(image.translate[ia])) / isc))
-        if spatial:
-            stop = i0 + labels.data.shape[la]
-            if i0 < 0 or stop > image.data.shape[ia]:
-                raise ValueError(f"{labels.name} reaches outside {image.name}")
-            index[ia] = slice(i0, stop)
-        else:
-            if not 0 <= i0 < image.data.shape[ia]:
-                raise ValueError(f"{labels.name} reaches outside {image.name}")
-            index[ia] = i0
-    data = image.data[0] if isinstance(image.data, list) else image.data
-    return np.asarray(data[tuple(index)])
 
 
 class SecondaryWidget(QWidget):
