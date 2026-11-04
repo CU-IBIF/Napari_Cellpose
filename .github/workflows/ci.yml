@@ -14,7 +14,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: sudo apt-get update && sudo apt-get install -y libegl1 libxkbcommon-x11-0 libxcb-cursor0
+      - run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0 libfontconfig1 libdbus-1-3
       # The tests stub Cellpose, so skip installing it (and PyTorch) here.
-      - run: pip install "napari[pyqt5]" nd2 bioio-czi bioio-lif skan paramiko pytest pytest-qt && pip install -e . --no-deps
+      # napari 0.10+ needs Qt 6.7+ (its pyqt5 extra is gone). pylibCZIrw writes test CZI files.
+      - run: pip install "napari[pyqt6]" nd2 bioio-czi bioio-lif pylibCZIrw skan paramiko pytest pytest-qt && pip install -e . --no-deps
       - run: pytest -q

@@ -1,6 +1,6 @@
 # IBIF napari: ND2/CZI/LIF + 3D Cellpose + filament tracing
 
-[napari](https://napari.org) with four things built in, plus optional GPU help for
+[napari](https://napari.org) with seven things built in, plus optional GPU help for
 Cellpose from a [facility GPU server](docs/facility-server.md) or a
 [GPU cluster](docs/cluster.md):
 
@@ -21,6 +21,27 @@ Cellpose from a [facility GPU server](docs/facility-server.md) or a
   stitching. It runs on the current time point/position or on all of them, and writes a
   labels layer. The Cellpose model is loaded in the background at startup, so the first
   run doesn't wait for it.
+- **Secondary objects panel**: builds on a first segmentation (e.g. Cellpose nuclei).
+  *Expand* grows every object by a distance without merging neighbours; *Ring* makes a
+  band around each object (gap + width); *Rim* the band just inside its edge; *Whole cells
+  from these seeds* grows each nucleus into its cell in one channel or the average of
+  several (a seeded watershed for membrane or cytoplasm stains, inside an Otsu / Li /
+  Triangle / manual foreground, optionally limited to a maximum distance), with an
+  optional cytoplasm layer (cell minus nucleus). Every new object keeps its seed's label
+  number; distances are in µm using the real voxel size, so 3D stacks work too.
+- **Measurements panel**: tick objects layers (e.g. nuclei, cells, cytoplasm) and channels,
+  then **Measure**. For every object and time point / position: volume or area (µm³ / µm²),
+  equivalent diameter, centroid (µm), and per channel the mean, median, min, max,
+  standard deviation and sum (integrated intensity). Objects with the same label number
+  (nucleus 17, cell 17, cytoplasm 17) are joined into one row. The table is sortable;
+  click a row to go to the object. Save it as CSV or Excel.
+- **Workspace panel**: **Save workspace…** keeps everything to come back to or share in
+  one `.ibif` folder: all layers with their display settings, the view and the
+  measurement tables. Microscope files (ND2 / CZI / LIF) are referenced, not copied, and
+  are found again when the workspace is moved together with the data; tick *Include
+  copies of the images* to share with someone who does not have them. **Open
+  workspace…** (or drag the `.ibif` folder onto napari, or `ibif-napari my.ibif`) restores
+  it. **Save selected layers…** writes images and labels as TIFF, shapes and points as CSV.
 - **Filament Tracer panel**: traces neurons, microtubules and other filaments in 2D or 3D,
   automatically and/or by clicking along them. It reports Imaris-style statistics (length,
   segments, branch and terminal points, diameter, volume, straightness, branch depth,
