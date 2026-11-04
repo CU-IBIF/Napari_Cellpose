@@ -177,3 +177,17 @@ def test_cli(tmp_path, capsys):
     limits.write_text(json.dumps({"seg2d_iou": 1.01}))  # impossible: must fail
     assert main(["run", str(tmp_path / "truth"), str(tmp_path / "res2"), "--backend", "truth",
                  "--only", "VV-SEG-01", "--limits", str(limits)]) == 1
+
+
+def test_broken_cellpose_install_is_reported_not_raised(monkeypatch):
+    # A PyTorch / torchvision mismatch raises RuntimeError on import, not ImportError.
+    from ibif_napari import _cellpose
+    from ibif_napari.vv.backends import CellposeBackend
+
+    def broken():
+        raise RuntimeError("operator torchvision::nms does not exist")
+
+    monkeypatch.setattr(_cellpose, "default_model", broken)
+    ok, why = CellposeBackend().available()
+    assert not ok and "torchvision::nms" in why
+    assert CellposeBackend().describe()["backend"] == "cellpose"

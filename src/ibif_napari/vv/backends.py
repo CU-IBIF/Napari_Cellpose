@@ -45,10 +45,9 @@ class CellposeBackend(Backend):
         try:
             from .. import _cellpose
 
-            import cellpose  # noqa: F401
-        except Exception as e:  # pragma: no cover - depends on the computer
-            return False, f"Cellpose is not installed ({e})"
-        model = self.model or _cellpose.default_model()
+            model = self.model or _cellpose.default_model()
+        except Exception as e:  # not installed, or a broken PyTorch / torchvision install
+            return False, f"Cellpose cannot be imported ({type(e).__name__}: {e})"
         if model is None:
             return False, "no Cellpose model found"
         try:
@@ -61,6 +60,10 @@ class CellposeBackend(Backend):
     def describe(self):
         from .. import _cellpose
 
+        try:
+            model = self.model or _cellpose.default_model()
+        except Exception:
+            model = self.model
         try:
             import cellpose
 
@@ -75,7 +78,7 @@ class CellposeBackend(Backend):
             torch_version = torch.__version__
         except Exception:
             device, torch_version = "cpu", None
-        return {"backend": self.name, "model": self.model or _cellpose.default_model(),
+        return {"backend": self.name, "model": model,
                 "cellpose": version, "torch": torch_version, "device": device,
                 "diameter": self.diameter or "auto"}
 
