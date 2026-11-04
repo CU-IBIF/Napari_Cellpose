@@ -17,6 +17,9 @@ contributions:
     - id: ibif-napari.secondary_widget
       python_name: ibif_napari._secondary_widget:SecondaryWidget
       title: Secondary objects
+    - id: ibif-napari.measure_widget
+      python_name: ibif_napari._measure_widget:MeasureWidget
+      title: Measurements
   readers:
     - command: ibif-napari.get_reader
       filename_patterns: ["*.nd2", "*.czi", "*.lif"]
@@ -30,3 +33,5 @@ contributions:
       display_name: Filament Tracer
     - command: ibif-napari.secondary_widget
       display_name: Secondary objects
+    - command: ibif-napari.measure_widget
+      display_name: Measurements

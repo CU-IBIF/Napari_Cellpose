@@ -133,6 +133,7 @@ def add_region_layer(viewer, image, axes, z_range, on_range_grown=None):
         scale=[image.scale[i] for i in spatial],
         translate=[image.translate[i] for i in spatial],
         opacity=0.4,
+        metadata={"ibif_region": True},
     )
     region.brush_size = max(10, min(shape[-2:]) // 15)
     region.mode = "paint"
