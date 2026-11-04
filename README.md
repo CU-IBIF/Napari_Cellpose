@@ -15,7 +15,9 @@ Cellpose from a [facility GPU server](docs/facility-server.md) or a
 - **Dimensions panel**: labelled sliders for time, stage position and Z. Time is shown in
   s/min and Z in µm. It also has channel on/off switches, a 2D/3D view toggle, a max
   projection over Z, and "Extract current time/position", which copies the current
-  volume out as new layers.
+  volume out as new layers. **Draw labels on a plane (3D)** lets you draw new labels in
+  the 3D view: the image shows one Z plane (moved with the *Plane Z* slider) and the
+  brush paints on it. napari's own brush in 3D only re-paints existing labels.
 - **Cellpose 3D panel**: segments the selected channel, optionally with a nuclear channel.
   You can run true 3D (anisotropy is filled in from the voxel size) or 2D per plane with
   stitching. It runs on the current time point/position or on all of them, and writes a

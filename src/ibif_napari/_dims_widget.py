@@ -55,6 +55,31 @@ class DimensionsWidget(QWidget):
         self.btn_extract = QPushButton("Extract current time/position as new layers")
         self.btn_extract.clicked.connect(self.extract_current)
         view.addWidget(self.btn_extract)
+
+        # Drawing labels in the 3D view: napari's brush there only re-paints existing
+        # labels, so new ones are drawn on a Z plane, shown through the image.
+        from ._draw3d import DrawingPlane
+
+        self.plane = DrawingPlane(self.viewer)
+        self.draw_plane = QCheckBox("Draw labels on a plane (3D)")
+        self.draw_plane.setToolTip(
+            "In the 3D view, the image shows one Z plane and the labels brush paints on it. "
+            "Move the plane with the slider below."
+        )
+        self.draw_plane.toggled.connect(self._toggle_plane)
+        view.addWidget(self.draw_plane)
+        plane_row = QHBoxLayout()
+        self.plane_slider = QSlider(Qt.Horizontal)
+        self.plane_slider.valueChanged.connect(self._move_plane)
+        self.plane_label = QLabel()
+        self.plane_label.setMinimumWidth(110)
+        plane_row.addWidget(QLabel("Plane Z"))
+        plane_row.addWidget(self.plane_slider, 1)
+        plane_row.addWidget(self.plane_label)
+        view.addLayout(plane_row)
+        self._plane_widgets = (self.plane_slider, self.plane_label)
+        for w in self._plane_widgets:
+            w.setEnabled(False)
         layout.addWidget(view_box)
         layout.addStretch(1)
 
@@ -147,6 +172,39 @@ class DimensionsWidget(QWidget):
             if layer.metadata and layer.metadata.get(key):
                 return layer.metadata[key]
         return None
+
+    # ---- drawing plane ------------------------------------------------------------------
+
+    def _toggle_plane(self, on):
+        if not on:
+            self.plane.disable()
+            for w in self._plane_widgets:
+                w.setEnabled(False)
+            self.plane_label.clear()
+            return
+        if self.viewer.dims.ndim < 3 or self.plane.z_axis() is None:
+            self.draw_plane.setChecked(False)
+            return
+        self._set_ndisplay(3)
+        axis = self.plane.z_axis()
+        self.plane.enable()
+        dims = self.viewer.dims
+        self.plane_slider.blockSignals(True)
+        self.plane_slider.setRange(0, max(dims.nsteps[axis] - 1, 0))
+        self.plane_slider.setValue(int(dims.current_step[axis]))
+        self.plane_slider.blockSignals(False)
+        for w in self._plane_widgets:
+            w.setEnabled(True)
+        self._move_plane(self.plane_slider.value())
+
+    def _move_plane(self, step):
+        start, _, size = self.plane.z_range()
+        z = start + step * size
+        self.plane.set_z(z)
+        self.plane_label.setText(f"{self.plane.z:.2f} µm ({step + 1}/{self.plane_slider.maximum() + 1})")
+        axis = self.plane.z_axis()
+        if self.viewer.dims.current_step[axis] != step:
+            self.viewer.dims.set_current_step(axis, step)  # 2D view and readouts follow
 
     def _set_ndisplay(self, n):
         if n == 3 and self.viewer.dims.ndim < 3:
