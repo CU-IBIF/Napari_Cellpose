@@ -120,6 +120,7 @@ class MeasureWidget(QWidget):
             ev.connect(self._refresh)
         self._refresh()
         self._enable_saving()
+        _measure.listen(self.viewer, self.set_tables)  # tables from a reopened workspace
 
     def _checklist(self, parent_layout, title):
         box = QVBoxLayout()
@@ -224,8 +225,14 @@ class MeasureWidget(QWidget):
 
     def set_tables(self, tables):
         """Show tables measured earlier (e.g. from a reopened workspace)."""
-        if tables:
-            self._measured({k: v for k, v in tables.items() if k != COMBINED})
+        if not tables:
+            return
+        combined = tables.get(COMBINED)
+        self._measured({k: v for k, v in tables.items() if k != COMBINED})
+        if combined is not None:  # keep the saved joined table as it was
+            self.tables[COMBINED] = combined
+            _measure.remember(self.viewer, self.tables)
+            self._show(self.view.currentText())
 
     def _show(self, name):
         self.model.set_table(self.tables.get(name))

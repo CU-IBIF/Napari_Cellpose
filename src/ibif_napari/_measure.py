@@ -19,12 +19,21 @@ _FUNCS = {
     "std": ndi.standard_deviation, "sum": ndi.sum,
 }
 
-# Latest tables per viewer, so a saved workspace includes them.
+# Latest tables per viewer, so a saved workspace includes them; panels that show them
+# listen for tables restored from a workspace.
 _tables = weakref.WeakKeyDictionary()
+_listeners = weakref.WeakKeyDictionary()
 
 
-def remember(viewer, tables):
+def remember(viewer, tables, notify=False):
     _tables[viewer] = dict(tables)
+    if notify:
+        for callback in list(_listeners.get(viewer, [])):
+            callback(dict(tables))
+
+
+def listen(viewer, callback):
+    _listeners.setdefault(viewer, []).append(callback)
 
 
 def tables_of(viewer):

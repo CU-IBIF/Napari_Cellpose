@@ -20,10 +20,19 @@ contributions:
     - id: ibif-napari.measure_widget
       python_name: ibif_napari._measure_widget:MeasureWidget
       title: Measurements
+    - id: ibif-napari.workspace_widget
+      python_name: ibif_napari._workspace_widget:WorkspaceWidget
+      title: Workspace
+    - id: ibif-napari.get_workspace_reader
+      python_name: ibif_napari._workspace:napari_get_reader
+      title: Open IBIF workspace
   readers:
     - command: ibif-napari.get_reader
       filename_patterns: ["*.nd2", "*.czi", "*.lif"]
       accepts_directories: false
+    - command: ibif-napari.get_workspace_reader
+      filename_patterns: ["*.ibif"]
+      accepts_directories: true
   widgets:
     - command: ibif-napari.dims_widget
       display_name: Dimensions
@@ -35,3 +44,5 @@ contributions:
       display_name: Secondary objects
     - command: ibif-napari.measure_widget
       display_name: Measurements
+    - command: ibif-napari.workspace_widget
+      display_name: Workspace
