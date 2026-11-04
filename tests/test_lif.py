@@ -111,3 +111,11 @@ def test_chooser_dialog(project, qtbot):
     dlg._set_all(Qt.Unchecked)
     assert dlg.selected() == []
     assert not dlg.buttons.button(QDialogButtonBox.Open).isEnabled()
+
+
+def test_time_interval_comes_from_the_time_dimension(project):
+    # bioio-lif reports a time interval only for plate scans; it is read from the file's
+    # T dimension instead (found by the V&V suite, VV-IO-02).
+    layers = read_lif(project, choose=lambda title, scenes: ([0, 1], False))
+    assert layers[0][1]["metadata"][0]["ibif_time_interval_s"] == pytest.approx(30.0)
+    assert layers[1][1]["metadata"][0]["ibif_time_interval_s"] is None  # a single time point

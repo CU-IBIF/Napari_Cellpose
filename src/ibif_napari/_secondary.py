@@ -16,6 +16,9 @@ from scipy import ndimage as ndi
 
 THRESHOLDS = ("otsu", "li", "triangle", "manual", "none")
 CHANNEL_KINDS = ("membrane", "cytoplasm", "distance")
+# Weight of the distance term in the cytoplasm watershed (per pixel, gradient scaled to 0-1).
+# Chosen with the V&V suite's synthetic cells on independent seeds (docs/vv/README.md).
+CYTOPLASM_COMPACTNESS = 0.03
 
 
 def _spacing(labels, spacing):
@@ -109,7 +112,8 @@ def seeded_cells(seeds, image, spacing=None, kind="membrane", threshold="otsu", 
     combined channels), keeping each seed's label number.
 
     kind: "membrane" (bright cell borders: the watershed runs on the image),
-          "cytoplasm" (bright cell interior: it runs on the image's gradient), or
+          "cytoplasm" (bright cell interior: a compact watershed on the image's gradient,
+          with the seeds given the intensity of the cytoplasm next to them), or
           "distance" (ignore intensity: each foreground pixel goes to the nearest seed).
     The cells are limited to the foreground (`threshold`, see `foreground`) and, if given,
     to `max_distance` from their seed. `smooth` is a Gaussian sigma in the same units as
@@ -125,6 +129,13 @@ def seeded_cells(seeds, image, spacing=None, kind="membrane", threshold="otsu", 
     if kind not in CHANNEL_KINDS:
         raise ValueError(f"unknown channel kind {kind!r}")
     sp = _spacing(seeds, spacing)
+    if kind == "cytoplasm" and seeds.any() and not seeds.all():
+        # Many cytoplasm stains leave the nucleus dark. Its edge would then be the steepest
+        # gradient around each seed, and the first seed to cross its own edge would flood
+        # the neighbouring cells. The seeds belong to their cells anyway, so give them the
+        # intensity of the nearest cytoplasm before taking the gradient.
+        _, index = ndi.distance_transform_edt(seeds > 0, sampling=sp, return_indices=True)
+        image = image[tuple(index)]
     if smooth:
         image = ndi.gaussian_filter(image, sigma=[smooth / s for s in sp])
     mask, used = foreground(image, threshold, value, factor)
@@ -136,9 +147,17 @@ def seeded_cells(seeds, image, spacing=None, kind="membrane", threshold="otsu", 
         return np.zeros_like(seeds), used
     if kind == "distance":
         cells = np.where(mask, nearest, 0)
+    elif kind == "membrane":
+        cells = watershed(image, markers=seeds, mask=mask)
     else:
-        landscape = image if kind == "membrane" else filters.sobel(image)
-        cells = watershed(landscape, markers=seeds, mask=mask)
+        # Gradient scaled to ~0-1, plus a little distance from the seed (a compact
+        # watershed, like CellProfiler's propagation): where neighbouring cells are about
+        # equally bright, noise in the gradient no longer lets one cell flood the other.
+        landscape = filters.sobel(image)
+        top = float(np.percentile(landscape[mask], 99)) if mask.any() else 0.0
+        if top > 0:
+            landscape = landscape / top
+        cells = watershed(landscape, markers=seeds, mask=mask, compactness=CYTOPLASM_COMPACTNESS)
     # A pixel is only kept if it is connected to its own seed (no stray islands).
     return _connected_to_seed(cells, seeds).astype(seeds.dtype, copy=False), used
 
