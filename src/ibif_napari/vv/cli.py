@@ -19,7 +19,7 @@ def main(argv=None):
 
     def run_args(sp):
         sp.add_argument("--backend", default="cellpose", choices=["cellpose", "baseline", "truth"],
-                        help="segmentation to test (default: cellpose, as the Cellpose 3D panel runs it)")
+                        help="segmentation to test (default: cellpose, as the Segmentation section runs it)")
         sp.add_argument("--model", help="Cellpose model (default: the panel's default model)")
         sp.add_argument("--gpu", action="store_true", help="run Cellpose on the GPU")
         sp.add_argument("--diameter", type=float, help="object diameter in pixels (default: automatic)")

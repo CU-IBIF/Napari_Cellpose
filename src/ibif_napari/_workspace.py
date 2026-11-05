@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import weakref
 from pathlib import Path
 
 import numpy as np
@@ -257,6 +258,15 @@ def _open_source(path, selection=None):
     return out
 
 
+_loaded = weakref.WeakKeyDictionary()  # viewer -> callbacks run after a workspace is loaded
+
+
+def on_loaded(viewer, callback):
+    """Call `callback()` each time a workspace is loaded into `viewer` (the IBIF panel
+    goes back to Configuration)."""
+    _loaded.setdefault(viewer, []).append(callback)
+
+
 def load_workspace(viewer, path, replace=True):
     """Open a workspace folder (or its workspace.json) into `viewer`. Returns notes on
     anything that could not be restored."""
@@ -324,6 +334,11 @@ def load_workspace(viewer, path, replace=True):
                 tables[name] = pd.read_csv(folder / rel)
     if tables:
         _measure.remember(viewer, tables, notify=True)
+    for callback in list(_loaded.get(viewer, [])):
+        try:
+            callback()
+        except Exception as e:  # a panel that has gone away must not break loading
+            notes.append(f"a panel could not be updated ({e})")
     return notes
 
 

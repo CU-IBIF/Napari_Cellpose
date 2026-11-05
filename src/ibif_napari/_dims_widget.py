@@ -1,4 +1,4 @@
-"""Dimensions panel: named sliders with physical values, channel toggles, 2D/3D, projections."""
+"""Configuration section (formerly the Dimensions panel): named sliders with physical values, channel toggles, 2D/3D, projections."""
 from __future__ import annotations
 
 import numpy as np

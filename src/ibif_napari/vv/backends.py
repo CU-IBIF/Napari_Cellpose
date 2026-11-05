@@ -1,7 +1,7 @@
 """Segmentation back-ends the V&V suite can test.
 
 * ``cellpose``: the plugin's own segmentation (``ibif_napari._cellpose.segment``, the same
-  function the Cellpose 3D panel runs in its worker process), with the panel's defaults:
+  function the Segmentation section runs in its worker process), with the panel's defaults:
   automatic diameter, flow threshold 0.4, cell probability 0, minimum size 15, and in 3D
   the anisotropy filled in from the voxel size. This is what the segmentation
   requirements are about.

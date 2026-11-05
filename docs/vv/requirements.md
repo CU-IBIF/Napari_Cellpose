@@ -9,21 +9,21 @@ Generated from `src/ibif_napari/vv/requirements.py` (`ibif-napari-vv requirement
 | VV-H-01 | Harness | Metrics are correct | V&V suite (metrics) | verification |
 | VV-IO-01 | File reading | Zeiss CZI files open with the right data and metadata | Drag-and-drop reader (.czi) | verification |
 | VV-IO-02 | File reading | Leica LIF files open the chosen image correctly | Drag-and-drop reader (.lif) with image chooser | verification |
-| VV-SEG-01 | Segmentation | 2D nuclei are found and outlined | Cellpose 3D panel (2D image) | validation |
-| VV-SEG-02 | Segmentation | 3D nuclei are found in true 3D mode | Cellpose 3D panel, mode 3D | validation |
-| VV-SEG-03 | Segmentation | 3D nuclei by 2D planes + stitching | Cellpose 3D panel, mode 2D per plane + stitch | validation |
-| VV-SEG-04 | Segmentation | Whole cells with a nuclear channel | Cellpose 3D panel, nuclear channel | validation |
-| VV-SEG-05 | Segmentation | Robust to image noise | Cellpose 3D panel | validation |
-| VV-SEG-06 | Segmentation | Segmenting a painted region | Cellpose 3D panel: Region, Draw…, Drop cells mostly outside the painted area | validation |
-| VV-SEC-01 | Secondary objects | Expand grows objects by the set distance | Secondary objects panel: Expand | verification |
-| VV-SEC-02 | Secondary objects | Rings and rims have the set gap and width | Secondary objects panel: Ring, Rim | verification |
-| VV-SEC-03 | Secondary objects | Whole cells grown from nuclei match the true cells | Secondary objects panel: Whole cells from these seeds, Also add cytoplasm | validation |
-| VV-MEAS-01 | Measurements | Object size in µm² / µm³ | Measurements panel: area / volume, equivalent diameter | verification |
-| VV-MEAS-02 | Measurements | Object centroids in µm | Measurements panel: centroid Z/Y/X (µm), click a row to go to the object | verification |
-| VV-MEAS-03 | Measurements | Intensity statistics per object | Measurements panel: <channel> mean / median / min / max / std / sum | validation |
-| VV-MEAS-04 | Measurements | Time series and joined tables | Measurements panel: T column, All objects (one row per label) | validation |
-| VV-MEAS-05 | Measurements | Measurements on segmented nuclei are accurate | Cellpose 3D panel + Measurements panel | validation |
-| VV-WS-01 | Saving | A saved workspace reopens exactly | Workspace panel: Save workspace / Open workspace | verification |
+| VV-SEG-01 | Segmentation | 2D nuclei are found and outlined | Segmentation section (2D image) | validation |
+| VV-SEG-02 | Segmentation | 3D nuclei are found in true 3D mode | Segmentation section, mode 3D | validation |
+| VV-SEG-03 | Segmentation | 3D nuclei by 2D planes + stitching | Segmentation section, mode 2D per plane + stitch | validation |
+| VV-SEG-04 | Segmentation | Whole cells with a nuclear channel | Segmentation section, nuclear channel | validation |
+| VV-SEG-05 | Segmentation | Robust to image noise | Segmentation section | validation |
+| VV-SEG-06 | Segmentation | Segmenting a painted region | Segmentation section: Region, Draw…, Drop cells mostly outside the painted area | validation |
+| VV-SEC-01 | Secondary objects | Expand grows objects by the set distance | Secondary objects section: Expand | verification |
+| VV-SEC-02 | Secondary objects | Rings and rims have the set gap and width | Secondary objects section: Ring, Rim | verification |
+| VV-SEC-03 | Secondary objects | Whole cells grown from nuclei match the true cells | Secondary objects section: Whole cells from these seeds, Also add cytoplasm | validation |
+| VV-MEAS-01 | Measurements | Object size in µm² / µm³ | Measurements section: area / volume, equivalent diameter | verification |
+| VV-MEAS-02 | Measurements | Object centroids in µm | Measurements section: centroid Z/Y/X (µm), click a row to go to the object | verification |
+| VV-MEAS-03 | Measurements | Intensity statistics per object | Measurements section: <channel> mean / median / min / max / std / sum | validation |
+| VV-MEAS-04 | Measurements | Time series and joined tables | Measurements section: T column, All objects (one row per label) | validation |
+| VV-MEAS-05 | Measurements | Measurements on segmented nuclei are accurate | Segmentation section + Measurements section | validation |
+| VV-WS-01 | Saving | A saved workspace reopens exactly | Save workspace section: Save workspace / Open workspace | verification |
 
 ## VV-H-01: Metrics are correct
 
@@ -77,7 +77,7 @@ Generated from `src/ibif_napari/vv/requirements.py` (`ibif-napari-vv requirement
 
 **Requirement.** Cellpose segmentation of a 2D nuclear image shall find the nuclei and outline them accurately.
 
-**Feature.** Cellpose 3D panel (2D image)
+**Feature.** Segmentation section (2D image)
 
 **Method.** Test on the nuclei_2d scene (SNR 12).
 
@@ -93,7 +93,7 @@ Generated from `src/ibif_napari/vv/requirements.py` (`ibif-napari-vv requirement
 
 **Requirement.** Cellpose in true 3D mode, with the anisotropy taken from the voxel size, shall find and outline nuclei in an anisotropic Z stack.
 
-**Feature.** Cellpose 3D panel, mode 3D
+**Feature.** Segmentation section, mode 3D
 
 **Method.** Test on the nuclei_3d scene (Z step 1 µm, pixels 0.5 µm).
 
@@ -108,7 +108,7 @@ Generated from `src/ibif_napari/vv/requirements.py` (`ibif-napari-vv requirement
 
 **Requirement.** Segmenting each plane and stitching the planes shall give whole 3D nuclei.
 
-**Feature.** Cellpose 3D panel, mode 2D per plane + stitch
+**Feature.** Segmentation section, mode 2D per plane + stitch
 
 **Method.** Test on the nuclei_3d scene.
 
@@ -122,7 +122,7 @@ Generated from `src/ibif_napari/vv/requirements.py` (`ibif-napari-vv requirement
 
 **Requirement.** Cellpose with a cell (cytoplasm) channel and a nuclear channel shall find and outline whole cells.
 
-**Feature.** Cellpose 3D panel, nuclear channel
+**Feature.** Segmentation section, nuclear channel
 
 **Method.** Test on the cells_2d scene.
 
@@ -137,7 +137,7 @@ Generated from `src/ibif_napari/vv/requirements.py` (`ibif-napari-vv requirement
 
 **Requirement.** Segmentation quality shall hold up as the signal-to-noise ratio (SNR) falls to levels seen in live-cell imaging.
 
-**Feature.** Cellpose 3D panel
+**Feature.** Segmentation section
 
 **Method.** Test on the same nuclei at SNR 20, 8, 4 and 2 (SNR 2 is reported only).
 
@@ -152,7 +152,7 @@ Generated from `src/ibif_napari/vv/requirements.py` (`ibif-napari-vv requirement
 
 **Requirement.** Segmenting only a painted region shall read only the region's bounding box, place the result correctly over the image, keep only objects mostly inside the painted area, and find them as well as a whole-image run does.
 
-**Feature.** Cellpose 3D panel: Region, Draw…, Drop cells mostly outside the painted area
+**Feature.** Segmentation section: Region, Draw…, Drop cells mostly outside the painted area
 
 **Method.** Test: paint a disc over part of nuclei_2d, run the panel's region steps (region_crop, painted_mask, segment, keep_inside) and compare with the true nuclei mostly inside the disc, cut to the region's bounding box (what the run sees).
 
@@ -168,7 +168,7 @@ Generated from `src/ibif_napari/vv/requirements.py` (`ibif-napari-vv requirement
 
 **Requirement.** Expand shall grow each object by the set distance in µm (anisotropic voxels included), keep its number, and give contested pixels to the nearer object.
 
-**Feature.** Secondary objects panel: Expand
+**Feature.** Secondary objects section: Expand
 
 **Method.** Test on the truth nuclei of cells_3d, against an independent distance calculation.
 
@@ -184,7 +184,7 @@ Generated from `src/ibif_napari/vv/requirements.py` (`ibif-napari-vv requirement
 
 **Requirement.** Ring shall make a band from the gap to gap + width outside each object, and Rim a band of the width inside it, in µm.
 
-**Feature.** Secondary objects panel: Ring, Rim
+**Feature.** Secondary objects section: Ring, Rim
 
 **Method.** Test on the truth nuclei of cells_3d.
 
@@ -200,7 +200,7 @@ Generated from `src/ibif_napari/vv/requirements.py` (`ibif-napari-vv requirement
 
 **Requirement.** Whole cells grown from nuclei in a cell channel shall match the true cells, each with its nucleus's number; the cytoplasm shall be the cell minus its nucleus.
 
-**Feature.** Secondary objects panel: Whole cells from these seeds, Also add cytoplasm
+**Feature.** Secondary objects section: Whole cells from these seeds, Also add cytoplasm
 
 **Method.** Test with the truth nuclei as seeds on cells_2d and cells_3d (cytoplasm channel, Otsu threshold).
 
@@ -217,7 +217,7 @@ Generated from `src/ibif_napari/vv/requirements.py` (`ibif-napari-vv requirement
 
 **Requirement.** The measured area or volume shall equal the voxel count times the voxel size, and agree with the true shape's analytic size.
 
-**Feature.** Measurements panel: area / volume, equivalent diameter
+**Feature.** Measurements section: area / volume, equivalent diameter
 
 **Method.** Test on the truth nuclei and cells of nuclei_2d and cells_3d.
 
@@ -232,7 +232,7 @@ Generated from `src/ibif_napari/vv/requirements.py` (`ibif-napari-vv requirement
 
 **Requirement.** Measured centroids shall be in µm in the image's coordinates (including its offset).
 
-**Feature.** Measurements panel: centroid Z/Y/X (µm), click a row to go to the object
+**Feature.** Measurements section: centroid Z/Y/X (µm), click a row to go to the object
 
 **Method.** Test on timelapse_3d (offset origin) through napari layers, against the analytic centres and an independent centre-of-mass calculation.
 
@@ -247,7 +247,7 @@ Generated from `src/ibif_napari/vv/requirements.py` (`ibif-napari-vv requirement
 
 **Requirement.** Mean, median, min, max, standard deviation and sum of each channel shall be exact for each object, and the mean shall estimate the true (noise-free) mean.
 
-**Feature.** Measurements panel: <channel> mean / median / min / max / std / sum
+**Feature.** Measurements section: <channel> mean / median / min / max / std / sum
 
 **Method.** Test on cells_3d (3 channels) against independent statistics, and against the noise-free image.
 
@@ -262,7 +262,7 @@ Generated from `src/ibif_napari/vv/requirements.py` (`ibif-napari-vv requirement
 
 **Requirement.** Measuring a time series shall give one row per object and time point, and the joined table shall put nucleus, cell and cytoplasm of the same number on one row.
 
-**Feature.** Measurements panel: T column, All objects (one row per label)
+**Feature.** Measurements section: T column, All objects (one row per label)
 
 **Method.** Test on timelapse_3d (3 time points, intensity rising 25% per step).
 
@@ -278,7 +278,7 @@ Generated from `src/ibif_napari/vv/requirements.py` (`ibif-napari-vv requirement
 
 **Requirement.** Measurements of segmented nuclei shall be close to those of the true nuclei.
 
-**Feature.** Cellpose 3D panel + Measurements panel
+**Feature.** Segmentation section + Measurements section
 
 **Method.** Test: segment nuclei_3d, match to the truth, compare volume and mean intensity of the matched nuclei.
 
@@ -293,7 +293,7 @@ Generated from `src/ibif_napari/vv/requirements.py` (`ibif-napari-vv requirement
 
 **Requirement.** Saving the workspace and opening it again shall restore every image and labels layer bit for bit, with its voxel size, offset and the measurement tables.
 
-**Feature.** Workspace panel: Save workspace / Open workspace
+**Feature.** Save workspace section: Save workspace / Open workspace
 
 **Method.** Test on cells_3d.
 
