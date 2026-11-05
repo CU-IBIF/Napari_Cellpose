@@ -12,12 +12,18 @@ Cellpose from a [facility GPU server](docs/facility-server.md) or a
   and tiled (mosaic) acquisitions are stitched. A LIF project with several images opens
   a chooser listing each image and its size. Tick the ones to open, or double-click one.
   Images of the same size can optionally be stacked onto the position slider.
-- **Dimensions panel**: labelled sliders for time, stage position and Z. Time is shown in
+- **One panel with icon buttons** on the right of the window switches between the
+  sections, in this order: Configuration, Segmentation, Secondary objects,
+  Measurements, Cytometry, Filament tracing and Save workspace. Hover over a button for
+  its name and what it does. It opens on Configuration, and goes back to it when a
+  workspace is loaded. Cytometry (cell/object typing, neighbourhood analyses) is
+  greyed out until it is built.
+- **Configuration**: labelled sliders for time, stage position and Z. Time is shown in
   s/min and Z in µm. It also has channel on/off switches, a 2D/3D view toggle, a max
   projection over Z, and "Extract current time/position", which copies the current
   volume out as new layers.
 - **Painting labels in the 3D view** works on any labels layer (napari's own brush in 3D
-  only re-paints existing labels). The *3D brush* setting in the Dimensions panel picks
+  only re-paints existing labels). The *3D brush* setting in Configuration picks
   how:
   - **On the image** (the default): the brush paints a ball where the mouse points at
     the signal you see (the brightest point for a max projection, otherwise the front
@@ -27,12 +33,12 @@ Cellpose from a [facility GPU server](docs/facility-server.md) or a
   - **On a Z plane**: the image shows one Z plane (moved with the *Plane Z* slider) and
     the brush paints a disc on it.
   - **napari default**: napari's own brush.
-- **Cellpose 3D panel**: segments the selected channel, optionally with a nuclear channel.
+- **Segmentation** (Cellpose): segments the selected channel, optionally with a nuclear channel.
   You can run true 3D (anisotropy is filled in from the voxel size) or 2D per plane with
   stitching. It runs on the current time point/position or on all of them, and writes a
   labels layer. The Cellpose model is loaded in the background at startup, so the first
   run doesn't wait for it.
-- **Secondary objects panel**: builds on a first segmentation (e.g. Cellpose nuclei).
+- **Secondary objects**: builds on a first segmentation (e.g. Cellpose nuclei).
   *Expand* grows every object by a distance without merging neighbours; *Ring* makes a
   band around each object (gap + width); *Rim* the band just inside its edge; *Whole cells
   from these seeds* grows each nucleus into its cell in one channel or the average of
@@ -40,20 +46,20 @@ Cellpose from a [facility GPU server](docs/facility-server.md) or a
   Triangle / manual foreground, optionally limited to a maximum distance), with an
   optional cytoplasm layer (cell minus nucleus). Every new object keeps its seed's label
   number; distances are in µm using the real voxel size, so 3D stacks work too.
-- **Measurements panel**: tick objects layers (e.g. nuclei, cells, cytoplasm) and channels,
+- **Measurements**: tick objects layers (e.g. nuclei, cells, cytoplasm) and channels,
   then **Measure**. For every object and time point / position: volume or area (µm³ / µm²),
   equivalent diameter, centroid (µm), and per channel the mean, median, min, max,
   standard deviation and sum (integrated intensity). Objects with the same label number
   (nucleus 17, cell 17, cytoplasm 17) are joined into one row. The table is sortable;
   click a row to go to the object. Save it as CSV or Excel.
-- **Workspace panel**: **Save workspace…** keeps everything to come back to or share in
+- **Save workspace**: **Save workspace…** keeps everything to come back to or share in
   one `.ibif` folder: all layers with their display settings, the view and the
   measurement tables. Microscope files (ND2 / CZI / LIF) are referenced, not copied, and
   are found again when the workspace is moved together with the data; tick *Include
   copies of the images* to share with someone who does not have them. **Open
   workspace…** (or drag the `.ibif` folder onto napari, or `ibif-napari my.ibif`) restores
   it. **Save selected layers…** writes images and labels as TIFF, shapes and points as CSV.
-- **Filament Tracer panel**: traces neurons, microtubules and other filaments in 2D or 3D,
+- **Filament tracing**: traces neurons, microtubules and other filaments in 2D or 3D,
   automatically and/or by clicking along them. It reports Imaris-style statistics (length,
   segments, branch and terminal points, diameter, volume, straightness, branch depth,
   Sholl) and exports them as CSV, with the tracing as SWC. See
@@ -61,7 +67,7 @@ Cellpose from a [facility GPU server](docs/facility-server.md) or a
 
 Everything else is ordinary napari. Plugins install and run as usual from
 **Plugins > Install/Uninstall Plugins**, and this package is itself a normal napari
-plugin. You can open the panels from **Plugins > IBIF napari** in any napari, and
+plugin. You can open the whole panel (**IBIF napari**) or any single section from **Plugins > IBIF napari** in any napari, and
 `napari file.nd2` / `.czi` / `.lif` use our readers. If another installed plugin can
 also read CZI or LIF (e.g. napari-aicsimageio), napari asks which to use and can remember the
 choice.
@@ -103,9 +109,9 @@ ibif-napari --no-preload         # start without loading Cellpose
 
 Typical 3D workflow:
 
-1. Open the ND2 file. Use the Dimensions panel to go to the time point/position you want
+1. Open the ND2 file. Use Configuration to go to the time point/position you want
    and switch on the channels you need.
-2. In **Cellpose 3D**, pick the image (e.g. the membrane/cytoplasm channel) and, if you
+2. In **Segmentation**, pick the image (e.g. the membrane/cytoplasm channel) and, if you
    have one, the nuclear channel. Keep the mode on *3D*.
 3. Leave diameter on *auto* or enter the typical cell diameter in pixels, then
    **Run Cellpose**. Use *Every time point / position* to segment the whole series.
@@ -145,7 +151,7 @@ are placed in the server's `--models-dir` folder and appear in the list by file 
 
 ## Filament tracing
 
-The **Filament Tracer** panel works on the current time point/position, like Cellpose, and
+The **Filament tracing** section works on the current time point/position, like Cellpose, and
 can be limited to a **Region** and **Z planes** in the same way.
 
 Two other filament plugins are installed too and appear under **Plugins**:

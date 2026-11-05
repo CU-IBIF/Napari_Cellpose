@@ -89,7 +89,7 @@ REQUIREMENTS = [
         "VV-SEG-01", "Segmentation", "2D nuclei are found and outlined",
         "Cellpose segmentation of a 2D nuclear image shall find the nuclei and outline them "
         "accurately.",
-        "Cellpose 3D panel (2D image)", "Test on the nuclei_2d scene (SNR 12).",
+        "Segmentation section (2D image)", "Test on the nuclei_2d scene (SNR 12).",
         ["F1 at IoU 0.5 >= {seg2d_f1}", "mean IoU of matched nuclei >= {seg2d_iou}",
          "|count error| <= {seg2d_count:.0%}"],
         needs=["segmentation"], scenes=["nuclei_2d"]),
@@ -97,27 +97,27 @@ REQUIREMENTS = [
         "VV-SEG-02", "Segmentation", "3D nuclei are found in true 3D mode",
         "Cellpose in true 3D mode, with the anisotropy taken from the voxel size, shall find "
         "and outline nuclei in an anisotropic Z stack.",
-        "Cellpose 3D panel, mode 3D", "Test on the nuclei_3d scene (Z step 1 µm, pixels 0.5 µm).",
+        "Segmentation section, mode 3D", "Test on the nuclei_3d scene (Z step 1 µm, pixels 0.5 µm).",
         ["F1 at IoU 0.5 >= {seg3d_f1}", "mean IoU of matched nuclei >= {seg3d_iou}"],
         needs=["segmentation"], scenes=["nuclei_3d"]),
     Requirement(
         "VV-SEG-03", "Segmentation", "3D nuclei by 2D planes + stitching",
         "Segmenting each plane and stitching the planes shall give whole 3D nuclei.",
-        "Cellpose 3D panel, mode 2D per plane + stitch", "Test on the nuclei_3d scene.",
+        "Segmentation section, mode 2D per plane + stitch", "Test on the nuclei_3d scene.",
         ["F1 at IoU 0.5 >= {stitch_f1}"],
         needs=["segmentation"], scenes=["nuclei_3d"]),
     Requirement(
         "VV-SEG-04", "Segmentation", "Whole cells with a nuclear channel",
         "Cellpose with a cell (cytoplasm) channel and a nuclear channel shall find and "
         "outline whole cells.",
-        "Cellpose 3D panel, nuclear channel", "Test on the cells_2d scene.",
+        "Segmentation section, nuclear channel", "Test on the cells_2d scene.",
         ["F1 at IoU 0.5 >= {cells_f1}", "mean IoU of matched cells >= {cells_iou}"],
         needs=["segmentation"], scenes=["cells_2d"]),
     Requirement(
         "VV-SEG-05", "Segmentation", "Robust to image noise",
         "Segmentation quality shall hold up as the signal-to-noise ratio (SNR) falls to "
         "levels seen in live-cell imaging.",
-        "Cellpose 3D panel", "Test on the same nuclei at SNR 20, 8, 4 and 2 (SNR 2 is "
+        "Segmentation section", "Test on the same nuclei at SNR 20, 8, 4 and 2 (SNR 2 is "
         "reported only).",
         ["F1 at IoU 0.5 >= {snr_high_f1} at SNR 20 and 8", "F1 at IoU 0.5 >= {snr_low_f1} at SNR 4"],
         needs=["segmentation"], scenes=["snr_20", "snr_8", "snr_4", "snr_2"]),
@@ -126,7 +126,7 @@ REQUIREMENTS = [
         "Segmenting only a painted region shall read only the region's bounding box, place "
         "the result correctly over the image, keep only objects mostly inside the painted "
         "area, and find them as well as a whole-image run does.",
-        "Cellpose 3D panel: Region, Draw…, Drop cells mostly outside the painted area",
+        "Segmentation section: Region, Draw…, Drop cells mostly outside the painted area",
         "Test: paint a disc over part of nuclei_2d, run the panel's region steps "
         "(region_crop, painted_mask, segment, keep_inside) and compare with the true "
         "nuclei mostly inside the disc, cut to the region's bounding box (what the run sees).",
@@ -138,7 +138,7 @@ REQUIREMENTS = [
         "VV-SEC-01", "Secondary objects", "Expand grows objects by the set distance",
         "Expand shall grow each object by the set distance in µm (anisotropic voxels "
         "included), keep its number, and give contested pixels to the nearer object.",
-        "Secondary objects panel: Expand", "Test on the truth nuclei of cells_3d, "
+        "Secondary objects section: Expand", "Test on the truth nuclei of cells_3d, "
         "against an independent distance calculation.",
         ["every expanded pixel is within the distance of its own object",
          "every pixel within the distance of an object is assigned (to the nearest object)",
@@ -148,7 +148,7 @@ REQUIREMENTS = [
         "VV-SEC-02", "Secondary objects", "Rings and rims have the set gap and width",
         "Ring shall make a band from the gap to gap + width outside each object, and Rim a "
         "band of the width inside it, in µm.",
-        "Secondary objects panel: Ring, Rim", "Test on the truth nuclei of cells_3d.",
+        "Secondary objects section: Ring, Rim", "Test on the truth nuclei of cells_3d.",
         ["ring pixels lie between gap and gap + width from their own object",
          "rim pixels lie inside their object, closer than the width to its edge",
          "numbers kept"],
@@ -157,7 +157,7 @@ REQUIREMENTS = [
         "VV-SEC-03", "Secondary objects", "Whole cells grown from nuclei match the true cells",
         "Whole cells grown from nuclei in a cell channel shall match the true cells, each "
         "with its nucleus's number; the cytoplasm shall be the cell minus its nucleus.",
-        "Secondary objects panel: Whole cells from these seeds, Also add cytoplasm",
+        "Secondary objects section: Whole cells from these seeds, Also add cytoplasm",
         "Test with the truth nuclei as seeds on cells_2d and cells_3d (cytoplasm channel, "
         "Otsu threshold).",
         ["mean IoU with the true cells >= {seeded_iou}", "F1 at IoU 0.5 >= {seeded_f1}",
@@ -168,7 +168,7 @@ REQUIREMENTS = [
         "VV-MEAS-01", "Measurements", "Object size in µm² / µm³",
         "The measured area or volume shall equal the voxel count times the voxel size, and "
         "agree with the true shape's analytic size.",
-        "Measurements panel: area / volume, equivalent diameter",
+        "Measurements section: area / volume, equivalent diameter",
         "Test on the truth nuclei and cells of nuclei_2d and cells_3d.",
         ["size = voxel count x voxel size (relative error <= {exact_rel:g})",
          "median relative difference from the analytic ellipse / ellipsoid size <= {analytic_size_rel:.0%}"],
@@ -176,7 +176,7 @@ REQUIREMENTS = [
     Requirement(
         "VV-MEAS-02", "Measurements", "Object centroids in µm",
         "Measured centroids shall be in µm in the image's coordinates (including its offset).",
-        "Measurements panel: centroid Z/Y/X (µm), click a row to go to the object",
+        "Measurements section: centroid Z/Y/X (µm), click a row to go to the object",
         "Test on timelapse_3d (offset origin) through napari layers, against the analytic "
         "centres and an independent centre-of-mass calculation.",
         ["equal to the independent centre of mass (relative error <= {exact_rel:g})",
@@ -186,7 +186,7 @@ REQUIREMENTS = [
         "VV-MEAS-03", "Measurements", "Intensity statistics per object",
         "Mean, median, min, max, standard deviation and sum of each channel shall be exact "
         "for each object, and the mean shall estimate the true (noise-free) mean.",
-        "Measurements panel: <channel> mean / median / min / max / std / sum",
+        "Measurements section: <channel> mean / median / min / max / std / sum",
         "Test on cells_3d (3 channels) against independent statistics, and against the "
         "noise-free image.",
         ["all six statistics equal the independent values (relative error <= {exact_rel:g})",
@@ -196,7 +196,7 @@ REQUIREMENTS = [
         "VV-MEAS-04", "Measurements", "Time series and joined tables",
         "Measuring a time series shall give one row per object and time point, and the "
         "joined table shall put nucleus, cell and cytoplasm of the same number on one row.",
-        "Measurements panel: T column, All objects (one row per label)",
+        "Measurements section: T column, All objects (one row per label)",
         "Test on timelapse_3d (3 time points, intensity rising 25% per step).",
         ["one row per object and time point", "intensity ratio to time 0 within "
          "{drift_rel:.0%} of the true ratio", "joined table: one row per (T, label) with all three objects"],
@@ -204,7 +204,7 @@ REQUIREMENTS = [
     Requirement(
         "VV-MEAS-05", "Measurements", "Measurements on segmented nuclei are accurate",
         "Measurements of segmented nuclei shall be close to those of the true nuclei.",
-        "Cellpose 3D panel + Measurements panel", "Test: segment nuclei_3d, match to the "
+        "Segmentation section + Measurements section", "Test: segment nuclei_3d, match to the "
         "truth, compare volume and mean intensity of the matched nuclei.",
         ["median relative volume error <= {e2e_size_rel:.0%}",
          "median relative mean-intensity error <= {e2e_mean_rel:.0%}"],
@@ -214,7 +214,7 @@ REQUIREMENTS = [
         "VV-WS-01", "Saving", "A saved workspace reopens exactly",
         "Saving the workspace and opening it again shall restore every image and labels "
         "layer bit for bit, with its voxel size, offset and the measurement tables.",
-        "Workspace panel: Save workspace / Open workspace", "Test on cells_3d.",
+        "Save workspace section: Save workspace / Open workspace", "Test on cells_3d.",
         ["arrays identical", "scale and translate identical", "measurement tables identical"],
         kind="verification", needs=["napari"], scenes=["cells_3d"]),
 ]

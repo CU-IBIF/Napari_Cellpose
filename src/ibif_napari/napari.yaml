@@ -5,15 +5,18 @@ contributions:
     - id: ibif-napari.get_reader
       python_name: ibif_napari._reader:napari_get_reader
       title: Open Nikon ND2 / Zeiss CZI / Leica LIF
+    - id: ibif-napari.panel
+      python_name: ibif_napari._panel:IbifPanel
+      title: IBIF napari
     - id: ibif-napari.dims_widget
       python_name: ibif_napari._dims_widget:DimensionsWidget
-      title: Dimensions
+      title: Configuration
     - id: ibif-napari.cellpose_widget
       python_name: ibif_napari._cellpose_widget:CellposeWidget
-      title: Cellpose 3D
+      title: Segmentation (Cellpose)
     - id: ibif-napari.filament_widget
       python_name: ibif_napari._filament_widget:FilamentWidget
-      title: Filament Tracer
+      title: Filament tracing
     - id: ibif-napari.secondary_widget
       python_name: ibif_napari._secondary_widget:SecondaryWidget
       title: Secondary objects
@@ -22,7 +25,7 @@ contributions:
       title: Measurements
     - id: ibif-napari.workspace_widget
       python_name: ibif_napari._workspace_widget:WorkspaceWidget
-      title: Workspace
+      title: Save workspace
     - id: ibif-napari.get_workspace_reader
       python_name: ibif_napari._workspace:napari_get_reader
       title: Open IBIF workspace
@@ -34,15 +37,19 @@ contributions:
       filename_patterns: ["*.ibif"]
       accepts_directories: true
   widgets:
+    # All sections in one panel with icon buttons (what ibif-napari opens) ...
+    - command: ibif-napari.panel
+      display_name: IBIF napari
+    # ... and each section on its own, in the panel's order.
     - command: ibif-napari.dims_widget
-      display_name: Dimensions
+      display_name: Configuration
     - command: ibif-napari.cellpose_widget
-      display_name: Cellpose 3D
-    - command: ibif-napari.filament_widget
-      display_name: Filament Tracer
+      display_name: Segmentation (Cellpose)
     - command: ibif-napari.secondary_widget
       display_name: Secondary objects
     - command: ibif-napari.measure_widget
       display_name: Measurements
+    - command: ibif-napari.filament_widget
+      display_name: Filament tracing
     - command: ibif-napari.workspace_widget
-      display_name: Workspace
+      display_name: Save workspace

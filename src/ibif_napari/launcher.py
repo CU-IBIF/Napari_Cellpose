@@ -1,4 +1,5 @@
-"""`ibif-napari`: napari with the Dimensions, Cellpose and Filament Tracer panels docked.
+"""`ibif-napari`: napari with the IBIF napari panel docked (Configuration, Segmentation,
+Secondary objects, Measurements, Cytometry, Filament tracing and Save workspace).
 
 Cellpose's model is preloaded in the background.
 
@@ -44,12 +45,8 @@ def main(argv=None):
     import napari
 
     viewer = napari.Viewer(title="IBIF napari")
-    viewer.window.add_plugin_dock_widget(PLUGIN, "Dimensions")
-    viewer.window.add_plugin_dock_widget(PLUGIN, "Cellpose 3D", tabify=True)
-    viewer.window.add_plugin_dock_widget(PLUGIN, "Secondary objects", tabify=True)
-    viewer.window.add_plugin_dock_widget(PLUGIN, "Measurements", tabify=True)
-    viewer.window.add_plugin_dock_widget(PLUGIN, "Workspace", tabify=True)
-    viewer.window.add_plugin_dock_widget(PLUGIN, "Filament Tracer", tabify=True)
+    # One dock with icon buttons for the sections; it opens on Configuration.
+    viewer.window.add_plugin_dock_widget(PLUGIN, "IBIF napari")
     for path in args.files:
         ours = path.lower().rstrip("/\\").endswith((".nd2", ".czi", ".lif", ".ibif"))
         viewer.open(path, plugin=PLUGIN if ours else None)
