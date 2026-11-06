@@ -1,6 +1,6 @@
 # IBIF napari: ND2/CZI/LIF + 3D Cellpose + filament tracing
 
-[napari](https://napari.org) with seven things built in, plus optional GPU help for
+[napari](https://napari.org) with eight things built in, plus optional GPU help for
 Cellpose from a [facility GPU server](docs/facility-server.md) or a
 [GPU cluster](docs/cluster.md):
 
@@ -16,8 +16,7 @@ Cellpose from a [facility GPU server](docs/facility-server.md) or a
   sections, in this order: Configuration, Segmentation, Secondary objects,
   Measurements, Cytometry, Filament tracing and Save workspace. Hover over a button for
   its name and what it does. It opens on Configuration, and goes back to it when a
-  workspace is loaded. Cytometry (cell/object typing, neighbourhood analyses) is
-  greyed out until it is built.
+  workspace is loaded.
 - **Configuration**: labelled sliders for time, stage position and Z. Time is shown in
   s/min and Z in µm. It also has channel on/off switches, a 2D/3D view toggle, a max
   projection over Z, and "Extract current time/position", which copies the current
@@ -52,6 +51,13 @@ Cellpose from a [facility GPU server](docs/facility-server.md) or a
   standard deviation and sum (integrated intensity). Objects with the same label number
   (nucleus 17, cell 17, cytoplasm 17) are joined into one row. The table is sortable;
   click a row to go to the object. Save it as CSV or Excel.
+- **Cytometry**: gate the measured objects on a scatter plot (linear, log or asinh axes;
+  rectangle, polygon and lasso gates) or on the image, gate within gates, and build a
+  hierarchy of phenotypes (e.g. *Immune > T cell > CD8 T cell*). The plot opens in a
+  separate **Cytometry workbench** window linked to the viewer: click a point to go to
+  the object, show any gate or phenotype level on the image, export the typed table.
+  Built on [vtea-core](https://github.com/winfrees/vtea-python); clustering, spatial
+  features and neighbourhood analysis are next. See [docs/cytometry.md](docs/cytometry.md).
 - **Save workspace**: **Save workspace…** keeps everything to come back to or share in
   one `.ibif` folder: all layers with their display settings, the view and the
   measurement tables. Microscope files (ND2 / CZI / LIF) are referenced, not copied, and

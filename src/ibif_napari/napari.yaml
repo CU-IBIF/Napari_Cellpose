@@ -23,6 +23,9 @@ contributions:
     - id: ibif-napari.measure_widget
       python_name: ibif_napari._measure_widget:MeasureWidget
       title: Measurements
+    - id: ibif-napari.cytometry_widget
+      python_name: ibif_napari._cytometry_widget:CytometryWidget
+      title: Cytometry
     - id: ibif-napari.workspace_widget
       python_name: ibif_napari._workspace_widget:WorkspaceWidget
       title: Save workspace
@@ -49,6 +52,8 @@ contributions:
       display_name: Secondary objects
     - command: ibif-napari.measure_widget
       display_name: Measurements
+    - command: ibif-napari.cytometry_widget
+      display_name: Cytometry
     - command: ibif-napari.filament_widget
       display_name: Filament tracing
     - command: ibif-napari.workspace_widget
