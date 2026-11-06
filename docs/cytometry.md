@@ -36,17 +36,44 @@ vtea-core, so VTEA and IBIF napari share them.
      counts when its centre's Y/X is inside, whatever its Z.
    - Click a point to go to that object in the viewer. Click an object in the viewer
      to ring it on the plot.
-4. **Make phenotypes.** Select a gate and click **Make phenotype…**, choosing the
+4. **Or find the types by clustering** (the workbench's **Clustering** tab):
+   - **Objects**: all of them, a gate, or a phenotype. Clustering a phenotype splits
+     it further, so you can work from coarse to fine: cluster all cells, name the
+     immune cluster, then cluster within *Immune*.
+   - **Features**: which measurements to cluster on. **Intensities** ticks the mean
+     intensity of every channel.
+   - **asinh(x/150) first** compresses bright intensities. **Scaling** puts the
+     features on one scale: z-score, robust (median/IQR), min-max, or none.
+   - **Map**: UMAP, t-SNE or PCA, for looking at the objects in two dimensions.
+   - **Clustering**:
+     - **Leiden** and **Louvain** decide the number of clusters themselves (higher
+       **Resolution** gives more, smaller clusters).
+     - **k-means** and **Gaussian mixture** make **k** clusters.
+     - **k-means, best k** tries 2…k and keeps the best by BIC.
+   - The **Seed** makes a run repeatable.
+   - **Run** (in the background). Each run becomes columns of the object table:
+     `<name> cluster` (1 = the largest cluster; 0 = not clustered) and the map's
+     `<name> UMAP 1/2`.
+   - The results show a **heat map** of the clusters (z-score of each feature's
+     mean) and a table with each cluster's size and markers (e.g.
+     *CD8 mean+ CD3 mean+ / CD4 mean−*).
+   - Type a **phenotype name** next to clusters and click **Make phenotypes**. Clusters
+     given the same name become one phenotype, which is how an over-split population
+     is merged.
+   - **Plot the map** shows the map on the Gating tab, coloured by cluster, where you
+     can gate on it. **Show clusters on image** colours the objects by cluster.
+5. **Make phenotypes.** Select a gate and click **Make phenotype…**, choosing the
    phenotype it belongs **within**. Or click **Add…** to write a rule yourself, for
    example:
    - `` `gate: CD3+` AND NOT `gate: CD4+` ``
    - `` `CD8 mean` > 200 ``
    - `` `image gate: tumour` ``
+   - `` `Clustering 1 cluster` in [3, 7] ``
 
    Names with spaces go in backticks. **Insert a column…** writes them for you. A
    phenotype with an empty rule is "the rest of its parent": everything in the parent
    that an earlier sibling did not claim (e.g. *Other T*).
-5. **Use the result.**
+6. **Use the result.**
    - **Show phenotypes on image** colours every object by its phenotype, either the
      deepest (most specific) one or the one at a chosen level of the hierarchy.
    - **Export table…** writes the objects with every gate column, their phenotype, its
@@ -56,47 +83,30 @@ The tree shows, for each phenotype, its objects and its % of the parent. If an o
 matches more than one sibling, the first sibling (top of the list) gets it, and the
 others report the overlap. This usually means a gate was drawn too wide.
 
-Everything (gates, image gates, phenotypes and which objects they apply to) is saved
+Everything (gates, image gates, clustering results, phenotypes and which objects they
+apply to) is saved
 with the workspace and restored when it is opened. Phenotypes are saved as rules, not
 as lists of objects, so the same tree can type the next acquisition.
 
 ## Roadmap
 
 The section is being built in stages. **Phase 1** (gating, subgating, image gates and
-the phenotype hierarchy) is done. The later phases use the same object table and the
+the phenotype hierarchy) and **Phase 2** (maps and clustering) are done. The later phases use the same object table and the
 same phenotype tree. The larger tools get their own tabs in the workbench rather than
 crowding the section.
 
 | Phase | What | Engine |
 |---|---|---|
 | 1 ✅ | Plot and image gates, subgates, gates within phenotypes, phenotype hierarchy, show on image, export, workspace | vtea-core `gates`, `classes.hierarchy` (new) |
-| 2 | **Dimensionality reduction and clustering** to find object types: feature choice and scaling (z-score, asinh), PCA / UMAP / t-SNE, k-means / Gaussian mixture / Leiden. A cluster × marker heat map to name clusters. Label clusters as phenotypes. Re-cluster within a phenotype, so you can work iteratively from coarse to fine. | vtea-core `reduction`, `clustering` |
+| 2 ✅ | **Dimensionality reduction and clustering** to find object types: feature choice and scaling (z-score, asinh), PCA / UMAP / t-SNE, k-means / Gaussian mixture / Leiden. A cluster × marker heat map to name clusters. Label clusters as phenotypes. Re-cluster within a phenotype, so you can work iteratively from coarse to fine. | vtea-core `reduction`, `clustering`, `clustering.profiles` (new) |
 | 3 | **Spatial features per object**, once some identities are known. Distance to the nearest object of each phenotype, by centroid or by **surface** (exact distance between masks, in µm, 3D included). Number and fraction of each phenotype within a radius. Contacts (touching masks). These features can be gated and clustered like any measurement, to split types further (e.g. CD8 T cells touching tumour cells). | vtea-core (new `spatial` module) |
-| 4 | **Neighbourhood analysis.** Cellular neighbourhoods: composition of each cell's *k* nearest neighbours or of the cells within a radius, clustered into neighbourhood types (the CODEX / Schürch–Nolan approach used by Hickey et al., Cell Systems 2024). Multi-scale composition (k = 10…200) as in RIBCA's tissue regions. Cell-type × neighbourhood enrichment, and pairwise neighbourhood enrichment with permutation z-scores. Neighbourhood maps on the image. Neighbourhood features reflected back onto cells for gating. | vtea-core `neighborhoods` (extended) |
-| 5 | **Reference-based annotation**, in a separate integrated window. STELLAR (Brbić et al., Nature Methods 2022): a graph neural network over a cell graph. It transfers labels from an annotated dataset and finds new cell types. Optional install (PyTorch Geometric), run locally or on the facility GPU server / cluster. RIBCA (Sun et al., Cell Systems 2025): pretrained per-panel models for 2D multiplexed images, with confidence. | vtea-core plug-ins |
+| 4 | **Neighbourhood analysis.** Cellular neighbourhoods: composition of each cell's *k* nearest neighbours or of the cells within a radius, clustered into neighbourhood types (the CODEX / Schürch–Nolan approach). Cell-type × neighbourhood enrichment, and pairwise neighbourhood enrichment with permutation z-scores. Neighbourhood maps on the image. Neighbourhood features reflected back onto cells for gating. | vtea-core `neighborhoods` (extended) |
+| 5 | **Reference-based annotation with STELLAR**, in a separate integrated window. STELLAR ([snap-stanford/stellar](https://github.com/snap-stanford/stellar); Brbić et al., Nature Methods 2022) is a graph neural network over a cell graph. It transfers labels from an annotated dataset and finds new cell types. Optional install (PyTorch Geometric), run locally or on the facility GPU server / cluster. | vtea-core plug-in |
 
 ### Notes on the methods
 
-- **Cellular neighbourhoods (Phase 4).** Hickey et al., *Cell Systems* 15, 322–338
-  (2024), doi:10.1016/j.cels.2024.03.004, use the CODEX multicellular neighbourhood
-  analysis on both their images and their simulations. The standard form of that
-  analysis is a window of the 10 nearest cells, its cell-type composition, and k-means
-  into ~10 neighbourhoods. This build could not read the paper's exact parameters (the
-  journal was not reachable), so they are to be checked against its STAR Methods
-  before Phase 4 is finalised. Distances are in µm, and 3D works without change.
-- **RIBCA** (Sun et al., *Cell Systems* 2025; bioRxiv 10.1101/2024.09.12.612510; code
-  `sun-huangqingbo/multiplexed-image-annotator`):
-  - ViT classifiers on 40×40 patches, one per marker panel (immune base / extended /
-    full, structural, nerve).
-  - Missing markers are imputed by a masked autoencoder.
-  - Its spatial analysis is kNN cell-type co-occurrence and multi-scale neighbourhood
-    composition (k = 10…200), reduced with PCA and clustered (k-means) into tissue
-    regions.
-  - It is 2D only, the marker names must match exactly, and the weights come from
-    Google Drive.
-  - The licence needs checking: GitHub says GPL-3.0, the package metadata says BSD.
 - **STELLAR** (Brbić et al., *Nature Methods* 19, 1411–1418, 2022; code
-  `snap-stanford/stellar`, MIT):
+  [snap-stanford/stellar](https://github.com/snap-stanford/stellar), MIT):
   - Node features are marker intensities. Edges join cells closer than a distance
     threshold (default 50, in the data's units).
   - The loss is pair consistency + margin cross-entropy − 0.3 × entropy. Novel types

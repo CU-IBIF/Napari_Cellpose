@@ -87,6 +87,10 @@ class Cytometry:
         self.scope = {}
         self.order = []  # gates of both kinds in creation order (a gate may use earlier ones)
         self.tree = PhenotypeTree()
+        # Clustering / mapping runs: name -> settings; their output columns (cluster ids,
+        # map coordinates) live in `derived`, one row per table row.
+        self.analyses = {}
+        self.derived = None
         self._listeners = []
         self._cache = None
 
@@ -105,9 +109,12 @@ class Cytometry:
     def set_table(self, source, table, layer_name):
         """Use a Measurements table. Gates and phenotypes are kept (their rules still
         apply if the columns exist)."""
+        same = self.table is not None and len(self.table) == len(table) and self.source == source
         self.source = source
         self.layer_name = layer_name
         self.table = table.reset_index(drop=True).copy()
+        if not same:  # clustering results belong to the objects they were run on
+            self.analyses, self.derived = {}, None
         self.changed()
 
     def features(self):
@@ -115,16 +122,26 @@ class Cytometry:
         if self.table is None:
             return []
         skip = set(KEYS) | {"voxels"}
-        return [c for c in self.table.columns
-                if c not in skip and pd.api.types.is_numeric_dtype(self.table[c])
-                and not pd.api.types.is_bool_dtype(self.table[c])]
+        out = [c for c in self.table.columns
+               if c not in skip and pd.api.types.is_numeric_dtype(self.table[c])
+               and not pd.api.types.is_bool_dtype(self.table[c])]
+        if self.derived is not None:
+            out += list(self.derived.columns)
+        return out
+
+    def measured_features(self):
+        """Numeric measurement columns (what clustering is run on)."""
+        derived = set(self.derived.columns) if self.derived is not None else set()
+        return [c for c in self.features() if c not in derived]
 
     def column(self, name):
         """A table column, or a transformed one computed on the fly."""
         if name in self.table.columns:
             return self.table[name].to_numpy(float)
+        if self.derived is not None and name in self.derived.columns:
+            return self.derived[name].to_numpy(float)
         column, transform, cofactor = split_axis(name)
-        values = self.table[column].to_numpy(float)
+        values = self.column(column) if column not in self.table.columns else self.table[column].to_numpy(float)
         if transform == "log10":
             with np.errstate(divide="ignore", invalid="ignore"):
                 return np.log10(np.where(values > 0, values, np.nan))
@@ -137,6 +154,9 @@ class Cytometry:
         if self._cache is not None:
             return self._cache
         frame = self.table.copy()
+        if self.derived is not None:
+            for c in self.derived.columns:
+                frame[c] = self.derived[c].to_numpy()
         for gate in self.gates:  # the axis columns gates are drawn on
             for axis in (gate.x_axis, gate.y_axis):
                 if axis not in frame.columns:
@@ -471,6 +491,104 @@ class Cytometry:
         values = np.where(mask, 1, 0)
         return self.paint(values, f"{self.layer_name} selection", {1: color})
 
+    # ---- clustering and maps -----------------------------------------------------------------
+
+    def unique_analysis_name(self, base="Clustering"):
+        k = 1
+        while f"{base} {k}" in self.analyses:
+            k += 1
+        return f"{base} {k}"
+
+    def matrix(self, population, features, asinh=False, cofactor=ASINH_COFACTOR):
+        """(row indices, n x features matrix) of the objects in `population` that have
+        every feature (rows with NaN are left out)."""
+        mask = self.mask(*population)
+        values = np.column_stack([self.column(f) for f in features]) if features else np.zeros((len(mask), 0))
+        if asinh:
+            values = np.arcsinh(values / cofactor)
+        ok = mask & np.all(np.isfinite(values), axis=1)
+        rows = np.flatnonzero(ok)
+        return rows, values[rows]
+
+    def add_analysis(self, name, settings, rows, labels=None, embedding=None):
+        """Store a clustering / map run on table rows `rows`: cluster ids (1..k, by size;
+        0 = not clustered) in "<name> cluster", map coordinates in "<name> <map> 1/2"."""
+        if name in self.analyses:
+            raise ValueError(f"there is already an analysis called {name!r}")
+        if name in self.gate_names() or name in self.tree:
+            raise ValueError(f"{name!r} is already a gate or phenotype name")
+        n = len(self.table)
+        derived = self.derived if self.derived is not None else pd.DataFrame(index=self.table.index)
+        columns = {}
+        if labels is not None:
+            ids = _by_size(np.asarray(labels))
+            values = np.zeros(n, dtype=np.int64)
+            values[rows] = ids
+            columns["cluster"] = f"{name} cluster"
+            derived[columns["cluster"]] = values
+        if embedding is not None:
+            emb = np.asarray(embedding, float)
+            label = settings.get("map", "map")
+            columns["map"] = []
+            for k in range(emb.shape[1]):
+                col = f"{name} {label} {k + 1}"
+                values = np.full(n, np.nan)
+                values[rows] = emb[:, k]
+                derived[col] = values
+                columns["map"].append(col)
+        self.derived = derived
+        self.analyses[name] = {**settings, "columns": columns, "n_objects": int(len(rows))}
+        self.changed()
+        return self.analyses[name]
+
+    def remove_analysis(self, name):
+        info = self.analyses.pop(name)
+        cols = [info["columns"].get("cluster")] + list(info["columns"].get("map", []))
+        self.derived = self.derived.drop(columns=[c for c in cols if c and c in self.derived.columns])
+        if self.derived.shape[1] == 0:
+            self.derived = None
+        self.changed()
+
+    def clusters(self, name):
+        """Cluster id per table row (0 = not clustered)."""
+        return self.derived[self.analyses[name]["columns"]["cluster"]].to_numpy(np.int64)
+
+    def profiles(self, name, features=None):
+        """vtea-core cluster profiles (mean, z, counts) over the analysis's features."""
+        from vtea_core.clustering import cluster_profiles, describe_clusters
+
+        info = self.analyses[name]
+        features = features or info["features"]
+        labels = self.clusters(name)
+        frame = pd.DataFrame({f: self.column(f) for f in features})
+        if info.get("asinh"):
+            frame = np.arcsinh(frame / info.get("cofactor", ASINH_COFACTOR))
+        out = cluster_profiles(frame, np.where(labels > 0, labels, -1), features)
+        out["description"] = describe_clusters(out["z"])
+        return out
+
+    def label_clusters(self, name, names, parent=None):
+        """Phenotypes from clusters: `names` maps cluster id -> phenotype name; clusters
+        given the same name become one phenotype. Returns the phenotypes made."""
+        column = quote(self.analyses[name]["columns"]["cluster"])
+        groups = {}
+        for cluster, pheno in names.items():
+            if pheno and pheno.strip():
+                groups.setdefault(pheno.strip(), []).append(int(cluster))
+        clash = [p for p in groups if p in self.tree or p in self.gate_names()]
+        if clash:
+            raise ValueError("these names are already used: " + ", ".join(clash))
+        made = []
+        for pheno, ids in groups.items():
+            rule = f"{column} == {ids[0]}" if len(ids) == 1 else f"{column} in [{', '.join(map(str, sorted(ids)))}]"
+            made.append(self.add_phenotype(pheno, rule, parent))
+        return made
+
+    def show_clusters(self, name):
+        labels = self.clusters(name)
+        colors = {int(c): PALETTE[(int(c) - 1) % len(PALETTE)] for c in np.unique(labels) if c > 0}
+        return self.paint(labels, f"{self.layer_name} {name}", colors)
+
     # ---- saving ----------------------------------------------------------------------------
 
     def to_dict(self):
@@ -480,7 +598,27 @@ class Cytometry:
                 "gates": gate_set_to_dict(self.gates), "image_gates": self.image_gates,
                 "order": [list(item) for item in self.order],
                 "scope": [[list(item), list(scope)] for item, scope in self.scope.items()],
-                "phenotypes": self.tree.to_dict()}
+                "phenotypes": self.tree.to_dict(), "analyses": self.analyses}
+
+    def save_derived(self, folder):
+        """Write the clustering / map columns next to the workspace; returns the path."""
+        if self.derived is None:
+            return None
+        keys = [k for k in KEYS if k in self.table.columns]
+        out = self.table[keys].join(self.derived)
+        (folder / "cytometry").mkdir(exist_ok=True)
+        out.to_csv(folder / "cytometry" / "derived.csv", index=False)
+        return "cytometry/derived.csv"
+
+    def load_derived(self, path):
+        keys = [k for k in KEYS if k in self.table.columns]
+        saved = pd.read_csv(path)
+        merged = self.table[keys].merge(saved, on=keys, how="left")
+        self.derived = merged.drop(columns=keys)
+        for info in self.analyses.values():
+            col = info.get("columns", {}).get("cluster")
+            if col in self.derived.columns:
+                self.derived[col] = self.derived[col].fillna(0).astype(np.int64)
 
     def load_dict(self, data, tables):
         from vtea_core.classes import PhenotypeTree
@@ -493,6 +631,7 @@ class Cytometry:
         self.scope = {tuple(item): tuple(scope) for item, scope in data.get("scope") or []}
         self.tree = PhenotypeTree.from_dict(data["phenotypes"])
         self.source, self.layer_name = data.get("source"), data.get("layer")
+        self.analyses, self.derived = dict(data.get("analyses") or {}), None
         if self.source in tables:
             self.table = tables[self.source].reset_index(drop=True).copy()
         else:
@@ -524,13 +663,83 @@ def _save(viewer, folder):
     state = _states.get(viewer)
     if state is None or (state.table is None and not state.order and not len(state.tree)):
         return None
-    return state.to_dict()
+    data = state.to_dict()
+    if state.table is not None and state.derived is not None:
+        data["derived"] = state.save_derived(folder)
+    return data
 
 
 def _load(viewer, folder, data):
     from . import _measure
 
-    return state_of(viewer).load_dict(data, _measure.tables_of(viewer))
+    state = state_of(viewer)
+    notes = state.load_dict(data, _measure.tables_of(viewer))
+    if data.get("derived") and state.table is not None:
+        path = folder / data["derived"]
+        if path.exists():
+            state.load_derived(path)
+            state.changed()
+        else:
+            notes.append(f"cytometry: clustering results not found ({data['derived']})")
+    return notes
+
+
+def _by_size(labels):
+    """Cluster ids renumbered 1..k from the largest cluster down."""
+    ids, counts = np.unique(labels, return_counts=True)
+    order = ids[np.argsort(-counts, kind="stable")]
+    lut = {old: new for new, old in enumerate(order, start=1)}
+    return np.array([lut[v] for v in labels], dtype=np.int64)
+
+
+EMBEDDINGS = {"UMAP": "umap", "t-SNE": "tsne", "PCA": "pca", "None": None}
+CLUSTERINGS = {"Leiden": "leiden", "Louvain": "louvain", "k-means": "kmeans",
+               "Gaussian mixture": "gmm", "k-means, best k (BIC)": "autok", "None": None}
+SCALINGS = ("zscore", "robust", "minmax", "none")
+
+
+def available(method):
+    """None if a map / clustering method can run here, else what to install."""
+    from importlib.util import find_spec
+
+    if method == "umap" and find_spec("umap") is None:
+        return "pip install umap-learn"
+    if method in ("leiden", "louvain") and find_spec("igraph") is None and find_spec("networkx") is None:
+        return "pip install python-igraph leidenalg"
+    return None
+
+
+def compute_analysis(matrix, embedding=None, clustering=None, scaling="zscore", seed=0,
+                     n_neighbors=15, resolution=1.0, k=8, k_max=12, perplexity=30.0):
+    """Run a map and/or a clustering on a matrix of objects x features (vtea-core).
+    Returns (cluster ids or None, embedding (n, 2) or None)."""
+    from vtea_core import clustering as cl
+    from vtea_core.reduction import reduction as rd
+
+    n = len(matrix)
+    if n < 3:
+        raise ValueError("too few objects to analyse")
+    labels = emb = None
+    nn = int(min(n_neighbors, n - 1))
+    if clustering == "leiden":
+        labels = cl.leiden(matrix, n_neighbors=nn, resolution=resolution, random_state=seed, normalize=scaling)
+    elif clustering == "louvain":
+        labels = cl.louvain(matrix, n_neighbors=nn, resolution=resolution, random_state=seed, normalize=scaling)
+    elif clustering == "kmeans":
+        labels = cl.kmeans(matrix, int(min(k, n)), random_state=seed, normalize=scaling)
+    elif clustering == "gmm":
+        labels = cl.gaussian_mixture(matrix, int(min(k, n)), random_state=seed, normalize=scaling)
+    elif clustering == "autok":
+        labels, _ = cl.auto_k_kmeans(matrix, k_min=2, k_max=int(max(2, min(k_max, n - 1))),
+                                     random_state=seed, normalize=scaling)
+    if embedding == "umap":
+        emb = rd.umap(matrix, 2, n_neighbors=nn, random_state=seed, normalize=scaling)
+    elif embedding == "tsne":
+        emb = rd.tsne(matrix, 2, perplexity=float(min(perplexity, max(2.0, (n - 1) / 3))),
+                      random_state=seed, normalize=scaling)
+    elif embedding == "pca":
+        emb = rd.pca(matrix, 2 if matrix.shape[1] >= 2 else 1, normalize=scaling)
+    return labels, emb
 
 
 def _register():

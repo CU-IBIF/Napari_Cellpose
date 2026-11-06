@@ -141,3 +141,111 @@ def test_section_and_workbench(qtbot, tmp_path):
     section.level.setValue(1)
     section.show_phenotypes()
     assert "cells phenotypes level 1" in v.layers
+
+
+def cell_types(n=240, seed=0):
+    """A table of n objects of 3 known types: CD8 T (CD3+CD8+), CD4 T (CD3+CD4+), other."""
+    rng = np.random.default_rng(seed)
+    kind = np.repeat([0, 1, 2], n // 3)
+    table = pd.DataFrame({
+        "label": np.arange(1, n + 1),
+        "CD3 mean": np.where(kind < 2, 800, 50) * rng.lognormal(0, 0.15, n),
+        "CD8 mean": np.where(kind == 0, 600, 40) * rng.lognormal(0, 0.15, n),
+        "CD4 mean": np.where(kind == 1, 500, 30) * rng.lognormal(0, 0.15, n),
+        "volume (µm³)": rng.normal(500, 50, n),
+    })
+    return table, kind
+
+
+def test_clustering_finds_types_and_labels_them():
+    from sklearn.metrics import adjusted_rand_score
+
+    table, kind = cell_types()
+    v = ViewerModel()
+    s = cy.state_of(v)
+    s.set_table("cells", table, "cells")
+    feats = ["CD3 mean", "CD8 mean", "CD4 mean"]
+    rows, m = s.matrix(("all", None), feats, asinh=True)
+    labels, emb = cy.compute_analysis(m, "pca", "kmeans", k=3, seed=1)
+    assert adjusted_rand_score(kind, labels) == pytest.approx(1.0)
+    info = s.add_analysis("Clustering 1", {"population": ["all", None], "features": feats, "asinh": True,
+                                           "map": "PCA"}, rows, labels, emb)
+    assert info["columns"] == {"cluster": "Clustering 1 cluster", "map": ["Clustering 1 PCA 1", "Clustering 1 PCA 2"]}
+    assert "Clustering 1 PCA 1" in s.features() and "Clustering 1 PCA 1" not in s.measured_features()
+    clusters = s.clusters("Clustering 1")
+    assert sorted(np.unique(clusters)) == [1, 2, 3]  # numbered by size
+    profiles = s.profiles("Clustering 1")
+    desc = profiles["description"]
+    cd8 = next(c for c, d in desc.items() if d.startswith("CD8 mean+"))
+    cd4 = next(c for c, d in desc.items() if d.startswith("CD4 mean+"))
+    other = ({1, 2, 3} - {cd8, cd4}).pop()
+    s.add_phenotype("T cell", "`CD3 mean` > 300")
+    made = s.label_clusters("Clustering 1", {cd8: "CD8 T", cd4: "CD4 T"}, parent="T cell")
+    assert [p.name for p in made] == ["CD8 T", "CD4 T"]
+    a = s.assignment()
+    assert (a["phenotype"].to_numpy()[kind == 0] == "CD8 T").all()
+    assert (a["phenotype"].to_numpy()[kind == 2] == "unlabelled").all()
+    # Clusters given the same name merge into one phenotype.
+    made = s.label_clusters("Clustering 1", {other: "Rest", cd8: "Rest"})
+    assert made[0].rule == f"`Clustering 1 cluster` in [{', '.join(map(str, sorted([other, cd8])))}]"
+    with pytest.raises(ValueError):
+        s.label_clusters("Clustering 1", {cd4: "CD4 T"})  # name taken
+
+
+def test_reclustering_within_a_phenotype_and_saving(tmp_path):
+    v, table = scene()
+    s = cy.state_of(v)
+    s.set_table("cells", table, "cells")
+    s.add_phenotype("T cell", "`CD3 mean` > 100")
+    rows, m = s.matrix(("phenotype", "T cell"), ["CD8 mean", "CD3 mean"])
+    assert len(rows) == 12
+    labels, _ = cy.compute_analysis(m, None, "kmeans", k=2, seed=0)
+    s.add_analysis("T split", {"population": ["phenotype", "T cell"], "features": ["CD8 mean", "CD3 mean"]},
+                   rows, labels)
+    clusters = s.clusters("T split")
+    assert (clusters[rows] > 0).all() and (np.delete(clusters, rows) == 0).all()
+    layer = s.show_clusters("T split")
+    assert layer.name == "cells T split" and layer.data.max() == 2
+    expected = s.typed_table()
+    folder, notes = _workspace.save_workspace(v, tmp_path / "w")
+    assert notes == [] and (folder / "cytometry" / "derived.csv").exists()
+    w = ViewerModel()
+    assert _workspace.load_workspace(w, folder) == []
+    restored = cy.state_of(w)
+    assert list(restored.analyses) == ["T split"]
+    pd.testing.assert_frame_equal(restored.typed_table(), expected, check_dtype=False)
+    restored.remove_analysis("T split")
+    assert restored.derived is None
+
+
+def test_clustering_tab(qtbot):
+    from ibif_napari._cyto_workbench import Workbench
+
+    table, kind = cell_types()
+    v = ViewerModel()
+    cy.state_of(v).set_table("cells", table, "cells")
+    bench = Workbench(v)
+    qtbot.addWidget(bench)
+    tab = bench.clustering
+    assert tab.checked_features() == ["CD3 mean", "CD8 mean", "CD4 mean"]  # intensities by default
+    tab.map.setCurrentIndex(tab.map.findData("pca"))
+    tab.method.setCurrentIndex(tab.method.findData("kmeans"))
+    tab.k.setValue(3)
+    info = tab.run(wait=True)
+    assert info is not None and tab.analysis.currentText() == "Clustering 1"
+    assert tab.table.rowCount() == 3 and "+" in tab.table.item(0, 2).text()
+    assert tab.name.text() == "Clustering 2"  # ready for the next run
+    profiles = cy.state_of(v).profiles("Clustering 1")
+    cd8 = next(c for c, d in profiles["description"].items() if d.startswith("CD8 mean+"))
+    tab.set_names({cd8: "CD8 T"})
+    made = tab.make_phenotypes()
+    assert [p.name for p in made] == ["CD8 T"] and bench.pheno_tree.topLevelItemCount() == 1
+    tab.bench.plot_map("Clustering 1")
+    assert bench.x_col.currentText() == "Clustering 1 PCA 1" and bench.color_by.currentText() == "Clustering 1 cluster"
+    assert bench.tabs.currentIndex() == 0
+    # Re-cluster within the phenotype: the Objects box lists it.
+    tab.population.setCurrentIndex(tab.population.findText("Phenotype: CD8 T"))
+    tab.method.setCurrentIndex(tab.method.findData("kmeans"))
+    tab.map.setCurrentIndex(tab.map.findData(None))
+    tab.k.setValue(2)
+    assert tab.run(wait=True)["n_objects"] == 80

@@ -57,8 +57,8 @@ SECTIONS = (
             "Size, position and intensity statistics of every object, as tables",
             "._measure_widget:MeasureWidget"),
     Section("cytometry", "Cytometry",
-            "Gate objects on a plot or the image and build a hierarchy of phenotypes "
-            "(more to come: clustering, spatial features, neighbourhoods)",
+            "Gate and cluster objects and build a hierarchy of phenotypes "
+            "(more to come: spatial features, neighbourhoods)",
             "._cytometry_widget:CytometryWidget"),
     Section("filament_tracing", "Filament tracing",
             "Trace neurons, microtubules and other filaments in 2D or 3D",
