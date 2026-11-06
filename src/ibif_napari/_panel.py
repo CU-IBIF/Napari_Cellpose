@@ -2,7 +2,7 @@
 
 Configuration · Segmentation · Secondary objects · Measurements · Cytometry · Filament
 tracing · Save workspace. Each button's name and description are in its tooltip; the
-current section's name is shown above it. Cytometry is a placeholder for now (disabled).
+current section's name is shown above it. 
 The panel opens on Configuration, and goes back to it when a workspace is loaded.
 """
 from __future__ import annotations
@@ -57,9 +57,9 @@ SECTIONS = (
             "Size, position and intensity statistics of every object, as tables",
             "._measure_widget:MeasureWidget"),
     Section("cytometry", "Cytometry",
-            "Coming soon: cell/object typing (supervised and unsupervised), neighbourhood analyses "
-            "and other cytometry of the measured objects",
-            None),
+            "Gate objects on a plot or the image and build a hierarchy of phenotypes "
+            "(more to come: clustering, spatial features, neighbourhoods)",
+            "._cytometry_widget:CytometryWidget"),
     Section("filament_tracing", "Filament tracing",
             "Trace neurons, microtubules and other filaments in 2D or 3D",
             "._filament_widget:FilamentWidget"),

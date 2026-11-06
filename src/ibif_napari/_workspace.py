@@ -170,6 +170,17 @@ def save_workspace(viewer, folder, include_images=False, progress=None):
                    "angles": [float(a) for a in camera.angles]},
         "measurements": table_files,
     }
+    extensions = {}
+    for name in sorted(set(_extensions)):
+        try:
+            data = _extensions[name][0](viewer, folder)
+        except Exception as e:
+            notes.append(f"{name} could not be saved ({e})")
+            continue
+        if data is not None:
+            extensions[name] = data
+    if extensions:
+        state["extensions"] = extensions
     tmp = folder / "workspace.json.tmp"
     tmp.write_text(json.dumps(state, indent=1))
     os.replace(tmp, folder / "workspace.json")
@@ -258,6 +269,25 @@ def _open_source(path, selection=None):
     return out
 
 
+# Parts of an analysis kept by other modules (e.g. Cytometry gates and phenotypes): each
+# saves into workspace.json under "extensions" and restores itself on load. Modules are
+# imported on demand, so a workspace opens fully even if a section was never shown.
+_EXTENSION_MODULES = {"cytometry": "._cytometry"}
+_extensions = {}  # name -> (save(viewer, folder) -> JSON-able or None, load(viewer, folder, data) -> notes)
+
+
+def register_extension(name, save, load):
+    _extensions[name] = (save, load)
+
+
+def _extension(name):
+    if name not in _extensions and name in _EXTENSION_MODULES:
+        import importlib
+
+        importlib.import_module(_EXTENSION_MODULES[name], __package__)
+    return _extensions.get(name)
+
+
 _loaded = weakref.WeakKeyDictionary()  # viewer -> callbacks run after a workspace is loaded
 
 
@@ -334,6 +364,15 @@ def load_workspace(viewer, path, replace=True):
                 tables[name] = pd.read_csv(folder / rel)
     if tables:
         _measure.remember(viewer, tables, notify=True)
+    for name, data in (state.get("extensions") or {}).items():
+        ext = _extension(name)
+        if ext is None:
+            notes.append(f"{name}: not available in this version of IBIF napari")
+            continue
+        try:
+            notes += list(ext[1](viewer, folder, data) or [])
+        except Exception as e:
+            notes.append(f"{name} could not be restored ({e})")
     for callback in list(_loaded.get(viewer, [])):
         try:
             callback()

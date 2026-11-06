@@ -28,9 +28,7 @@ def test_icon_buttons_in_order_with_tooltips(panel):
         assert (ICONS / f"{s.key}.png").exists() and not button.icon().isNull()
         assert button.text() == ""  # the name is in the tooltip, not on the button
         assert s.title in button.toolTip() and button.accessibleName() == s.title
-    # Cytometry is there but inactive for now.
-    assert not panel.buttons["cytometry"].isEnabled() and panel.pages["cytometry"] is None
-    assert all(panel.buttons[s.key].isEnabled() for s in SECTIONS if s.key != "cytometry")
+    assert all(panel.buttons[s.key].isEnabled() for s in SECTIONS)
 
 
 def test_opens_on_configuration_and_switches(panel):
@@ -46,8 +44,9 @@ def test_opens_on_configuration_and_switches(panel):
     assert isinstance(panel.pages["segmentation"], CellposeWidget)
     assert not panel.buttons["configuration"].isChecked()
     assert isinstance(panel.show_section("save_workspace"), WorkspaceWidget)
-    with pytest.raises(ValueError):
-        panel.show_section("cytometry")
+    from ibif_napari._cytometry_widget import CytometryWidget
+
+    assert isinstance(panel.show_section("cytometry"), CytometryWidget)
 
 
 def test_loading_a_workspace_goes_back_to_configuration(panel, tmp_path):
@@ -71,4 +70,4 @@ def test_manifest_lists_the_panel_and_sections():
     manifest = yaml.safe_load((Path(_workspace.__file__).with_name("napari.yaml")).read_text())
     names = [w["display_name"] for w in manifest["contributions"]["widgets"]]
     assert names == ["IBIF napari", "Configuration", "Segmentation (Cellpose)", "Secondary objects",
-                     "Measurements", "Filament tracing", "Save workspace"]
+                     "Measurements", "Cytometry", "Filament tracing", "Save workspace"]

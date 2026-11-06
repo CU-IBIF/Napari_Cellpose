@@ -17,5 +17,5 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0 libfontconfig1 libdbus-1-3
       # The tests stub Cellpose, so skip installing it (and PyTorch) here.
       # napari 0.10+ needs Qt 6.7+ (its pyqt5 extra is gone). pylibCZIrw writes test CZI files.
-      - run: pip install "napari[pyqt6]" nd2 bioio-czi bioio-lif pylibCZIrw skan paramiko matplotlib pytest pytest-qt && pip install -e . --no-deps
+      - run: pip install "napari[pyqt6]" nd2 bioio-czi bioio-lif pylibCZIrw skan paramiko matplotlib pytest pytest-qt "vtea-core @ git+https://github.com/winfrees/vtea-python@9401d685f2b331c770cb733bc342f9b16d51cf70#subdirectory=packages/vtea-core" && pip install -e . --no-deps
       - run: pytest -q
