@@ -56,7 +56,10 @@ Cellpose from a [facility GPU server](docs/facility-server.md) or a
   hierarchy of phenotypes (e.g. *Immune > T cell > CD8 T cell*). The plot opens in a
   separate **Cytometry workbench** window linked to the viewer: click a point to go to
   the object, show any gate or phenotype level on the image, export the typed table.
-  Built on [vtea-core](https://github.com/winfrees/vtea-python); clustering, spatial
+  It also finds object types by clustering: a UMAP, t-SNE or PCA map, Leiden, Louvain,
+  k-means or Gaussian-mixture clusters, a heat map of each cluster's markers, and
+  clusters named as phenotypes. You can re-cluster within a phenotype to split it
+  further. Built on [vtea-core](https://github.com/winfrees/vtea-python); spatial
   features and neighbourhood analysis are next. See [docs/cytometry.md](docs/cytometry.md).
 - **Save workspace**: **Save workspace…** keeps everything to come back to or share in
   one `.ibif` folder: all layers with their display settings, the view and the

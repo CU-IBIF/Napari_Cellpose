@@ -23,9 +23,8 @@ from qtpy.QtWidgets import (
 from . import _cytometry as cy
 from . import _measure
 
-COMING = ("Coming next in this section: dimensionality reduction and clustering to find "
-          "object types, spatial features (distance to cell types, by centroid or surface), "
-          "and neighbourhood analysis (cellular neighbourhoods, enrichment).")
+COMING = ("Coming next in this section: spatial features (distance to cell types, by "
+          "centroid or surface) and neighbourhood analysis (cellular neighbourhoods, enrichment).")
 
 
 class CytometryWidget(QWidget):
@@ -34,9 +33,9 @@ class CytometryWidget(QWidget):
         self.viewer = napari_viewer
         self.state = cy.state_of(napari_viewer)
         layout = QVBoxLayout(self)
-        intro = QLabel("Gate objects on a plot or on the image, and build a hierarchy of "
-                       "phenotypes (e.g. Immune > T cell > CD8 T cell). Measure the objects "
-                       "first (Measurements), then choose them here.")
+        intro = QLabel("Gate objects on a plot or on the image, cluster them to find types, "
+                       "and build a hierarchy of phenotypes (e.g. Immune > T cell > CD8 T cell). "
+                       "Measure the objects first (Measurements), then choose them here.")
         intro.setWordWrap(True)
         layout.addWidget(intro)
         form = QFormLayout()

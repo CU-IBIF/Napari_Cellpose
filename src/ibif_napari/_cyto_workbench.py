@@ -28,6 +28,7 @@ from qtpy.QtWidgets import (
     QPushButton,
     QSpinBox,
     QSplitter,
+    QTabWidget,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -51,6 +52,12 @@ class Workbench(QWidget):
         self._image_layer = None
         self._watched = None
         outer = QVBoxLayout(self)
+        self.tabs = QTabWidget()
+        outer.addWidget(self.tabs)
+        gating = QWidget()
+        g_layout = QVBoxLayout(gating)
+        g_layout.setContentsMargins(4, 4, 4, 4)
+        self.tabs.addTab(gating, "Gating")
 
         # ---- what to plot ----
         row = QHBoxLayout()
@@ -69,10 +76,10 @@ class Workbench(QWidget):
         row.addWidget(QLabel("Colour"))
         self.color_by = QComboBox()
         row.addWidget(self.color_by, 2)
-        outer.addLayout(row)
+        g_layout.addLayout(row)
 
         split = QSplitter(Qt.Horizontal)
-        outer.addWidget(split, 1)
+        g_layout.addWidget(split, 1)
         left = QWidget()
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
@@ -142,6 +149,10 @@ class Workbench(QWidget):
         for w in (self.x_tf, self.y_tf):
             w.currentIndexChanged.connect(self.replot)
         self.plot.on_pick(self.go_to_row)
+        from ._cyto_cluster import ClusteringTab
+
+        self.clustering = ClusteringTab(self)
+        self.tabs.addTab(self.clustering, "Clustering")
         self.state.listen(self.refresh)
         self.refresh()
 
@@ -168,6 +179,8 @@ class Workbench(QWidget):
         self._fill_phenotypes()
         self._watch_layer()
         self.replot()
+        if hasattr(self, "clustering"):
+            self.clustering.refresh()
         if state.table is None:
             self.status.setText("Choose the objects to analyse in the Cytometry section (Measure them first).")
 
@@ -243,6 +256,25 @@ class Workbench(QWidget):
             raise ValueError(f"no population {kind} {key!r}")
         self.population.setCurrentIndex(index)
 
+    def plot_map(self, analysis):
+        """Show an analysis's map on the Gating tab, coloured by its clusters."""
+        info = self.state.analyses[analysis]
+        cols = info["columns"]
+        if cols.get("map"):
+            x, y = (cols["map"] + cols["map"])[:2]
+            for box, tf, col in ((self.x_col, self.x_tf, x), (self.y_col, self.y_tf, y)):
+                box.setCurrentText(col)
+                tf.setCurrentText("linear")
+        if cols.get("cluster"):
+            self.color_by.setCurrentText(cols["cluster"])
+        pop = info.get("population") or ["all", None]
+        try:
+            self.set_population(pop[0], pop[1])
+        except ValueError:
+            self.set_population("all")
+        self.tabs.setCurrentIndex(0)
+        self.replot()
+
     def axes(self):
         return (cy.axis_column(self.x_col.currentText(), self.x_tf.currentText()),
                 cy.axis_column(self.y_col.currentText(), self.y_tf.currentText()))
@@ -267,8 +299,14 @@ class Workbench(QWidget):
             legend = [(n, palette[n]) for n in palette if (assign == n).any()]
         elif color_by == COLOR_POPULATION:
             colors = _population_color(state, kind, key)
-        elif color_by in state.table.columns:
+        elif color_by in state.features():
             values = state.column(color_by)[index]
+            if _categorical(color_by, values):
+                ids = values.astype(np.int64)
+                colors = np.array([_category_color(i) for i in ids], dtype=object)
+                legend = [(f"cluster {i}" if i > 0 else "not clustered", _category_color(i))
+                          for i in np.unique(ids)][:20]
+                values = None
         gates = []
         for gate in state.gates:  # gates drawn on these axes, directly within the shown population
             if (gate.x_axis, gate.y_axis) != (x_name, y_name):
@@ -609,6 +647,15 @@ def _pop_parse(value):
         return ("all", None)
     kind, _, key = value.partition("\t")
     return (kind, key or None)
+
+
+def _categorical(name, values):
+    """Cluster ids are coloured as categories, not on a colour scale."""
+    return name.endswith(" cluster") and len(values) > 0
+
+
+def _category_color(i):
+    return "#bdbdbd" if i <= 0 else cy.PALETTE[(int(i) - 1) % len(cy.PALETTE)]
 
 
 def _transform_box():
