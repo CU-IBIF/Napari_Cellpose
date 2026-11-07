@@ -4,12 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ibif-napari"
-version = "0.19.0"
+version = "0.19.1"
 description = "napari with Nikon ND2, Zeiss CZI and Leica LIF support, a dimension panel, 3D Cellpose (local, facility GPU server or GPU cluster) and a filament tracer built in"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "napari[all]>=0.5",
+    # napari[all] 0.8+ needs zarr>=3, but vtea-core still needs zarr<3. Without this cap pip
+    # backtracks through every napari release (and every plugin release beneath it) and fails
+    # with "resolution-too-deep". Lift it once vtea-core supports zarr 3.
+    "napari[all]>=0.7.1,<0.8",
     "nd2>=0.10",
     "bioio-czi>=2",
     "bioio-lif>=1",
@@ -25,8 +28,14 @@ dependencies = [
     "skan>=0.12",
     # Filament plugins that also appear under Plugins: click-to-trace with SWC files,
     # and 2D spline tracing of single filaments (Python 3.11+ only)
-    "napari-tracing",
-    "napari-filaments; python_version >= '3.11'",
+    # Floors on these plugins and their helper libraries keep pip from backtracking through
+    # dozens of old releases (several are source-only and get built just to read metadata),
+    # which ends in "resolution-too-deep" on macOS.
+    "napari-tracing>=1.0.2",
+    "brightest-path-lib>=1.0.57",
+    "napari-filaments>=0.5.2; python_version >= '3.11'",
+    "magic-class>=0.7.24; python_version >= '3.11'",
+    "macro-kit>=0.4.10; python_version >= '3.11'",
     "paramiko>=3.2",
     # Cytometry: VTEA's headless analysis library (gates, phenotype trees, clustering,
     # neighbourhoods), with UMAP and Leiden/Louvain. Not on PyPI yet, so installed from its
