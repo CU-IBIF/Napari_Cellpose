@@ -191,7 +191,8 @@ the planes you look at are read, so even large time lapses open quickly.
 
 When a file opens:
 
-- every **channel** becomes its own image layer, named from the file and coloured from its
+- every **channel** becomes its own image layer, named after the file and the channel
+  (for example *sample DAPI* for the DAPI channel of `sample.nd2`) and coloured from its
   emission wavelength;
 - the **voxel size** (µm) and **time interval** are read from the file, so sliders show µm
   and seconds, and measurements are in physical units;
@@ -304,7 +305,8 @@ labels layer, here renamed* nuclei, *with each nucleus in its own colour.*
 6. Tick **Use GPU** if you have one (it is ticked automatically when one is found).
 7. Click **Run Cellpose**. The status line shows progress. **Cancel** stops at once.
 
-The result is a labels layer named after the image (for example *DAPI cellpose T0*). You
+The result is a labels layer named after the image (for example *sample DAPI cellpose T0*,
+or *… cellpose all* for every time point). You
 may want to rename it (double-click its name in the layer list), for example to *nuclei*.
 
 ### 7.3 Settings
