@@ -371,7 +371,7 @@ voxel size, so 3D stacks are handled correctly.
 ![Whole cells grown from the nuclei](images/07_secondary.png)
 
 *Whole cells (outlines) grown from the segmented nuclei (filled) in the membrane channel, with
-the Otsu threshold lowered (Threshold × 0.3) and a 3 µm maximum distance.*
+the default Otsu foreground and a 3 µm maximum distance.*
 
 Choose the **Objects** to start from (for example *nuclei*) and what to **Make**:
 
@@ -388,7 +388,10 @@ Choose the **Objects** to start from (for example *nuclei*) and what to **Make**
   scaled to 0–1 and they are averaged, so a dim and a bright stain count equally.
 - **Channel shows**:
   - **Membranes (bright cell borders)**: a seeded watershed on the image. Each cell grows
-    from its nucleus until it meets a bright border.
+    from its nucleus until it meets a bright border. The inside of a cell is often as dark
+    as the background in a membrane stain; dark areas enclosed by membrane (in each Z
+    plane) are therefore counted as cell when they contain a nucleus. An enclosed space
+    with no nucleus, such as a lumen, stays background.
   - **Cytoplasm (bright cell interior)**: a compact watershed on the image gradient, which
     stops where the brightness changes (the cell edge). The nucleus, often dark in a
     cytoplasm stain, is first filled in with the surrounding brightness.
@@ -405,13 +408,12 @@ Choose the **Objects** to start from (for example *nuclei*) and what to **Make**
 Click **Make objects**. The new layers are named after the seeds, for example *nuclei cells*
 and *nuclei cytoplasm*.
 
-> **Membrane stains: check the foreground.** With a membrane stain the inside of the cell is
-> often as dark as the background, so an automatic threshold keeps only the bright membrane
-> and leaves a dark gap between nucleus and membrane. The membrane can then be given to the
-> wrong cell. Look at the result with the cells layer as outlines over the membrane channel.
-> If cells look like rings or have the wrong colour, lower **Threshold ×** (for example to
-> 0.3), or choose **None (whole image)**. In both cases set **Max distance** to about the
-> distance from the nucleus edge to the membrane, so cells cannot grow into empty space.
+> **Check the result.** Look at the cells layer as outlines (*contour* in its layer
+> controls) over the cell channel. Cells at the edge of a group have no membrane on their
+> outer side and grow as far as the foreground allows; set **Max distance** to about the
+> distance from the nucleus edge to the membrane to stop them. A cell whose membrane is
+> broken in a plane is not enclosed there; lowering **Threshold ×** or increasing
+> **Smoothing** closes small gaps.
 
 *Background.* The watershed transform (Vincent & Soille 1991) treats the image as a landscape
 and floods it from the seeds; cells meet where the floods meet. Growing cells from nuclei in
@@ -733,10 +735,10 @@ and reproducible (Senft et al. 2023; Aaron & Chew 2021; Schmied et al. 2024):
 - Filament tracing: diameter range, threshold, pruning and minimum length.
 
 *Example.* "Nuclei were segmented in 3D from the DAPI channel with Cellpose 4
-(`cpsam_v2`; Pachitariu et al. 2025) in IBIF napari 0.19 (napari 0.7), with automatic
+(`cpsam_v2`; Pachitariu et al. 2025) in IBIF napari 0.19.2 (napari 0.7), with automatic
 diameter and default flow (0.4) and cell-probability (0) thresholds. Cells were grown from the
-nuclei by a seeded watershed of the membrane channel, within a foreground of 0.3 × the Otsu
-threshold and at most 3 µm from each nucleus. Mean intensities of CD3 and CD8 were measured
+nuclei by a seeded watershed of the membrane channel within an Otsu foreground, at most
+3 µm from each nucleus. Mean intensities of CD3 and CD8 were measured
 per cell; CD3⁺ and CD8⁺ gates were set from secondary-only controls on asinh-transformed
 intensities."
 
@@ -773,7 +775,7 @@ on your own data, as described in [section 7.5](#75-checking-and-correcting-the-
 | Objects look squashed or stretched in 3D | The voxel size is wrong or missing; check the layer's scale. |
 | Many merged or split objects | Set **Diameter**; adjust **Flow threshold** and **Cell probability**; try another model; train a custom model. |
 | Cells leak into each other in Secondary objects | Use **Max distance**, raise **Threshold ×**, increase **Smoothing**, or switch between *Membranes* and *Cytoplasm*. |
-| Whole cells look like rings, or a membrane gets the wrong cell's colour | The cell interior is below the threshold. Lower **Threshold ×** or use **None (whole image)**, with a **Max distance** ([section 8](#8-secondary-objects-cells-cytoplasm-rings-and-rims)). |
+| Whole cells look like rings, or a membrane gets the wrong cell's colour | Update to version 0.19.2 or later, which fills membrane-enclosed cell interiors. If the membrane has gaps, lower **Threshold ×** or increase **Smoothing** ([section 8](#8-secondary-objects-cells-cytoplasm-rings-and-rims)). |
 | A CZI or LIF file reports a missing package | `pip install bioio-czi bioio-lif` |
 | Something else | Start `ibif-napari` from a terminal and read the messages there; report problems at [github.com/CU-IBIF/Napari_Cellpose/issues](https://github.com/CU-IBIF/Napari_Cellpose/issues). |
 

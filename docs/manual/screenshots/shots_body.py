@@ -156,7 +156,7 @@ for i in range(sec.channels.count()):
     item.setCheckState(Qt.Checked if item.text() == names[1] else Qt.Unchecked)
 sec.kind.setCurrentIndex(0)  # membranes
 sec.max_distance.setValue(3)
-sec.factor.setValue(0.3)
+
 viewer.layers[names[1]].visible = True
 n_before = len(viewer.layers)
 sec.run()

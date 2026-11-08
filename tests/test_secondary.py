@@ -93,6 +93,36 @@ def test_seeded_cells_membrane_stain():
     assert (cells[nuclei > 0] == nuclei[nuclei > 0]).all()
 
 
+def dark_interior_cells():
+    """Two touching cells whose membranes are the only signal (dark inside, as many membrane
+    stains are), plus an enclosed space with no nucleus (a lumen) on the right."""
+    img = np.zeros((40, 80), np.float32)
+    img[10, 5:66] = img[30, 5:66] = 1.0  # top and bottom membranes
+    for x in (5, 24, 45, 65):
+        img[10:31, x] = 1.0  # side membranes: cell 1 | cell 2 | lumen
+    return img
+
+
+def test_seeded_cells_membrane_stain_with_a_dark_interior():
+    nuclei = np.zeros((40, 80), np.uint16)
+    yy, xx = np.indices(nuclei.shape)
+    nuclei[((yy - 20) ** 2 + (xx - 14) ** 2) <= 9] = 1
+    nuclei[((yy - 20) ** 2 + (xx - 34) ** 2) <= 9] = 2
+    # The default threshold keeps only the membranes; the cells must still fill them.
+    cells, _ = seeded_cells(nuclei, dark_interior_cells(), kind="membrane", threshold="otsu", smooth=0)
+    assert cells[12, 7] == 1 and cells[28, 22] == 1  # far corners of cell 1
+    assert cells[12, 26] == 2 and cells[28, 43] == 2  # far corners of cell 2
+    assert (cells[10:31, 6:24] == 1).all() and (cells[11:30, 25:45] == 2).all()
+    assert (cells[11:30, 46:65] == 0).all()  # the lumen has no nucleus: not a cell
+    assert cells[2, 2] == 0 and cells[38, 78] == 0  # background stays empty
+    # In 3D, per Z plane.
+    cells3d, _ = seeded_cells(np.stack([nuclei] * 3), np.stack([dark_interior_cells()] * 3),
+                              spacing=(2.0, 1.0, 1.0), kind="membrane", smooth=0)
+    for plane in cells3d:
+        assert (plane[11:30, 6:24] == 1).all() and (plane[11:30, 25:45] == 2).all()
+        assert (plane[11:30, 46:65] == 0).all() and plane[2, 2] == 0
+
+
 def test_seeded_cells_cytoplasm_distance_limit_and_cytoplasm():
     nuclei = two_nuclei()
     img = np.zeros((40, 60), np.float32)
