@@ -1,5 +1,8 @@
 # IBIF napari: ND2/CZI/LIF + 3D Cellpose + filament tracing
 
+**New here? Start with the [user guide](docs/manual/README.md)**: a step-by-step manual
+with screenshots, the methods behind each step and references.
+
 [napari](https://napari.org) with eight things built in, plus optional GPU help for
 Cellpose from a [facility GPU server](docs/facility-server.md) or a
 [GPU cluster](docs/cluster.md):
