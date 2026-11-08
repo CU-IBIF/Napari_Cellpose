@@ -604,25 +604,36 @@ def _seeded(ctx, res):
     for name in ("cells_2d", "cells_3d"):
         sc = ctx.scene(name)
         sp = sc.spec.spacing
-        cells, used = _secondary.seeded_cells(sc.nuclei, sc.acquired["cytoplasm"], sp, kind="cytoplasm",
-                                              threshold="otsu", smooth=0.5)  # the panel's defaults
-        m = metrics.match(sc.cells, cells)
-        same = all(p[0] == p[1] for p in m["pairs"] if p[2] >= 0.5)
-        own_seed = all(np.all(cells[sc.nuclei == i] == i) for i in np.unique(sc.nuclei)[1:])
-        cyto = _secondary.cytoplasm(cells, sc.nuclei)
-        cyto_ok = np.array_equal(cyto, np.where(sc.nuclei > 0, 0, cells))
-        res.check(f"{name}: mean IoU with the true cells", m["mean_iou"], ">=", ctx.limits["seeded_iou"])
-        res.check(f"{name}: F1 at IoU 0.5", m["f1@0.5"], ">=", ctx.limits["seeded_f1"])
-        res.check(f"{name}: every cell has its seed's number", same and own_seed, "is", True)
-        res.check(f"{name}: cytoplasm = cell minus nucleus", cyto_ok, "is", True)
-        rows.append({"scene": name, **metrics.summary(m), "threshold": used})
-        res.figures.append((f"{name}: cells grown from the true nuclei",
-                            seg_figure(sc.acquired["cytoplasm"], sc.cells, cells, name)))
-        res.evidence.append(
-            f"{name}: cells grown from the {m['n_true']} true nuclei match the true cells with mean IoU "
-            f"{m['mean_iou']:.3f} (F1 {m['f1@0.5']:.3f}); each keeps its nucleus's number.")
+        border = synth._borders(sc.cells)  # each true cell's membrane voxels
+        for kind in ("cytoplasm", "membrane"):
+            # The panel's defaults: Otsu x 1.0, smoothing 0.5 µm, no maximum distance.
+            cells, used = _secondary.seeded_cells(sc.nuclei, sc.acquired[kind], sp, kind=kind,
+                                                  threshold="otsu", smooth=0.5)
+            m = metrics.match(sc.cells, cells)
+            same = all(p[0] == p[1] for p in m["pairs"] if p[2] >= 0.5)
+            own_seed = all(np.all(cells[sc.nuclei == i] == i) for i in np.unique(sc.nuclei)[1:])
+            stolen = 0  # true cells whose membrane mostly carries another seed's number
+            for i in np.unique(sc.cells)[1:]:
+                got = cells[(sc.cells == i) & border]
+                stolen += int(np.mean((got != i) & (got != 0)) > 0.5)
+            cyto = _secondary.cytoplasm(cells, sc.nuclei)
+            cyto_ok = np.array_equal(cyto, np.where(sc.nuclei > 0, 0, cells))
+            label = f"{name}, {kind}"
+            res.check(f"{label}: mean IoU with the true cells", m["mean_iou"], ">=", ctx.limits["seeded_iou"])
+            res.check(f"{label}: F1 at IoU 0.5", m["f1@0.5"], ">=", ctx.limits["seeded_f1"])
+            res.check(f"{label}: every cell has its seed's number", same and own_seed, "is", True)
+            res.check(f"{label}: membranes mostly given another seed's number", stolen, "==", 0)
+            res.check(f"{label}: cytoplasm = cell minus nucleus", cyto_ok, "is", True)
+            rows.append({"scene": name, "channel": kind, **metrics.summary(m), "threshold": used,
+                         "membranes given to another cell": stolen})
+            res.figures.append((f"{label}: cells grown from the true nuclei",
+                                seg_figure(sc.acquired[kind], sc.cells, cells, name)))
+            res.evidence.append(
+                f"{label}: cells grown from the {m['n_true']} true nuclei match the true cells with "
+                f"mean IoU {m['mean_iou']:.3f} (F1 {m['f1@0.5']:.3f}); each keeps its nucleus's number"
+                f" and {stolen} true cells have their membrane mostly labelled as another cell.")
     res.tables["seeded cells"] = pd.DataFrame(rows)
-    res.metrics = {r["scene"]: {k: r[k] for k in ("f1@0.5", "mean_iou")} for r in rows}
+    res.metrics = {f"{r['scene']} {r['channel']}": {k: r[k] for k in ("f1@0.5", "mean_iou")} for r in rows}
 
 
 @check("VV-MEAS-01")

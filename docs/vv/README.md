@@ -127,7 +127,8 @@ the traceback is in the report.
 
 ## What the suite found (and was fixed)
 
-The first runs found two real problems. Both are fixed in the same change as the suite:
+The first runs found two real problems. Both are fixed in the same change as the suite
+(a third, found later, is listed after them):
 
 1. **Leica LIF time series had no time interval** (VV-IO-02). bioio-lif only reports the
    interval for plate scans, so every ordinary LIF time series opened without seconds on the
@@ -140,6 +141,19 @@ The first runs found two real problems. Both are fixed in the same change as the
    them and uses a compact watershed on the scaled gradient, like CellProfiler's propagation.
    On 12 freshly seeded scenes that the suite does not use (to avoid tuning to the test
    data), F1 rose from 0.91 to 1.00 and mean IoU from 0.93 to 0.95.
+3. **"Whole cells from these seeds" with a membrane channel gave a cell's membrane to its
+   neighbour** (VV-SEC-03, found while making the user guide's screenshots; the suite then
+   only tested the cytoplasm channel). Inside a cell a membrane stain is as dark as the
+   background, so the Otsu foreground kept only the membranes. The watershed was limited to
+   that foreground: a seed could not cross the dark inside to reach its own membrane, but
+   touching membranes connected it to its neighbours', which it took. On a 34-cell 3D
+   tissue scene, 18 cells had their membrane mostly labelled as another cell. Now each dark
+   region next to a seed counts as the inside of that cell, and dark regions that touch no
+   seed are flooded as the outside. Cells and outside meet on the ridge of the membrane,
+   and each cell then keeps the membrane voxel just outside that ridge. VV-SEC-03 now also
+   runs the membrane channel with the panel's defaults. On 12 freshly seeded
+   `cells_2d`/`cells_3d` scenes, membrane F1 rose from 0.20 to 1.00 and mean IoU from 0.28
+   to 0.94. The cytoplasm results did not change.
 
 ## Adding a requirement
 

@@ -157,11 +157,15 @@ REQUIREMENTS = [
         "VV-SEC-03", "Secondary objects", "Whole cells grown from nuclei match the true cells",
         "Whole cells grown from nuclei in a cell channel shall match the true cells, each "
         "with its nucleus's number; the cytoplasm shall be the cell minus its nucleus.",
-        "Secondary objects section: Whole cells from these seeds, Also add cytoplasm",
-        "Test with the truth nuclei as seeds on cells_2d and cells_3d (cytoplasm channel, "
-        "Otsu threshold).",
+        "Secondary objects section: Whole cells from these seeds (Cytoplasm, Membranes), "
+        "Also add cytoplasm",
+        "Test with the truth nuclei as seeds on cells_2d and cells_3d: the cytoplasm channel "
+        "as Cytoplasm and the membrane channel as Membranes, with the panel's defaults (Otsu "
+        "threshold x 1.0, no maximum distance). In the membrane channel the inside of each "
+        "cell is as dark as the background.",
         ["mean IoU with the true cells >= {seeded_iou}", "F1 at IoU 0.5 >= {seeded_f1}",
-         "every cell has its seed's number", "cytoplasm = cell minus nucleus, exactly"],
+         "every cell has its seed's number, and no true cell's membrane is mostly another seed's number",
+         "cytoplasm = cell minus nucleus, exactly"],
         scenes=["cells_2d", "cells_3d"]),
     # ---- measurements ---------------------------------------------------------------------
     Requirement(

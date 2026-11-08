@@ -111,13 +111,13 @@ def seeded_cells(seeds, image, spacing=None, kind="membrane", threshold="otsu", 
     """Whole cells grown from `seeds` (e.g. nuclei labels) in `image` (one channel, or the
     combined channels), keeping each seed's label number.
 
-    kind: "membrane" (bright cell borders: the watershed runs on the image; dark areas the
-          foreground encloses count as cell when they hold a seed),
+    kind: "membrane" (bright cell borders: the watershed runs on the image; dark regions
+          next to a seed are that cell's inside, other dark regions are outside the cells),
           "cytoplasm" (bright cell interior: a compact watershed on the image's gradient,
           with the seeds given the intensity of the cytoplasm next to them), or
           "distance" (ignore intensity: each foreground pixel goes to the nearest seed).
-    The cells are limited to the foreground (`threshold`, see `foreground`) and, if given,
-    to `max_distance` from their seed. `smooth` is a Gaussian sigma in the same units as
+    The cells are limited to the foreground (`threshold`, see `foreground`; for membranes,
+    plus the dark inside of each cell) and, if given, to `max_distance` from their seed. `smooth` is a Gaussian sigma in the same units as
     `spacing`. Returns (cells, threshold used).
     """
     from skimage import filters
@@ -139,24 +139,17 @@ def seeded_cells(seeds, image, spacing=None, kind="membrane", threshold="otsu", 
         image = image[tuple(index)]
     if smooth:
         image = ndi.gaussian_filter(image, sigma=[smooth / s for s in sp])
-    mask, used = foreground(image, threshold, value, factor)
-    if kind == "membrane":
-        # A membrane stain leaves the inside of each cell dark, so a threshold keeps only the
-        # membranes. Without the inside, a seed cannot reach its own membrane, and a
-        # neighbour's seed can claim it through touching membranes. Areas the foreground
-        # encloses (in each Z plane) count as cell when they hold a seed; an enclosed space
-        # with no seed (a lumen) stays background.
-        mask |= _enclosed_with_seed(mask, seeds > 0)
-    mask |= seeds > 0
+    fg, used = foreground(image, threshold, value, factor)
+    fg |= seeds > 0
     nearest, dist = nearest_object(seeds, sp)
-    if max_distance:
-        mask &= dist <= max_distance
+    within = dist <= max_distance if max_distance else None
+    mask = fg if within is None else fg & within
     if not seeds.any():
         return np.zeros_like(seeds), used
     if kind == "distance":
         cells = np.where(mask, nearest, 0)
     elif kind == "membrane":
-        cells = watershed(image, markers=seeds, mask=mask)
+        cells = _membrane_watershed(image, seeds, fg, within)
     else:
         # Gradient scaled to ~0-1, plus a little distance from the seed (a compact
         # watershed, like CellProfiler's propagation): where neighbouring cells are about
@@ -170,17 +163,46 @@ def seeded_cells(seeds, image, spacing=None, kind="membrane", threshold="otsu", 
     return _connected_to_seed(cells, seeds).astype(seeds.dtype, copy=False), used
 
 
-def _enclosed_with_seed(mask, seeded):
-    """Pixels not in `mask` but enclosed by it in their YX plane, in connected regions that
-    contain a seed pixel."""
-    planes = mask.reshape((-1,) + mask.shape[-2:])
-    filled = np.stack([ndi.binary_fill_holes(p) for p in planes]).reshape(mask.shape)
-    holes = filled & ~mask
-    if not holes.any():
-        return holes
-    regions, _ = ndi.label(holes)
-    keep = np.unique(regions[holes & seeded])
-    return np.isin(regions, keep[keep > 0])
+def _membrane_watershed(image, seeds, foreground_mask, allowed=None):
+    """Seeded watershed of a membrane image, with the dark outside flooded as well.
+
+    In a membrane stain the inside of a cell is often as dark as the background, so the
+    foreground holds little more than the bright membranes. A watershed limited to the
+    foreground cannot cross the dark gap from a seed to its own membrane, while touching
+    membranes still connect it to its neighbours' membranes, which it then takes. So here
+    each dark region (outside the foreground) that touches a seed is taken as the inside of
+    that cell, and every dark region that touches no seed is outside the cells and floods
+    from its own marker (so an enclosed space with no seed, a lumen, stays background).
+    Cells and outside meet on the ridge of the membrane, so the result hardly depends on the
+    threshold; each cell then takes back the foreground pixels next to it on the outside of
+    that ridge, one pixel deep, so its membrane is part of it. `allowed` (e.g. the maximum
+    distance) limits where the cells may grow.
+    """
+    from skimage.segmentation import watershed
+
+    dark, n = ndi.label(~foreground_mask)
+    inside = np.zeros(n + 1, bool)
+    inside[0] = True
+    inside[np.unique(dark[ndi.binary_dilation(seeds > 0) & (dark > 0)])] = True
+    outside = ~inside[dark]
+    if allowed is not None:
+        outside &= allowed
+    if not outside.any():  # e.g. threshold "none", or no outside within the distance limit
+        return watershed(image, markers=seeds, mask=allowed)
+    markers = seeds.astype(np.int64)
+    out_label = int(markers.max()) + 1
+    markers[outside] = out_label
+    cells = watershed(image, markers=markers, mask=allowed)
+    cells[cells == out_label] = 0
+    # The membrane itself is part of its cell: each foreground pixel the outside took next to
+    # a cell (sharing a face with it) goes to that cell.
+    if cells.any():
+        dist, index = ndi.distance_transform_edt(cells == 0, return_indices=True)
+        near = foreground_mask & (cells == 0) & (dist <= 1)
+        if allowed is not None:
+            near &= allowed
+        cells[near] = cells[tuple(index)][near]
+    return cells
 
 
 def _connected_to_seed(cells, seeds):

@@ -17,7 +17,7 @@ Generated from `src/ibif_napari/vv/requirements.py` (`ibif-napari-vv requirement
 | VV-SEG-06 | Segmentation | Segmenting a painted region | Segmentation section: Region, Draw…, Drop cells mostly outside the painted area | validation |
 | VV-SEC-01 | Secondary objects | Expand grows objects by the set distance | Secondary objects section: Expand | verification |
 | VV-SEC-02 | Secondary objects | Rings and rims have the set gap and width | Secondary objects section: Ring, Rim | verification |
-| VV-SEC-03 | Secondary objects | Whole cells grown from nuclei match the true cells | Secondary objects section: Whole cells from these seeds, Also add cytoplasm | validation |
+| VV-SEC-03 | Secondary objects | Whole cells grown from nuclei match the true cells | Secondary objects section: Whole cells from these seeds (Cytoplasm, Membranes), Also add cytoplasm | validation |
 | VV-MEAS-01 | Measurements | Object size in µm² / µm³ | Measurements section: area / volume, equivalent diameter | verification |
 | VV-MEAS-02 | Measurements | Object centroids in µm | Measurements section: centroid Z/Y/X (µm), click a row to go to the object | verification |
 | VV-MEAS-03 | Measurements | Intensity statistics per object | Measurements section: <channel> mean / median / min / max / std / sum | validation |
@@ -200,15 +200,15 @@ Generated from `src/ibif_napari/vv/requirements.py` (`ibif-napari-vv requirement
 
 **Requirement.** Whole cells grown from nuclei in a cell channel shall match the true cells, each with its nucleus's number; the cytoplasm shall be the cell minus its nucleus.
 
-**Feature.** Secondary objects section: Whole cells from these seeds, Also add cytoplasm
+**Feature.** Secondary objects section: Whole cells from these seeds (Cytoplasm, Membranes), Also add cytoplasm
 
-**Method.** Test with the truth nuclei as seeds on cells_2d and cells_3d (cytoplasm channel, Otsu threshold).
+**Method.** Test with the truth nuclei as seeds on cells_2d and cells_3d: the cytoplasm channel as Cytoplasm and the membrane channel as Membranes, with the panel's defaults (Otsu threshold x 1.0, no maximum distance). In the membrane channel the inside of each cell is as dark as the background.
 
 **Acceptance criteria.**
 
 - mean IoU with the true cells >= 0.8
 - F1 at IoU 0.5 >= 0.9
-- every cell has its seed's number
+- every cell has its seed's number, and no true cell's membrane is mostly another seed's number
 - cytoplasm = cell minus nucleus, exactly
 
 *scenes: `cells_2d`, `cells_3d`*

@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from scipy import ndimage as ndi
 
 from ibif_napari._secondary import (
     combine_channels,
@@ -147,3 +148,43 @@ def test_seeded_cells_in_3d_and_input_checks():
     with pytest.raises(ValueError, match="spacing"):
         expand(nuclei, 1, spacing=(1, 1))
     assert not seeded_cells(np.zeros_like(nuclei), img)[0].any()
+
+
+def membrane_only_image():
+    """Two touching square cells as seen in a membrane stain: each cell has its own bright
+    one-pixel membrane, the two membranes touch, and the cell insides are as dark as the
+    background. Returns (image, true cells)."""
+    truth = np.zeros((40, 60), np.uint16)
+    truth[10:31, 5:25] = 1
+    truth[10:31, 25:46] = 2
+    img = np.zeros((40, 60), np.float32)
+    for label in (1, 2):
+        cell = truth == label
+        img[cell & ~ndi.binary_erosion(cell)] = 1.0
+    return img, truth
+
+
+def test_seeded_cells_membrane_with_dark_inside_keeps_each_ring():
+    # With the default Otsu foreground only the membranes are kept. A cell's own ring is cut
+    # off from its nucleus by the dark inside, but touches the neighbour's ring, and the
+    # neighbour's nucleus touches that ring; the ring must still get the cell's own number.
+    nuclei = two_nuclei()
+    nuclei[nuclei == 2] = 0
+    nuclei[disk(nuclei.shape, (20, 40), 4) > 0] = 2  # touches its own right membrane (x=45)
+    img, truth = membrane_only_image()
+    for smooth in (0, 1.0):
+        cells, _ = seeded_cells(nuclei, img, kind="membrane", threshold="otsu", smooth=smooth)
+        assert set(np.unique(cells)) == {0, 1, 2}
+        assert (cells[nuclei > 0] == nuclei[nuclei > 0]).all()
+        for label in (1, 2):
+            ring = (truth == label) & ~ndi.binary_erosion(truth == label)
+            assert not np.isin(cells[ring], [0, label], invert=True).any()  # no other cell's number
+            inner = ndi.binary_erosion(truth == label)
+            assert (cells[inner] == label).all()  # the dark inside belongs to the cell
+        assert cells[20, 24] == 1 and cells[20, 25] == 2  # the two touching membranes
+        # The dark outside stays background (after blurring, cells may take 1 px of it).
+        outside = (truth == 0) if smooth == 0 else ~ndi.binary_dilation(truth > 0)
+        assert not cells[outside].any()
+    # A maximum distance still limits the cells.
+    limited, _ = seeded_cells(nuclei, img, kind="membrane", threshold="otsu", smooth=0, max_distance=3)
+    assert limited[20, 8] == 1 and limited[20, 6] == 0
