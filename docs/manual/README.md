@@ -370,7 +370,8 @@ voxel size, so 3D stacks are handled correctly.
 
 ![Whole cells grown from the nuclei](images/07_secondary.png)
 
-*Whole cells (outlines) grown from the segmented nuclei (filled) in the membrane channel.*
+*Whole cells (outlines) grown from the segmented nuclei (filled) in the membrane channel, with
+the Otsu threshold lowered (Threshold × 0.3) and a 3 µm maximum distance.*
 
 Choose the **Objects** to start from (for example *nuclei*) and what to **Make**:
 
@@ -403,6 +404,14 @@ Choose the **Objects** to start from (for example *nuclei*) and what to **Make**
 
 Click **Make objects**. The new layers are named after the seeds, for example *nuclei cells*
 and *nuclei cytoplasm*.
+
+> **Membrane stains: check the foreground.** With a membrane stain the inside of the cell is
+> often as dark as the background, so an automatic threshold keeps only the bright membrane
+> and leaves a dark gap between nucleus and membrane. The membrane can then be given to the
+> wrong cell. Look at the result with the cells layer as outlines over the membrane channel.
+> If cells look like rings or have the wrong colour, lower **Threshold ×** (for example to
+> 0.3), or choose **None (whole image)**. In both cases set **Max distance** to about the
+> distance from the nucleus edge to the membrane, so cells cannot grow into empty space.
 
 *Background.* The watershed transform (Vincent & Soille 1991) treats the image as a landscape
 and floods it from the seeds; cells meet where the floods meet. Growing cells from nuclei in
@@ -529,8 +538,11 @@ does this:
 
 ![The Clustering tab](images/11_workbench_clustering.png)
 
-*The Clustering tab after a Leiden clustering with a UMAP map. The heat map shows each
-cluster's average of each marker, and the table lists the markers that distinguish them.*
+*The Clustering tab after a Leiden clustering of CD3 and CD8 mean intensities, with a UMAP map.
+The heat map shows each cluster's average of each marker, and the table lists the markers that
+distinguish them. The three clusters match the gated populations: CD3⁻CD8⁻ (non-T), CD3⁺
+(other T) and CD3⁺CD8⁺ (CD8 T). Type a name under* Phenotype *and click* Make phenotypes
+*to use them.*
 
 - **Objects**: all, a gate or a phenotype. Clustering within a phenotype splits it further,
   so you can work from coarse to fine.
@@ -635,7 +647,10 @@ click **Measure**.
 - `<name>.swc`: the tracing in the SWC format (Cannon et al. 1998), for neuron-morphology
   tools such as [SNT](https://imagej.net/plugins/snt/), neuTube or NeuroMorpho.org.
 
-Notes: lengths are in µm; diameters come from the distance to the edge of the segmented
+Notes: a cell body is a blob rather than a tube, so the filter responds weakly to it and
+each dendrite leaving the soma may be reported as its own filament (as in the example above).
+Join them with **Click to trace** if you need one tree per neuron. Lengths are in µm;
+diameters come from the distance to the edge of the segmented
 filament and are approximate near the resolution limit (filaments thinner than about
 0.2–0.3 µm all look about as wide as the microscope's point spread function); the root is the
 thickest point of each filament, usually the soma.
@@ -720,9 +735,10 @@ and reproducible (Senft et al. 2023; Aaron & Chew 2021; Schmied et al. 2024):
 *Example.* "Nuclei were segmented in 3D from the DAPI channel with Cellpose 4
 (`cpsam_v2`; Pachitariu et al. 2025) in IBIF napari 0.19 (napari 0.7), with automatic
 diameter and default flow (0.4) and cell-probability (0) thresholds. Cells were grown from the
-nuclei by a seeded watershed of the membrane channel within an Otsu foreground (maximum
-distance 12 µm). Mean intensities of CD3 and CD8 were measured per cell; CD3⁺ and CD8⁺ gates
-were set from secondary-only controls on asinh-transformed intensities."
+nuclei by a seeded watershed of the membrane channel, within a foreground of 0.3 × the Otsu
+threshold and at most 3 µm from each nucleus. Mean intensities of CD3 and CD8 were measured
+per cell; CD3⁺ and CD8⁺ gates were set from secondary-only controls on asinh-transformed
+intensities."
 
 ---
 
@@ -757,6 +773,7 @@ on your own data, as described in [section 7.5](#75-checking-and-correcting-the-
 | Objects look squashed or stretched in 3D | The voxel size is wrong or missing; check the layer's scale. |
 | Many merged or split objects | Set **Diameter**; adjust **Flow threshold** and **Cell probability**; try another model; train a custom model. |
 | Cells leak into each other in Secondary objects | Use **Max distance**, raise **Threshold ×**, increase **Smoothing**, or switch between *Membranes* and *Cytoplasm*. |
+| Whole cells look like rings, or a membrane gets the wrong cell's colour | The cell interior is below the threshold. Lower **Threshold ×** or use **None (whole image)**, with a **Max distance** ([section 8](#8-secondary-objects-cells-cytoplasm-rings-and-rims)). |
 | A CZI or LIF file reports a missing package | `pip install bioio-czi bioio-lif` |
 | Something else | Start `ibif-napari` from a terminal and read the messages there; report problems at [github.com/CU-IBIF/Napari_Cellpose/issues](https://github.com/CU-IBIF/Napari_Cellpose/issues). |
 
