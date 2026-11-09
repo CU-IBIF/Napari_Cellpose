@@ -111,7 +111,8 @@ def seeded_cells(seeds, image, spacing=None, kind="membrane", threshold="otsu", 
     """Whole cells grown from `seeds` (e.g. nuclei labels) in `image` (one channel, or the
     combined channels), keeping each seed's label number.
 
-    kind: "membrane" (bright cell borders: the watershed runs on the image),
+    kind: "membrane" (bright cell borders: the watershed runs on the image; dark areas the
+          foreground encloses count as cell when they hold a seed),
           "cytoplasm" (bright cell interior: a compact watershed on the image's gradient,
           with the seeds given the intensity of the cytoplasm next to them), or
           "distance" (ignore intensity: each foreground pixel goes to the nearest seed).
@@ -139,6 +140,13 @@ def seeded_cells(seeds, image, spacing=None, kind="membrane", threshold="otsu", 
     if smooth:
         image = ndi.gaussian_filter(image, sigma=[smooth / s for s in sp])
     mask, used = foreground(image, threshold, value, factor)
+    if kind == "membrane":
+        # A membrane stain leaves the inside of each cell dark, so a threshold keeps only the
+        # membranes. Without the inside, a seed cannot reach its own membrane, and a
+        # neighbour's seed can claim it through touching membranes. Areas the foreground
+        # encloses (in each Z plane) count as cell when they hold a seed; an enclosed space
+        # with no seed (a lumen) stays background.
+        mask |= _enclosed_with_seed(mask, seeds > 0)
     mask |= seeds > 0
     nearest, dist = nearest_object(seeds, sp)
     if max_distance:
@@ -160,6 +168,19 @@ def seeded_cells(seeds, image, spacing=None, kind="membrane", threshold="otsu", 
         cells = watershed(landscape, markers=seeds, mask=mask, compactness=CYTOPLASM_COMPACTNESS)
     # A pixel is only kept if it is connected to its own seed (no stray islands).
     return _connected_to_seed(cells, seeds).astype(seeds.dtype, copy=False), used
+
+
+def _enclosed_with_seed(mask, seeded):
+    """Pixels not in `mask` but enclosed by it in their YX plane, in connected regions that
+    contain a seed pixel."""
+    planes = mask.reshape((-1,) + mask.shape[-2:])
+    filled = np.stack([ndi.binary_fill_holes(p) for p in planes]).reshape(mask.shape)
+    holes = filled & ~mask
+    if not holes.any():
+        return holes
+    regions, _ = ndi.label(holes)
+    keep = np.unique(regions[holes & seeded])
+    return np.isin(regions, keep[keep > 0])
 
 
 def _connected_to_seed(cells, seeds):
