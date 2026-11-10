@@ -4,6 +4,9 @@
 - `ring`: a band around every object (gap + width), or just inside its edge.
 - `seeded_cells`: whole cells from seeds (nuclei) in another channel, by a seeded
   watershed inside a thresholded foreground (like CellProfiler's IdentifySecondaryObjects).
+- `structures`: structures inside each object (vesicles, puncta, nucleoli, filaments,
+  organelles) found in a channel. All the pieces inside object 17 together form object 17,
+  so they link to it (and to everything else numbered 17) in the measurements.
 
 Every secondary object keeps the label number of the object it came from, so nucleus 17
 and cell 17 belong together. Distances are in physical units with per-axis `spacing`
@@ -16,6 +19,7 @@ from scipy import ndimage as ndi
 
 THRESHOLDS = ("otsu", "li", "triangle", "manual", "none")
 CHANNEL_KINDS = ("membrane", "cytoplasm", "distance")
+STRUCTURE_KINDS = ("spots", "filaments", "regions")
 # Weight of the distance term in the cytoplasm watershed (per pixel, gradient scaled to 0-1).
 # Chosen with the V&V suite's synthetic cells on independent seeds (docs/vv/README.md).
 CYTOPLASM_COMPACTNESS = 0.03
@@ -222,3 +226,109 @@ def _connected_to_seed(cells, seeds):
 def cytoplasm(cells, nuclei):
     """Cells minus their nuclei."""
     return np.where(nuclei > 0, 0, cells).astype(cells.dtype, copy=False)
+
+
+def structures(parents, image, spacing=None, kind="spots", size=1.0, threshold="otsu", value=None,
+               factor=1.0, per_object=False, dark=False, smooth=0.0, min_size=0.0):
+    """Structures inside each object of `parents` (e.g. vesicles in the cytoplasm, nucleoli
+    in nuclei), found in `image`. Every structure pixel takes the number of the object it
+    lies in, so all the pieces inside object 17 are one object, numbered 17.
+
+    kind: "spots" (small bright blobs: vesicles, puncta, nucleoli; the local background,
+          a Gaussian blur of width `size`, is subtracted first, so `size` should be about
+          the diameter of the largest spot),
+          "filaments" (thin lines: a ridge filter (Sato) tuned to lines `size` wide), or
+          "regions" (any area brighter than the rest of the object, e.g. organelles; the
+          smoothed intensity is thresholded as it is).
+    dark: look for structures darker than their surroundings instead (e.g. nucleoli in a
+          DNA stain).
+    threshold: otsu / li / triangle (times `factor`) or manual (`value`), computed from the
+          pixels inside all the objects together, or inside each object on its own with
+          `per_object` (better when objects differ in brightness, but an object with no
+          structures still gets some).
+    min_size: pieces smaller than this (µm² / µm³ with `spacing`) are dropped.
+    `size` and `smooth` are in the units of `spacing`. Returns (structures, thresholds used).
+    """
+    from skimage import filters
+
+    parents = np.asarray(parents)
+    image = np.asarray(image, dtype=np.float32)
+    if image.shape != parents.shape:
+        raise ValueError(f"the channel ({image.shape}) and the objects ({parents.shape}) differ in size")
+    if kind not in STRUCTURE_KINDS:
+        raise ValueError(f"unknown structure kind {kind!r}")
+    if threshold not in ("otsu", "li", "triangle", "manual"):
+        raise ValueError("choose a threshold to find the structures")
+    sp = _spacing(parents, spacing)
+    inside = parents > 0
+    if not inside.any():
+        return np.zeros_like(parents), []
+    if dark:
+        image = image.max() - image
+    if smooth:
+        image = ndi.gaussian_filter(image, sigma=[smooth / s for s in sp])
+    if kind == "spots":
+        background = ndi.gaussian_filter(image, sigma=[size / s for s in sp])
+        response = np.clip(image - background, 0, None)
+    elif kind == "filaments":
+        response = _ridges(image, size / 2.0, sp)
+    else:
+        response = image
+
+    def cut(values):
+        if threshold == "manual":
+            if value is None:
+                raise ValueError("enter a threshold value")
+            return float(value)
+        if values.size < 2 or values.min() == values.max():
+            return None
+        func = {"otsu": filters.threshold_otsu, "li": filters.threshold_li,
+                "triangle": filters.threshold_triangle}[threshold]
+        return float(func(values)) * factor
+
+    found = np.zeros(parents.shape, bool)
+    used = []
+    if per_object:
+        for label, sl in enumerate(ndi.find_objects(parents), start=1):
+            if sl is None:
+                continue
+            own = parents[sl] == label
+            t = cut(response[sl][own])
+            if t is not None:
+                found[sl] |= own & (response[sl] > t)
+                used.append(t)
+    else:
+        t = cut(response[inside])
+        if t is not None:
+            found = inside & (response > t)
+            used.append(t)
+    out = np.where(found, parents, 0).astype(parents.dtype, copy=False)
+    if min_size and found.any():
+        pieces, n = ndi.label(out > 0)  # pieces in touching objects are split by number below
+        pieces = np.where(out > 0, pieces * (int(out.max()) + 1) + out, 0)
+        ids, inverse, counts = np.unique(pieces, return_inverse=True, return_counts=True)
+        small = (counts * float(np.prod(sp)) < min_size) & (ids != 0)
+        out[small[inverse.reshape(out.shape)]] = 0
+    return out, used
+
+
+def _ridges(image, radius, spacing):
+    """Bright-line (ridge) response, Sato's filter at the line's radius. With voxels much
+    longer in Z than across (Z step >= 2 x the pixel size) it runs per Z plane."""
+    from skimage.filters import sato
+
+    if image.ndim == 3 and spacing[0] >= 2 * max(spacing[1:]):
+        sigma = max(radius / max(spacing[1:]), 0.5)
+        return np.stack([sato(p, sigmas=[sigma], black_ridges=False) for p in image])
+    sigma = max(radius / max(spacing), 0.5)
+    return sato(image, sigmas=[sigma], black_ridges=False)
+
+
+def count_pieces(labels):
+    """{label: number of separate pieces} (face-connected), e.g. vesicles per cell."""
+    labels = np.asarray(labels)
+    out = {}
+    for label, sl in enumerate(ndi.find_objects(labels), start=1):
+        if sl is not None:
+            out[label] = int(ndi.label(labels[sl] == label)[1])
+    return out
