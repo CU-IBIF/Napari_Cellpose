@@ -131,6 +131,9 @@ class IbifPanel(QWidget):
         from . import _workspace
 
         _workspace.on_loaded(napari_viewer, lambda: self.show_section(DEFAULT))
+        from ._guide import install_help_menu
+
+        install_help_menu(napari_viewer)  # Help > IBIF napari user guide
 
     def show_section(self, key):
         """Switch to a section by key (see SECTIONS); returns its widget."""

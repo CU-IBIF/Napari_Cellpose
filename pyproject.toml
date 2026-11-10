@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ibif-napari"
-version = "0.20.0"
+version = "0.21.0"
 description = "napari with Nikon ND2, Zeiss CZI and Leica LIF support, a dimension panel, 3D Cellpose (local, facility GPU server or GPU cluster) and a filament tracer built in"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -61,7 +61,7 @@ ibif-napari = "ibif_napari:napari.yaml"
 where = ["src"]
 
 [tool.setuptools.package-data]
-ibif_napari = ["napari.yaml", "icons/*.png"]
+ibif_napari = ["napari.yaml", "icons/*.png", "manual/*.md", "manual/images/*.png"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
