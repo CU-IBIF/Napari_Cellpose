@@ -36,6 +36,10 @@ vtea-core, so VTEA and IBIF napari share them.
      added), then click **Make image gate**. An object is in an image gate when its
      centre is inside one of the regions. Regions are drawn in Y/X, so a 3D object
      counts when its centre's Y/X is inside, whatever its Z.
+   - As soon as a gate is drawn, its objects are coloured on their segmented pixels in
+     the image (the *<objects> selection* labels layer); selecting a gate in the list
+     shows that one. In a joined table (*All objects*), centres and positions come from
+     the measurements of the chosen objects layer (e.g. `cells: centroid Y (µm)`).
    - Click a point to go to that object in the viewer. Click an object in the viewer
      to ring it on the plot.
 4. **Or find the types by clustering** (the workbench's **Clustering** tab):

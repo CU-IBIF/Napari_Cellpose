@@ -51,6 +51,7 @@ class Workbench(QWidget):
         self.resize(1150, 720)
         self._image_layer = None
         self._watched = None
+        self._filling = False
         outer = QVBoxLayout(self)
         self.tabs = QTabWidget()
         outer.addWidget(self.tabs)
@@ -113,7 +114,6 @@ class Workbench(QWidget):
         self.gate_tree.itemSelectionChanged.connect(self._gate_selected)
         gl.addWidget(self.gate_tree)
         gb = QHBoxLayout()
-        self.gate_show_btn = _button("Show on image", self.show_gate, gb)
         self.gate_pheno_btn = _button("Make phenotype…", self.phenotype_from_gate, gb)
         self.gate_rename_btn = _button("Rename…", self.rename_gate, gb)
         self.gate_delete_btn = _button("Delete", self.delete_gate, gb)
@@ -185,6 +185,13 @@ class Workbench(QWidget):
             self.status.setText("Choose the objects to analyse in the Cytometry section (Measure them first).")
 
     def _fill_gates(self):
+        self._filling = True  # rebuilding the list is not the user choosing a gate
+        try:
+            self._fill_gate_items()
+        finally:
+            self._filling = False
+
+    def _fill_gate_items(self):
         state, tree = self.state, self.gate_tree
         selected = self._selected_gate()
         tree.clear()
@@ -347,6 +354,7 @@ class Workbench(QWidget):
             return None
         n = int(self.state.mask("gate", gate.id).sum())
         self.status.setText(f"Gate {name}: {n:,} objects.")
+        self._map_gate(("gate", gate.id))
         return gate
 
     def image_gate_clicked(self):
@@ -388,6 +396,7 @@ class Workbench(QWidget):
             return None
         n = int(self.state.mask("image", name).sum())
         self.status.setText(f"Image gate {name}: {n:,} objects.")
+        self._map_gate(("image", name))
         return name
 
     def _selected_gate(self):
@@ -396,13 +405,31 @@ class Workbench(QWidget):
 
     def _gate_selected(self):
         sel = self._selected_gate()
-        for b in (self.gate_show_btn, self.gate_pheno_btn, self.gate_rename_btn, self.gate_delete_btn):
+        for b in (self.gate_pheno_btn, self.gate_rename_btn, self.gate_delete_btn):
             b.setEnabled(sel is not None)
+        if sel is not None and not self._filling:
+            self._map_gate(sel)
+
+    def _map_gate(self, sel):
+        """Colour the gate's objects on their segmented pixels in the image (the
+        "<objects> selection" layer), keeping the status message."""
+        text = self.status.text()
+        try:
+            layer = self.state.show_population(*sel)
+        except (ValueError, KeyError) as e:
+            self.status.setText(f"{text} Not shown on the image: {e}".strip())
+            return None
+        n = int(self.state.mask(*sel).sum())
+        self.status.setText(f"{text} Shown on the image in {layer.name} ({n:,} objects).".strip()
+                            if text else f"{n:,} objects shown on the image in {layer.name}.")
+        return layer
 
     def show_gate(self):
+        """Show the selected gate's objects on the image (also done when it is selected)."""
         sel = self._selected_gate()
         if sel:
-            self._paint(lambda: self.state.show_population(*sel))
+            self.status.clear()
+            self._map_gate(sel)
 
     def phenotype_from_gate(self, name=None, parent=None):
         sel = self._selected_gate()
@@ -527,13 +554,8 @@ class Workbench(QWidget):
         rec = table.iloc[row]
         layer.selected_label = int(rec["label"])
         dims = self.viewer.dims
-        world = []
-        for axis in "ZYX":
-            for unit in ("µm", "px"):
-                col = f"centroid {axis} ({unit})"
-                if col in table.columns:
-                    world.append(float(rec[col]))
-                    break
+        world = [float(rec[c]) for axis, c in state.centroid_columns().items()
+                 if np.isfinite(rec[c])]
         if world:
             camera = getattr(getattr(self.viewer, "scene", None), "camera", None) or self.viewer.camera
             camera.center = tuple(world[-dims.ndisplay:])

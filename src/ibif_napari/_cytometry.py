@@ -118,21 +118,65 @@ class Cytometry:
         self.changed()
 
     def features(self):
-        """Numeric columns that can be plotted (not ids or gate columns)."""
+        """The measurements of the segmented objects that can be plotted: size (volume /
+        area, equivalent diameter), position (centroids) and intensity statistics per
+        channel, from the Measurements table. Not the ids (T, P, label), the raw voxel
+        count (the volume in µm³ / px³ is there) or gate columns."""
         if self.table is None:
             return []
-        skip = set(KEYS) | {"voxels"}
         out = [c for c in self.table.columns
-               if c not in skip and pd.api.types.is_numeric_dtype(self.table[c])
+               if not _is_key(c) and not _is_voxels(c) and pd.api.types.is_numeric_dtype(self.table[c])
                and not pd.api.types.is_bool_dtype(self.table[c])]
         if self.derived is not None:
             out += list(self.derived.columns)
         return out
 
     def measured_features(self):
-        """Numeric measurement columns (what clustering is run on)."""
+        """Numeric measurement columns that describe the objects (what clustering is run
+        on): size and intensities, not where the objects are."""
         derived = set(self.derived.columns) if self.derived is not None else set()
-        return [c for c in self.features() if c not in derived]
+        return [c for c in self.features() if c not in derived and " centroid " not in f" {c}"]
+
+    def prefix(self):
+        """The column prefix of the objects layer's own measurements in a joined table
+        ("cells: " in "All objects", where every layer's columns are prefixed), else ""."""
+        if self.table is None or not self.layer_name:
+            return ""
+        prefix = f"{self.layer_name}: "
+        return prefix if any(str(c).startswith(prefix) for c in self.table.columns) else ""
+
+    def centroid_columns(self):
+        """{axis: column} of the objects' centroids (world units), preferring the objects
+        layer's own in a joined table."""
+        return _centroid_columns(self.table, self.prefix()) if self.table is not None else {}
+
+    def describe(self):
+        """What is being analysed, in words: how many objects, which segmented layer they
+        are in, and which measurements there are."""
+        if self.table is None:
+            return "No objects chosen yet."
+        feats = self.measured_features()
+        size = [f for f in feats if any(w in f for w in ("volume", "area", "diameter", "pieces"))]
+        channels = sorted({f.rsplit(" ", 1)[0].split(": ")[-1] for f in feats
+                           if f.rsplit(" ", 1)[-1] in _STATS})
+        found, total = self.objects_found()
+        where = (f"segmented in <b>{self.layer_name}</b>" if self.layer_name else "no objects layer chosen")
+        text = (f"<b>{len(self.table):,} objects</b> {where}, measured in {self.source}: "
+                f"{len(size)} size and {len(feats) - len(size)} intensity measurements"
+                + (f" ({', '.join(channels)})" if channels else "") + ".")
+        if total and found < total:
+            text += (f"<br><font color='#d62728'>Only {found:,} of the {total:,} labels in the table "
+                     f"are in {self.layer_name}: choose the layer that was measured.</font>")
+        return text
+
+    def objects_found(self):
+        """(labels of the table found in the objects layer, labels in the table)."""
+        layer = self.labels_layer()
+        if layer is None or self.table is None or "label" not in self.table.columns:
+            return 0, 0
+        wanted = np.unique(self.table["label"].dropna().to_numpy(np.int64))
+        present = np.unique(np.asarray(layer.data))
+        return int(np.isin(wanted, present).sum()), len(wanted)
 
     def column(self, name):
         """A table column, or a transformed one computed on the fly."""
@@ -315,8 +359,10 @@ class Cytometry:
     def _image_gate_mask(self, gate, frame):
         from vtea_core.gates import polygon_gate
 
-        ys, xs = _centroid_yx(frame)
-        if ys is None:
+        cols = _centroid_columns(frame, self.prefix())
+        ys = frame[cols["Y"]].to_numpy(float) if "Y" in cols else None
+        xs = frame[cols["X"]].to_numpy(float) if "X" in cols else None
+        if ys is None or xs is None:
             return np.zeros(len(frame), bool)
         mask = np.zeros(len(frame), bool)
         for poly in gate["polygons"]:
@@ -445,7 +491,7 @@ class Cytometry:
         out = np.zeros(data.shape, np.uint16 if max(values, default=0) < 65535 else np.uint32)
         lead = data.ndim - _spatial_ndim(layer)
         table = self.table
-        keys = [k for k in ("T", "P") if k in table.columns][:lead]
+        keys = [k for k in table.columns if _is_key(k) and k != "label"][:lead]
         positions = list(np.ndindex(*data.shape[:lead])) if lead else [()]
         values = np.asarray(values)
         for pos in positions:
@@ -456,6 +502,7 @@ class Cytometry:
             if not len(labels):
                 continue
             block = data[pos]
+            # Each object's value goes on its own segmented pixels (label -> value).
             lut = np.zeros(int(max(block.max(), labels.max())) + 1, out.dtype)
             lut[labels] = values[rows]
             out[pos] = lut[block]
@@ -648,12 +695,34 @@ def _spatial_ndim(layer):
     return spatial_ndim(layer)
 
 
-def _centroid_yx(frame):
-    for unit in ("µm", "px"):
-        y, x = f"centroid Y ({unit})", f"centroid X ({unit})"
-        if y in frame.columns and x in frame.columns:
-            return frame[y].to_numpy(float), frame[x].to_numpy(float)
-    return None, None
+_STATS = {"mean", "median", "min", "max", "std", "sum"}
+
+
+def _is_key(column):
+    """An id column: time point, position (or other leading axis) or label."""
+    return column in KEYS or str(column).startswith("axis")
+
+
+def _is_voxels(column):
+    return column == "voxels" or str(column).endswith(": voxels")
+
+
+def _centroid_columns(frame, prefix=""):
+    """{axis: column} of centroids, e.g. {"Y": "cells: centroid Y (µm)", ...}. In a table
+    joining several layers ("All objects"), `prefix` picks that layer's; otherwise the
+    first layer that has them."""
+    names = [str(c) for c in frame.columns]
+    for want in ([prefix] if prefix else []) + [""]:
+        for unit in ("µm", "px"):
+            found = {}
+            for axis in "ZYX":
+                ends = f"centroid {axis} ({unit})"
+                match = [c for c in names if c.startswith(want) and (c == ends or c.endswith(": " + ends))]
+                if match:
+                    found[axis] = match[0]
+            if "Y" in found and "X" in found:
+                return found
+    return {}
 
 
 # ---- workspace ---------------------------------------------------------------------------------
