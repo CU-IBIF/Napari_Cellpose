@@ -22,6 +22,7 @@ from qtpy.QtWidgets import (
 
 from . import _cytometry as cy
 from . import _measure
+from ._measure_widget import COMBINED
 
 COMING = ("Coming next in this section: spatial features (distance to cell types, by "
           "centroid or surface) and neighbourhood analysis (cellular neighbourhoods, enrichment).")
@@ -80,7 +81,8 @@ class CytometryWidget(QWidget):
 
         for ev in (self.viewer.layers.events.inserted, self.viewer.layers.events.removed):
             ev.connect(self._fill_layers)
-        _measure.listen(self.viewer, lambda tables: self._fill_tables())
+        self._used = None  # the Measurements table in use (to notice it being measured again)
+        _measure.watch(self.viewer, lambda tables: self._tables_changed())
         self.table_box.currentTextChanged.connect(self._guess_layer)
         self.state.listen(self.refresh)
         self._fill_tables()
@@ -94,13 +96,27 @@ class CytometryWidget(QWidget):
 
     def _fill_tables(self):
         keep = self.table_box.currentText() or self.state.source
+        self.table_box.blockSignals(True)
         self.table_box.clear()
         names = list(self._tables())
         self.table_box.addItems(names)
         if keep in names:
             self.table_box.setCurrentText(keep)
+        elif COMBINED in names:  # one row per object with every layer's measurements
+            self.table_box.setCurrentText(COMBINED)
+        self.table_box.blockSignals(False)
         self.use_btn.setEnabled(bool(names))
         self._guess_layer()
+
+    def _tables_changed(self):
+        """New measurements: offer them, and use them if no objects are chosen yet, or if
+        the objects in use were measured again (gates and phenotypes are kept)."""
+        self._fill_tables()
+        tables = self._tables()
+        if self.state.table is None and self.table_box.currentText() in tables:
+            self.use()
+        elif self.state.source in tables and tables[self.state.source] is not self._used:
+            self.use(self.state.source, self.state.layer_name)
 
     def _fill_layers(self, event=None):
         from napari.layers import Labels
@@ -133,6 +149,7 @@ class CytometryWidget(QWidget):
             self.status.setText("Measure the objects first (Measurements section).")
             return
         self.state.set_table(source, table, layer or None)
+        self._used = table
         self.status.setText(f"Analysing {len(table):,} objects from {source}.")
 
     # ---- summary ---------------------------------------------------------------------------
