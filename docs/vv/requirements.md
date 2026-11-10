@@ -18,6 +18,7 @@ Generated from `src/ibif_napari/vv/requirements.py` (`ibif-napari-vv requirement
 | VV-SEC-01 | Secondary objects | Expand grows objects by the set distance | Secondary objects section: Expand | verification |
 | VV-SEC-02 | Secondary objects | Rings and rims have the set gap and width | Secondary objects section: Ring, Rim | verification |
 | VV-SEC-03 | Secondary objects | Whole cells grown from nuclei match the true cells | Secondary objects section: Whole cells from these seeds (Cytoplasm, Membranes), Also add cytoplasm | validation |
+| VV-SEC-04 | Secondary objects | Whole cells from a membrane stain stay within their membranes | Secondary objects section: Whole cells from these seeds, Channel shows: Membranes | validation |
 | VV-MEAS-01 | Measurements | Object size in µm² / µm³ | Measurements section: area / volume, equivalent diameter | verification |
 | VV-MEAS-02 | Measurements | Object centroids in µm | Measurements section: centroid Z/Y/X (µm), click a row to go to the object | verification |
 | VV-MEAS-03 | Measurements | Intensity statistics per object | Measurements section: <channel> mean / median / min / max / std / sum | validation |
@@ -210,6 +211,24 @@ Generated from `src/ibif_napari/vv/requirements.py` (`ibif-napari-vv requirement
 - F1 at IoU 0.5 >= 0.9
 - every cell has its seed's number, and no true cell's membrane is mostly another seed's number
 - cytoplasm = cell minus nucleus, exactly
+
+*scenes: `cells_2d`, `cells_3d`*
+
+## VV-SEC-04: Whole cells from a membrane stain stay within their membranes
+
+**Requirement.** Whole cells grown from nuclei in a membrane channel shall not depend on which automatic threshold is chosen, shall stop at their membrane without a maximum distance, and shall leave a cell that has no nucleus (or an enclosed lumen) empty rather than give it to a neighbour.
+
+**Feature.** Secondary objects section: Whole cells from these seeds, Channel shows: Membranes
+
+**Method.** Test with the truth nuclei as seeds on the membrane channel of cells_2d and cells_3d (the inside of each cell is as dark as the background), with smoothing 0.5 µm and no maximum distance: (1) Otsu, Li and Triangle; (2) the default Otsu, measuring how much of each grown cell lies outside its true cell and membrane; (3) each nucleus left out of the seeds in turn. A sweep of Threshold x from 0.3 to 1.5 is reported as evidence (not a criterion), to show the range where the method holds.
+
+**Acceptance criteria.**
+
+- Otsu, Li and Triangle give the same cells: mean IoU with Otsu's cells >= 0.95
+- with each of them, mean IoU with the true cells >= 0.8
+- share of grown voxels outside their true cell and its membrane <= 0.1
+- no grown cell larger than 1.5 x its true cell
+- a cell left without its nucleus: at most 0.05 of its inside taken by other cells
 
 *scenes: `cells_2d`, `cells_3d`*
 

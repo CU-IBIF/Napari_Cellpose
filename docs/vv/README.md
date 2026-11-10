@@ -6,7 +6,7 @@ on them (the same functions the panels call), compares the results with the trut
 standard metrics, and writes a report that explains why the tool can be trusted, or where it
 cannot.
 
-- **Requirements:** [requirements.md](requirements.md). There are 18, each tied to a feature
+- **Requirements:** [requirements.md](requirements.md). There are 19, each tied to a feature
   of the tool, with numeric acceptance criteria.
 - **Code:** `src/ibif_napari/vv/`, with the command `ibif-napari-vv`.
 - **Tests of the suite itself:** `tests/test_vv.py`.
@@ -153,7 +153,13 @@ The first runs found two real problems. Both are fixed in the same change as the
    and each cell then keeps the membrane voxel just outside that ridge. VV-SEC-03 now also
    runs the membrane channel with the panel's defaults. On 12 freshly seeded
    `cells_2d`/`cells_3d` scenes, membrane F1 rose from 0.20 to 1.00 and mean IoU from 0.28
-   to 0.94. The cytoplasm results did not change.
+   to 0.94. The cytoplasm results did not change. VV-SEC-04 then added checks specific to
+   membrane stains: Otsu, Li and Triangle must give the same cells, cells must stop at their
+   membrane without a maximum distance, and a cell whose nucleus is missing must stay empty.
+   It also reports a sweep of *Threshold ×* as evidence. That sweep shows a limit that is
+   not fixed: from about ×1.2 (3D) or ×1.5 (2D) gaps open in the dimmer membranes and one
+   cell can take the whole background (61× and 105× its true size). Keep *Threshold ×* near 1
+   for membrane stains, or set a maximum distance.
 
 ## Adding a requirement
 

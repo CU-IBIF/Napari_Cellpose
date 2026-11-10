@@ -1,6 +1,6 @@
 # Screenshots for the user guide
 
-These scripts make the pictures in `../images/` by driving the real IBIF napari GUI on
+These scripts make the pictures in `src/ibif_napari/manual/images/` by driving the real IBIF napari GUI on
 synthetic data:
 
 - `data.py`: a synthetic 4-channel 3D sample (DAPI, Membrane, CD3, CD8; two time points),
@@ -17,7 +17,7 @@ machine without a display, use Xvfb:
 
 ```bash
 cd docs/manual/screenshots
-xvfb-run -a -s "-screen 0 1920x1200x24" python run_shots.py ../images
+xvfb-run -a -s "-screen 0 1920x1200x24" python run_shots.py ../../../src/ibif_napari/manual/images
 ```
 
 It takes a few minutes on a CPU. Check the pictures before committing them.
