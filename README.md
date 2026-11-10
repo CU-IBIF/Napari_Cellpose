@@ -46,8 +46,12 @@ Cellpose from a [facility GPU server](docs/facility-server.md) or a
   from these seeds* grows each nucleus into its cell in one channel or the average of
   several (a seeded watershed for membrane or cytoplasm stains, inside an Otsu / Li /
   Triangle / manual foreground, optionally limited to a maximum distance), with an
-  optional cytoplasm layer (cell minus nucleus). Every new object keeps its seed's label
-  number; distances are in µm using the real voxel size, so 3D stacks work too.
+  optional cytoplasm layer (cell minus nucleus); *Structures inside each object* finds
+  spots (vesicles, puncta, nucleoli), filaments or bright regions (organelles), bright or
+  dark, inside each object, with all the pieces inside object 17 forming object 17 (so
+  nuclei -> cytoplasm -> vesicles link by number, and the measurements count the pieces).
+  Every new object keeps its seed's label number; distances are in µm using the real
+  voxel size, so 3D stacks work too.
 - **Measurements**: tick objects layers (e.g. nuclei, cells, cytoplasm) and channels,
   then **Measure**. For every object and time point / position: volume or area (µm³ / µm²),
   equivalent diameter, centroid (µm), and per channel the mean, median, min, max,
