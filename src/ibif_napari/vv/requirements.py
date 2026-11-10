@@ -27,6 +27,10 @@ LIMITS = {
     "region_f1_drop": 0.05,
     # Secondary objects
     "seeded_iou": 0.80, "seeded_f1": 0.90,
+    "membrane_agree": 0.95,  # mean IoU between the cells of different automatic thresholds
+    "unseeded_taken": 0.05,  # share of a cell without a seed that other cells may take
+    "membrane_spill": 0.10,  # share of grown voxels outside their true cell and its membrane
+    "membrane_size_ratio": 1.5,  # largest grown cell / its true cell
     # Measurements
     "exact_rel": 1e-9,
     "analytic_size_rel": 0.10,  # median |voxel size - ellipsoid size| / ellipsoid size
@@ -166,6 +170,25 @@ REQUIREMENTS = [
         ["mean IoU with the true cells >= {seeded_iou}", "F1 at IoU 0.5 >= {seeded_f1}",
          "every cell has its seed's number, and no true cell's membrane is mostly another seed's number",
          "cytoplasm = cell minus nucleus, exactly"],
+        scenes=["cells_2d", "cells_3d"]),
+    Requirement(
+        "VV-SEC-04", "Secondary objects", "Whole cells from a membrane stain stay within their membranes",
+        "Whole cells grown from nuclei in a membrane channel shall not depend on which automatic "
+        "threshold is chosen, shall stop at their membrane without a maximum distance, and shall "
+        "leave a cell that has no nucleus (or an enclosed lumen) empty rather than give it to a "
+        "neighbour.",
+        "Secondary objects section: Whole cells from these seeds, Channel shows: Membranes",
+        "Test with the truth nuclei as seeds on the membrane channel of cells_2d and cells_3d "
+        "(the inside of each cell is as dark as the background), with smoothing 0.5 µm and no "
+        "maximum distance: (1) Otsu, Li and Triangle; (2) the default Otsu, measuring how much "
+        "of each grown cell lies outside its true cell and membrane; (3) each nucleus left out "
+        "of the seeds in turn. A sweep of Threshold x from 0.3 to 1.5 is reported as evidence "
+        "(not a criterion), to show the range where the method holds.",
+        ["Otsu, Li and Triangle give the same cells: mean IoU with Otsu's cells >= {membrane_agree}",
+         "with each of them, mean IoU with the true cells >= {seeded_iou}",
+         "share of grown voxels outside their true cell and its membrane <= {membrane_spill}",
+         "no grown cell larger than {membrane_size_ratio} x its true cell",
+         "a cell left without its nucleus: at most {unseeded_taken} of its inside taken by other cells"],
         scenes=["cells_2d", "cells_3d"]),
     # ---- measurements ---------------------------------------------------------------------
     Requirement(

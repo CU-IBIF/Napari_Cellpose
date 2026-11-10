@@ -636,6 +636,92 @@ def _seeded(ctx, res):
     res.metrics = {f"{r['scene']} {r['channel']}": {k: r[k] for k in ("f1@0.5", "mean_iou")} for r in rows}
 
 
+def _pair_iou(a, b):
+    """Mean IoU between same-numbered objects of two label images (numbers of `a`)."""
+    ious = []
+    for i in np.unique(a)[1:]:
+        x, y = a == i, b == i
+        ious.append((x & y).sum() / max((x | y).sum(), 1))
+    return float(np.mean(ious)) if ious else 1.0
+
+
+@check("VV-SEC-04")
+def _membrane(ctx, res):
+    from .. import _secondary
+
+    rows, sweep = [], []
+    for name in ("cells_2d", "cells_3d"):
+        sc = ctx.scene(name)
+        sp = sc.spec.spacing
+        image = sc.acquired["membrane"]
+        border = synth._borders(sc.cells)  # each true cell's membrane voxels
+
+        def grow(seeds, threshold="otsu", factor=1.0):
+            return _secondary.seeded_cells(seeds, image, sp, kind="membrane", threshold=threshold,
+                                           factor=factor, smooth=0.5)[0]
+
+        # (1) the automatic thresholds agree, and each is accurate
+        found = {t: grow(sc.nuclei, t) for t in ("otsu", "li", "triangle")}
+        for t, cells in found.items():
+            agree = _pair_iou(found["otsu"], cells)
+            iou = metrics.match(sc.cells, cells)["mean_iou"]
+            if t != "otsu":
+                res.check(f"{name}: {t.title()} vs Otsu, mean IoU of the cells", agree, ">=",
+                          ctx.limits["membrane_agree"])
+            res.check(f"{name}: {t.title()}, mean IoU with the true cells", iou, ">=", ctx.limits["seeded_iou"])
+            rows.append({"scene": name, "test": f"threshold {t}", "mean IoU with true cells": iou,
+                         "mean IoU with Otsu's cells": agree})
+
+        # (2) cells stop at their membrane (no maximum distance)
+        cells = found["otsu"]
+        outside = (cells > 0) & (cells != sc.cells) & ~border
+        spill = outside.sum() / max(int((cells > 0).sum()), 1)
+        ratio = max((cells == i).sum() / (sc.cells == i).sum() for i in np.unique(sc.cells)[1:])
+        res.check(f"{name}: share of grown voxels outside their true cell", spill, "<=",
+                  ctx.limits["membrane_spill"], "{:.1%}")
+        res.check(f"{name}: largest grown cell / its true cell", ratio, "<=", ctx.limits["membrane_size_ratio"],
+                  "{:.2f}")
+        rows.append({"scene": name, "test": "spill (Otsu)", "share outside": spill, "largest size ratio": ratio})
+
+        # (3) a cell without its nucleus stays empty
+        taken = []
+        for i in np.unique(sc.nuclei)[1:]:
+            seeds = np.where(sc.nuclei == i, 0, sc.nuclei)
+            inside = (sc.cells == i) & ~border
+            taken.append(float(np.mean(grow(seeds)[inside] > 0)))
+        res.check(f"{name}: most of a cell without its nucleus taken by others", max(taken), "<=",
+                  ctx.limits["unseeded_taken"], "{:.1%}")
+        rows.append({"scene": name, "test": "each nucleus left out in turn", "largest share taken": max(taken)})
+
+        # evidence only: where the method holds as Threshold x changes
+        for factor in (0.3, 0.5, 0.7, 1.0, 1.2, 1.5):
+            cells = found["otsu"] if factor == 1.0 else grow(sc.nuclei, "otsu", factor)
+            ratio = max((cells == i).sum() / (sc.cells == i).sum() for i in np.unique(sc.cells)[1:])
+            sweep.append({"scene": name, "Threshold x": factor,
+                          "mean IoU with true cells": metrics.match(sc.cells, cells)["mean_iou"],
+                          "largest size ratio": ratio})
+        res.figures.append((f"{name}: cells grown in the membrane channel (Otsu)",
+                            seg_figure(image, sc.cells, found["otsu"], name)))
+    res.tables["membrane cells"] = pd.DataFrame(rows)
+    res.tables["Threshold x sweep (evidence, not a criterion)"] = sweep_df = pd.DataFrame(sweep)
+    weak = sweep_df[(sweep_df["mean IoU with true cells"] < ctx.limits["seeded_iou"])
+                    | (sweep_df["largest size ratio"] > ctx.limits["membrane_size_ratio"])]
+    res.evidence.append(
+        "Otsu, Li and Triangle give the same cells, which stop at their membranes without a "
+        "maximum distance, and a cell without a nucleus stays empty rather than being taken by its "
+        "neighbours.")
+    res.evidence.append(
+        "Threshold x sweep: " + ("the cells stay accurate from 0.3 to 1.5." if weak.empty else
+        "accuracy drops at " + ", ".join(f"{r['scene']} x{r['Threshold x']:g} (mean IoU "
+        f"{r['mean IoU with true cells']:.2f}, largest cell {r['largest size ratio']:.1f}x its true size)"
+        for _, r in weak.iterrows())
+        + ". Far below the automatic threshold, noise inside the dark cells counts as membrane; "
+        "above it, gaps open in the membrane and a cell can run into the background. Keep "
+        "Threshold x near 1 for membrane stains, or set a maximum distance."))
+    res.metrics = {f"{r['scene']} {r['test']}": {k: v for k, v in r.items() if k not in ("scene", "test")}
+                   for r in rows}
+
+
 @check("VV-MEAS-01")
 def _size(ctx, res):
     from .. import _measure
