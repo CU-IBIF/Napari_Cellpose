@@ -1,4 +1,5 @@
-"""Secondary objects panel: expand, ring, rim, or whole cells grown from nuclei."""
+"""Secondary objects panel: expand, ring, rim, whole cells grown from nuclei, or structures
+(vesicles, nucleoli, filaments...) inside each object."""
 from __future__ import annotations
 
 import numpy as np
@@ -26,10 +27,21 @@ EXPAND = "Expand (dilate)"
 RING = "Ring around each object"
 RIM = "Rim inside each object"
 CELLS = "Whole cells from these seeds"
+STRUCTURES = "Structures inside each object"
 KINDS = {
     "Membranes (bright cell borders)": "membrane",
     "Cytoplasm (bright cell interior)": "cytoplasm",
     "Distance only (ignore intensity)": "distance",
+}
+STRUCTURE_KINDS = {
+    "Spots (vesicles, puncta, nucleoli)": "spots",
+    "Filaments (thin lines)": "filaments",
+    "Regions (organelles, any brighter area)": "regions",
+}
+SIZE_TIPS = {
+    "spots": "Diameter of the largest spot; the background is measured over this distance",
+    "filaments": "Width of the filaments",
+    "regions": "",
 }
 THRESHOLDS = {"Otsu": "otsu", "Li": "li", "Triangle": "triangle", "Manual": "manual",
               "None (whole image)": "none"}
@@ -53,7 +65,7 @@ class SecondaryWidget(QWidget):
         self.primary = QComboBox()
         form.addRow("Objects", self.primary)
         self.method = QComboBox()
-        self.method.addItems([EXPAND, RING, RIM, CELLS])
+        self.method.addItems([EXPAND, RING, RIM, CELLS, STRUCTURES])
         form.addRow("Make", self.method)
 
         self.distance = _spin(0, 1000, 2.0, "How far to grow each object")
@@ -70,6 +82,14 @@ class SecondaryWidget(QWidget):
         self.kind = QComboBox()
         self.kind.addItems(list(KINDS))
         form.addRow("Channel shows", self.kind)
+        self.structure = QComboBox()
+        self.structure.addItems(list(STRUCTURE_KINDS))
+        self.structure.setToolTip("What to look for inside each object")
+        form.addRow("Find", self.structure)
+        self.size = _spin(0.05, 1000, 1.0, SIZE_TIPS["spots"], step=0.1)
+        form.addRow("Size", self.size)
+        self.dark = QCheckBox("Darker than their surroundings (e.g. nucleoli in DAPI)")
+        form.addRow("", self.dark)
         self.threshold = QComboBox()
         self.threshold.addItems(list(THRESHOLDS))
         self.threshold.setToolTip("What counts as cell (foreground) in the channel(s)")
@@ -86,6 +106,12 @@ class SecondaryWidget(QWidget):
         self.add_cytoplasm = QCheckBox("Also add cytoplasm (cell minus seed)")
         self.add_cytoplasm.setChecked(True)
         form.addRow("", self.add_cytoplasm)
+        self.per_object = QCheckBox("Threshold each object on its own")
+        self.per_object.setToolTip(
+            "Better when objects differ in brightness; but an object with no structures still gets some")
+        form.addRow("", self.per_object)
+        self.min_size = _spin(0, 1e6, 0.0, "Drop pieces smaller than this", step=0.1)
+        form.addRow("Smallest piece", self.min_size)
 
         self.run_btn = QPushButton("Make objects")
         self.run_btn.clicked.connect(self.run)
@@ -100,9 +126,11 @@ class SecondaryWidget(QWidget):
 
         self._rows = {w: form.labelForField(w) for w in (
             self.distance, self.gap, self.width, self.channels, self.kind, self.threshold,
-            self.factor, self.manual, self.max_distance, self.smooth, self.add_cytoplasm)}
+            self.factor, self.manual, self.max_distance, self.smooth, self.add_cytoplasm,
+            self.structure, self.size, self.dark, self.per_object, self.min_size)}
         self.method.currentTextChanged.connect(self._update)
         self.kind.currentTextChanged.connect(self._update)
+        self.structure.currentTextChanged.connect(self._update)
         self.threshold.currentTextChanged.connect(self._update)
         self.primary.currentTextChanged.connect(self._update)
         for ev in (self.viewer.layers.events.inserted, self.viewer.layers.events.removed,
@@ -140,23 +168,37 @@ class SecondaryWidget(QWidget):
     def _update(self, *_):
         method = self.method.currentText()
         cells = method == CELLS
+        inner = method == STRUCTURES
+        uses_channel = cells or inner
+        threshold = THRESHOLDS[self.threshold.currentText()]
+        structure = STRUCTURE_KINDS[self.structure.currentText()]
         shown = {
             self.distance: method == EXPAND,
             self.gap: method == RING,
             self.width: method in (RING, RIM),
-            self.channels: cells, self.kind: cells, self.threshold: cells, self.smooth: cells,
-            self.factor: cells and THRESHOLDS[self.threshold.currentText()] in ("otsu", "li", "triangle"),
-            self.manual: cells and THRESHOLDS[self.threshold.currentText()] == "manual",
+            self.channels: uses_channel, self.kind: cells, self.threshold: uses_channel,
+            self.smooth: uses_channel,
+            self.factor: uses_channel and threshold in ("otsu", "li", "triangle"),
+            self.manual: uses_channel and threshold == "manual",
             self.max_distance: cells, self.add_cytoplasm: cells,
+            self.structure: inner, self.size: inner and structure != "regions", self.dark: inner,
+            self.per_object: inner and threshold != "manual", self.min_size: inner,
         }
+        self._rows[self.channels].setText("Channels" if inner else "Cell channels")
+        self.channels.setToolTip("Channel(s) that show the structures; several are averaged" if inner
+                                 else "Channel(s) that show the whole cells; several are averaged")
+        self.size.setToolTip(SIZE_TIPS[structure])
         units = self._units()
         for w, visible in shown.items():
             w.setVisible(visible)
             label = self._rows.get(w)
             if label is not None:
                 label.setVisible(visible)
-        for w in (self.distance, self.gap, self.width, self.max_distance, self.smooth):
+        for w in (self.distance, self.gap, self.width, self.max_distance, self.smooth, self.size):
             w.setSuffix(f" {units}")
+        layer = self._layer(self.primary.currentText())
+        nd = spatial_ndim(layer) if layer is not None else 2
+        self.min_size.setSuffix(f" {units}³" if nd == 3 else f" {units}²")
 
     def _layer(self, name):
         return self.viewer.layers[name] if name and name in self.viewer.layers else None
@@ -179,15 +221,24 @@ class SecondaryWidget(QWidget):
         n_sp = spatial_ndim(labels)
         spacing = tuple(float(s) for s in labels.scale[-n_sp:])
         lead_shape = labels.data.shape[: labels.ndim - n_sp]
-        channels = self.checked_channels() if method == CELLS else []
+        channels = self.checked_channels() if method in (CELLS, STRUCTURES) else []
         if method == CELLS and not channels:
             self.status.setText("Tick the channel(s) that show the whole cells.")
+            return
+        if method == STRUCTURES and not channels:
+            self.status.setText("Tick the channel(s) that show the structures.")
+            return
+        if method == STRUCTURES and THRESHOLDS[self.threshold.currentText()] == "none":
+            self.status.setText("Choose a threshold (e.g. Otsu) to find the structures.")
             return
         settings = dict(
             distance=self.distance.value(), gap=self.gap.value(), width=self.width.value(),
             kind=KINDS[self.kind.currentText()], threshold=THRESHOLDS[self.threshold.currentText()],
             value=self.manual.value(), factor=self.factor.value(),
             max_distance=self.max_distance.value() or None, smooth=self.smooth.value(),
+            structure=STRUCTURE_KINDS[self.structure.currentText()], size=self.size.value(),
+            dark=self.dark.isChecked(), per_object=self.per_object.isChecked(),
+            min_size=self.min_size.value(),
         )
         try:  # check alignment now, so a mismatch is reported before any work
             for c in channels:
@@ -213,6 +264,17 @@ class SecondaryWidget(QWidget):
                     out[pos] = _secondary.ring(seeds, settings["width"], settings["gap"], spacing)
                 elif method == RIM:
                     out[pos] = _secondary.ring(seeds, settings["width"], spacing=spacing, inside=True)
+                elif method == STRUCTURES:
+                    image = _secondary.combine_channels(
+                        [aligned_image(viewer, c, labels, pos) for c in channels]
+                    )
+                    found, used = _secondary.structures(
+                        seeds, image, spacing, settings["structure"], settings["size"],
+                        settings["threshold"], settings["value"], settings["factor"],
+                        settings["per_object"], settings["dark"], settings["smooth"], settings["min_size"],
+                    )
+                    out[pos] = found
+                    thresholds.extend(used)
                 else:
                     image = _secondary.combine_channels(
                         [aligned_image(viewer, c, labels, pos) for c in channels]
@@ -258,17 +320,26 @@ class SecondaryWidget(QWidget):
             RING: f"{labels.name} ring {settings['gap']:g}+{settings['width']:g} {units}",
             RIM: f"{labels.name} rim {settings['width']:g} {units}",
             CELLS: f"{labels.name} cells",
+            STRUCTURES: f"{labels.name} {settings['structure']}",
         }[method]
         meta = {**(labels.metadata or {}), "ibif_cellpose": True, "ibif_secondary": method,
                 "ibif_seeds": labels.name}
+        meta.pop("ibif_pieces", None)
+        if method == STRUCTURES:
+            meta["ibif_pieces"] = True  # the measurements count the pieces of each object
         common = dict(scale=labels.scale, translate=labels.translate, metadata=meta)
         self.viewer.add_labels(out, name=name, **common)
         if cyto is not None:
             self.viewer.add_labels(cyto, name=f"{labels.name} cytoplasm", **common)
         count = len(np.unique(out)) - (1 if (out == 0).any() else 0)
         text = f"{name}: {count} objects."
+        if method == STRUCTURES:
+            parents = len(np.unique(labels.data)) - (1 if (labels.data == 0).any() else 0)
+            text = (f"{name}: structures in {count} of {parents} objects; each object's structures "
+                    f"share its number.")
         if thresholds:
-            text += f" Foreground threshold {np.mean(thresholds):.3f} (channels scaled to 0-1)."
+            label = "Threshold" if method == STRUCTURES else "Foreground threshold"
+            text += f" {label} {np.mean(thresholds):.3f} (channels scaled to 0-1)."
         if method == CELLS:
             missing = len(np.unique(labels.data)) - len(np.unique(out))
             if missing > 0:

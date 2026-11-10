@@ -48,3 +48,29 @@ def test_combine_and_save(tmp_path):
     assert pd.read_csv(csv).shape == c.shape
     xlsx = save_table(c, tmp_path / "m.xlsx")
     assert pd.read_excel(xlsx).shape == c.shape
+
+
+def test_structures_link_to_their_cell_and_count_pieces():
+    """nuclei -> cytoplasm -> vesicles: the vesicles inside cytoplasm 1 are one object
+    numbered 1, so they share a row with nucleus 1 and cytoplasm 1."""
+    from ibif_napari._secondary import structures
+
+    cells = np.zeros((20, 40), np.uint16)
+    cells[2:18, 2:18], cells[2:18, 22:38] = 1, 2
+    nuclei = np.zeros_like(cells)
+    nuclei[7:13, 7:13], nuclei[7:13, 27:33] = 1, 2
+    cyto = np.where(nuclei > 0, 0, cells)
+    img = np.zeros(cells.shape, np.float32)
+    img[3:5, 3:5] = img[15:17, 15:17] = img[3:5, 35:37] = 1.0  # 2 vesicles in cell 1, 1 in cell 2
+    img[9:11, 9:11] = 1.0  # inside nucleus 1: not in the cytoplasm, so not a vesicle
+    vesicles, _ = structures(cyto, img, kind="regions", smooth=0)
+    t = combine({
+        "nuclei": measure_block(nuclei),
+        "cytoplasm": measure_block(cyto),
+        "vesicles": measure_block(vesicles, {"GFP": img}, pieces=True),
+    })
+    assert list(t["label"]) == [1, 2]
+    assert list(t["vesicles: pieces"]) == [2, 1]
+    assert list(t["vesicles: voxels"]) == [8, 4]
+    assert list(t["nuclei: voxels"]) == [36, 36] and list(t["cytoplasm: voxels"]) == [220, 220]
+    assert "pieces" not in measure_block(cells).columns

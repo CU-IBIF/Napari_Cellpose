@@ -381,6 +381,7 @@ Choose the **Objects** to start from (for example *nuclei*) and what to **Make**
 | **Ring around each object** | A band starting a **Gap** from the edge, of a given **Width** | Perinuclear signal, for example nuclear-to-cytoplasmic translocation |
 | **Rim inside each object** | The band just inside the edge, of a given **Width** | Nuclear envelope or membrane-associated signal |
 | **Whole cells from these seeds** | Each seed grown into its cell in a cell-stain channel | Whole cells from a membrane or cytoplasm stain |
+| **Structures inside each object** | Spots, filaments or bright regions found in a channel, inside each object. All the pieces inside object 17 together are object 17 | Vesicles in the cytoplasm, nucleoli in nuclei, mitochondria, cytoskeleton |
 
 **Whole cells from these seeds** is the most powerful option. Its settings:
 
@@ -415,6 +416,56 @@ and *nuclei cytoplasm*.
 > background. Increasing **Smoothing** or lowering **Threshold ×** closes small gaps, and a
 > **Max distance** of about the distance from the nucleus edge to the membrane limits the
 > damage.
+
+### Structures inside each object
+
+**Structures inside each object** finds vesicles, puncta, nucleoli, filaments or membranous
+organelles inside the objects you choose. **All the pieces inside an object together form one
+object with that object's number**: the twelve vesicles inside cytoplasm 17 are one object,
+numbered 17. They therefore join nucleus 17, cell 17 and cytoplasm 17 in the Measurements
+table, and its `pieces` column still says how many there were.
+
+This builds a hierarchy. For example, to find vesicles in the cytosol only:
+
+1. Segment the **nuclei** (section 7).
+2. Make **Whole cells from these seeds** from the nuclei, with **Also add cytoplasm**
+   ticked. This gives *nuclei cells* and *nuclei cytoplasm* (cell minus nucleus).
+3. Choose *nuclei cytoplasm* as **Objects**, make **Structures inside each object** in the
+   vesicle channel, and you get *nuclei cytoplasm spots*: the vesicles of each cell,
+   numbered like the cell.
+4. For nucleoli, choose *nuclei* as **Objects** instead.
+
+Its settings:
+
+- **Channels**: the channel(s) that show the structures (several are scaled to 0–1 and
+  averaged).
+- **Find**:
+  - **Spots (vesicles, puncta, nucleoli)**: small blobs. The local background (the channel
+    blurred over **Size**) is subtracted first, so dim and bright parts of a cell are treated
+    alike. Set **Size** to about the diameter of the largest spot.
+  - **Filaments (thin lines)**: a ridge filter (Sato et al. 1998) that responds to lines
+    about **Size** wide. With Z steps at least twice the pixel size it works plane by plane.
+  - **Regions (organelles, any brighter area)**: the smoothed intensity is thresholded as it
+    is, for structures larger than spots, such as membranous organelles.
+- **Darker than their surroundings**: look for dark structures instead, for example
+  nucleoli, which are holes in a DNA (DAPI or Hoechst) stain.
+- **Foreground**: the threshold (Otsu, Li, Triangle or Manual; **None** is not allowed here).
+  It is computed from the pixels inside all the objects together. **Threshold ×** multiplies
+  it: lower finds more.
+- **Threshold each object on its own**: one threshold per object, better when cells differ
+  in brightness. An automatic threshold always splits an object in two, though, so an object
+  with no structures still gets some. Use it only when every object has structures, or
+  check the result.
+- **Smallest piece**: pieces smaller than this area or volume are dropped (noise).
+- **Smoothing**: a Gaussian blur before thresholding.
+
+The new layer is named after the objects and what was found, for example *nuclei cytoplasm
+spots*; rename it in the layer list if you like (for example *vesicles*).
+
+> **Check the result.** Show the structures over their channel. If noise is found, raise
+> **Threshold ×**, **Smoothing** or **Smallest piece**; if structures are missed, lower
+> **Threshold ×** or try another threshold (Triangle often suits a few small bright spots).
+> Touching spots are counted as one piece.
 
 *Background.* The watershed transform (Vincent & Soille 1991) treats the image as a landscape
 and floods it from the seeds; cells meet where the floods meet. Growing cells from nuclei in
@@ -453,6 +504,7 @@ For each object (and time point / position) the table has:
 | `centroid Z / Y / X (µm)` | Centre of the object, in the image's coordinates |
 | `<channel> mean`, `median`, `min`, `max`, `std` | Intensity statistics of the object's voxels in each channel |
 | `<channel> sum` | Integrated intensity (sum over the object's voxels) |
+| `pieces` | Layers from **Structures inside each object** only: the number of separate pieces (e.g. vesicles) that make up the object |
 
 **Interpreting intensities.** Intensity measurements are only as good as the acquisition
 (Waters 2009):

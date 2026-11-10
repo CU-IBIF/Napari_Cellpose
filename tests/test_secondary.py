@@ -4,11 +4,13 @@ from scipy import ndimage as ndi
 
 from ibif_napari._secondary import (
     combine_channels,
+    count_pieces,
     cytoplasm,
     expand,
     foreground,
     ring,
     seeded_cells,
+    structures,
 )
 
 
@@ -188,3 +190,112 @@ def test_seeded_cells_membrane_with_dark_inside_keeps_each_ring():
     # A maximum distance still limits the cells.
     limited, _ = seeded_cells(nuclei, img, kind="membrane", threshold="otsu", smooth=0, max_distance=3)
     assert limited[20, 8] == 1 and limited[20, 6] == 0
+
+
+# ---- structures inside objects ---------------------------------------------------------------
+
+def two_cells():
+    cells = np.zeros((40, 70), np.uint16)
+    cells[5:35, 5:33] = 1
+    cells[5:35, 37:65] = 2
+    return cells
+
+
+def iou(a, b):
+    return (a & b).sum() / max((a | b).sum(), 1)
+
+
+def test_structures_spots_take_their_objects_number():
+    cells = two_cells()
+    truth = np.zeros(cells.shape, bool)
+    for y, x in ((12, 12), (25, 22), (18, 28), (20, 50)):  # 3 in cell 1, 1 in cell 2
+        truth |= disk(cells.shape, (y, x), 2) > 0
+    outside = disk(cells.shape, (20, 68), 2) > 0  # a spot outside every cell
+    rng = np.random.default_rng(1)
+    img = (0.2 + 0.02 * rng.standard_normal(cells.shape)).astype(np.float32)
+    img[cells > 0] += 0.1  # the cells are brighter than the background, spots more so
+    img[truth | outside] = 1.0
+    found, used = structures(cells, img, kind="spots", size=3, smooth=0)
+    assert len(used) == 1
+    assert set(np.unique(found)) == {0, 1, 2}
+    assert (found[found > 0] == cells[found > 0]).all()  # each piece has its cell's number
+    assert not found[outside].any() and not found[cells == 0].any()
+    assert iou(found > 0, truth) > 0.8
+    assert count_pieces(found) == {1: 3, 2: 1}
+
+
+def test_structures_dark_nucleoli_in_a_dna_stain():
+    nuclei = np.zeros((40, 70), np.uint16)
+    nuclei[disk(nuclei.shape, (20, 18), 12) > 0] = 1
+    nuclei[disk(nuclei.shape, (20, 52), 12) > 0] = 2
+    nucleoli = (disk(nuclei.shape, (16, 15), 3) | disk(nuclei.shape, (24, 22), 2)
+                | disk(nuclei.shape, (20, 52), 4)) > 0
+    img = np.where(nuclei > 0, 1.0, 0.05).astype(np.float32)
+    img[nucleoli] = 0.3  # nucleoli: holes in the DNA stain
+    for kind in ("regions", "spots"):
+        found, _ = structures(nuclei, img, kind=kind, size=4, dark=True, smooth=0)
+        assert (found[found > 0] == nuclei[found > 0]).all()
+        assert iou(found > 0, nucleoli) > 0.7, kind
+        assert count_pieces(found) == {1: 2, 2: 1}, kind
+
+
+def test_structures_filaments():
+    cells = two_cells()
+    line = np.zeros(cells.shape, bool)
+    line[20, 8:30] = True  # a 1 px filament in cell 1
+    line[10:30, 50] = True  # and one in cell 2
+    rng = np.random.default_rng(2)
+    img = (0.1 + 0.02 * rng.standard_normal(cells.shape)).astype(np.float32)
+    img[line] = 1.0
+    found, _ = structures(cells, img, kind="filaments", size=1.0, smooth=0)
+    assert (found[found > 0] == cells[found > 0]).all()
+    assert (found[line] > 0).mean() > 0.9
+    assert (found > 0).sum() < 3 * line.sum()  # thin, not a blob
+    assert count_pieces(found) == {1: 1, 2: 1}
+    # 3D with long Z voxels: the ridge filter runs per plane.
+    cells3 = np.stack([cells] * 3)
+    found3, _ = structures(cells3, np.stack([img] * 3), spacing=(2.0, 0.5, 0.5), kind="filaments",
+                           size=0.5, smooth=0)
+    assert all((plane[line] > 0).mean() > 0.9 for plane in found3)
+
+
+def test_structures_threshold_per_object_and_min_size():
+    cells = two_cells()
+    dim = disk(cells.shape, (15, 15), 2) > 0
+    bright = disk(cells.shape, (15, 50), 2) > 0
+    rng = np.random.default_rng(3)
+    img = (0.005 * rng.standard_normal(cells.shape)).astype(np.float32)
+    img[cells == 1] += 0.1  # cell 1 is dim, with a dim spot
+    img[dim] = 0.2
+    img[cells == 2] += 0.5  # cell 2 is bright all over, with a bright spot
+    img[bright] = 1.0
+    together, _ = structures(cells, img, kind="regions", threshold="otsu", smooth=0)
+    assert (together[cells == 2] == 2).all()  # one threshold for all: cell 2 is all "structure"
+    each, used = structures(cells, img, kind="regions", threshold="otsu", per_object=True, smooth=0,
+                            min_size=2)  # (no single noise pixels)
+    assert len(used) == 2
+    assert iou(each > 0, dim | bright) == 1.0  # a threshold per cell finds just the spots
+    # A tiny piece (1 px = 0.25 µm² at 0.5 µm pixels) is dropped by a minimum size.
+    img[30, 10] = 0.2
+    kept, _ = structures(cells, img, spacing=(0.5, 0.5), kind="regions", per_object=True, smooth=0)
+    assert kept[30, 10] == 1
+    dropped, _ = structures(cells, img, spacing=(0.5, 0.5), kind="regions", per_object=True, smooth=0,
+                            min_size=1.0)
+    assert dropped[30, 10] == 0 and dropped[dim].all()  # the 13 px spot (3.25 µm²) stays
+    manual, used = structures(cells, img, kind="regions", threshold="manual", value=0.8, smooth=0)
+    assert used == [0.8] and iou(manual > 0, bright) == 1.0
+
+
+def test_structures_input_checks():
+    cells = two_cells()
+    img = np.zeros(cells.shape, np.float32)
+    with pytest.raises(ValueError, match="differ in size"):
+        structures(cells, img[:5])
+    with pytest.raises(ValueError, match="unknown structure kind"):
+        structures(cells, img, kind="blobs")
+    with pytest.raises(ValueError, match="choose a threshold"):
+        structures(cells, img, threshold="none")
+    with pytest.raises(ValueError, match="threshold value"):
+        structures(cells, img, threshold="manual")
+    assert not structures(np.zeros_like(cells), img)[0].any()
+    assert not structures(cells, img)[0].any()  # a flat channel has no structures

@@ -7,7 +7,15 @@ from napari.components import ViewerModel  # noqa: E402
 from qtpy.QtCore import Qt  # noqa: E402
 
 from ibif_napari._reader import layer_data  # noqa: E402
-from ibif_napari._secondary_widget import CELLS, EXPAND, RIM, RING, SecondaryWidget, aligned_image  # noqa: E402
+from ibif_napari._secondary_widget import (  # noqa: E402
+    CELLS,
+    EXPAND,
+    RIM,
+    RING,
+    STRUCTURES,
+    SecondaryWidget,
+    aligned_image,
+)
 
 
 def make_viewer():
@@ -99,3 +107,41 @@ def test_panel_whole_cells_from_nuclei(qtbot):
     assert not cyto[v.layers["nuclei"].data > 0].any() and cyto[0, 0, 15, 8] == 1
     assert "Foreground threshold" in w.status.text()
     assert v.layers["nuclei cells"].metadata["ibif_seeds"] == "nuclei"
+
+
+def test_panel_structures_inside_each_object(qtbot):
+    from ibif_napari._measure import measure_layer
+
+    v = make_viewer()
+    spots = np.zeros((2, 3, 40, 60), np.float32)  # same grid as the stack (image coordinates)
+    spots[:, :, 19:21, 13:15] = spots[:, :, 19:21, 16:18] = 1.0  # 2 spots in nucleus 1 (x=15)
+    spots[:, :, 19:21, 33:35] = 1.0  # 1 in nucleus 2 (x=33)
+    spots[:, :, 3:5, 3:5] = 1.0  # 1 outside the nuclei
+    v.add_image(spots, name="Spots", scale=(1, 2, 0.5, 0.5))
+    w = SecondaryWidget(v)
+    qtbot.addWidget(w)
+    w.method.setCurrentText(STRUCTURES)
+    assert w.structure.isVisibleTo(w) and w.size.isVisibleTo(w) and not w.kind.isVisibleTo(w)
+    assert not w.max_distance.isVisibleTo(w) and w.min_size.suffix() == " µm³"
+    w.run()
+    assert "Tick the channel(s) that show the structures" in w.status.text()
+    w.channels.findItems("Spots", Qt.MatchExactly)[0].setCheckState(Qt.Checked)
+    w.threshold.setCurrentText("None (whole image)")
+    w.run()
+    assert "Choose a threshold" in w.status.text()
+    w.threshold.setCurrentText("Otsu")
+    w.structure.setCurrentText("Regions (organelles, any brighter area)")
+    assert not w.size.isVisibleTo(w)
+    w.smooth.setValue(0)
+    run(w, qtbot)
+    layer = v.layers["nuclei regions"]
+    found = layer.data
+    assert found.shape == (2, 3, 30, 50) and set(np.unique(found)) == {0, 1, 2}
+    nuclei = v.layers["nuclei"].data
+    assert (found[found > 0] == nuclei[found > 0]).all()  # each structure has its nucleus's number
+    assert found[1, 2, 14, 13] == 1 and found[1, 2, 14, 33] == 2  # region row 14 = image row 19
+    assert layer.metadata["ibif_pieces"] and layer.metadata["ibif_seeds"] == "nuclei"
+    assert "structures in 2 of 2 objects" in w.status.text()
+    table = measure_layer(v, layer)
+    assert list(table["pieces"]) == [2, 1, 2, 1]  # per time point: 2 spots in nucleus 1, 1 in 2
+    assert "pieces" not in measure_layer(v, v.layers["nuclei"]).columns

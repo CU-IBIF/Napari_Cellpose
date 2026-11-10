@@ -40,12 +40,14 @@ def tables_of(viewer):
     return dict(_tables.get(viewer, {}))
 
 
-def measure_block(labels, channels=None, spacing=None, origin=None, units="µm"):
+def measure_block(labels, channels=None, spacing=None, origin=None, units="µm", pieces=False):
     """One row per object of a 2D or 3D labels array.
 
     channels: {name: array of the same shape}; spacing: voxel size per axis;
-    origin: world coordinate of voxel 0 (for centroids). Returns a DataFrame with
-    'label', size, centroid and '<channel> <stat>' columns.
+    origin: world coordinate of voxel 0 (for centroids); pieces: add a 'pieces' column,
+    the number of separate parts of each object (e.g. the vesicles of a cell, which share
+    its number). Returns a DataFrame with 'label', size, centroid and '<channel> <stat>'
+    columns.
     """
     labels = np.asarray(labels)
     nd = labels.ndim
@@ -59,6 +61,11 @@ def measure_block(labels, channels=None, spacing=None, origin=None, units="µm")
     voxels = ndi.sum(np.ones(labels.shape, np.uint8), labels, ids).astype(np.int64)
     size = voxels * float(np.prod(spacing))
     data = {"label": ids.astype(np.int64), "voxels": voxels, size_name: size}
+    if pieces:
+        from ._secondary import count_pieces
+
+        counts = count_pieces(labels)
+        data["pieces"] = np.array([counts.get(int(i), 0) for i in ids], np.int64)
     # Diameter of the sphere (3D) or disc (2D) with the same volume / area.
     data[f"equivalent diameter ({units})"] = (
         np.cbrt(6 * size / np.pi) if nd == 3 else np.sqrt(4 * size / np.pi)
@@ -82,7 +89,7 @@ def measure_layer(viewer, labels, images=(), progress=None):
 
     `images` are image layers on the same pixel grid (matched by world coordinates, so
     cropped Cellpose region results work). Adds 'T' and 'P' columns when the layer has
-    those axes. `progress(done, total)` is called per block.
+    those axes, and a 'pieces' column for layers of structures (vesicles, nucleoli...). `progress(done, total)` is called per block.
     """
     from ._util import aligned_image, spatial_ndim
 
@@ -100,7 +107,8 @@ def measure_layer(viewer, labels, images=(), progress=None):
             progress(n, len(positions))
         channels = {img.name: aligned_image(viewer, img, labels, pos) for img in images}
         origin = [float(t) for t in labels.translate[-n_sp:]]
-        table = measure_block(data[pos], channels, spacing, origin, units)
+        table = measure_block(data[pos], channels, spacing, origin, units,
+                              pieces=bool((labels.metadata or {}).get("ibif_pieces")))
         for name, i in zip(lead_names, pos):
             table.insert(0, name, i)
         rows.append(table)

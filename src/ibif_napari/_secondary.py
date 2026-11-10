@@ -304,7 +304,8 @@ def structures(parents, image, spacing=None, kind="spots", size=1.0, threshold="
             used.append(t)
     out = np.where(found, parents, 0).astype(parents.dtype, copy=False)
     if min_size and found.any():
-        pieces, n = ndi.label(out > 0)  # pieces in touching objects are split by number below
+        # Pieces in touching objects are split by number below.
+        pieces, n = ndi.label(out > 0, structure=ndi.generate_binary_structure(out.ndim, out.ndim))
         pieces = np.where(out > 0, pieces * (int(out.max()) + 1) + out, 0)
         ids, inverse, counts = np.unique(pieces, return_inverse=True, return_counts=True)
         small = (counts * float(np.prod(sp)) < min_size) & (ids != 0)
@@ -325,10 +326,12 @@ def _ridges(image, radius, spacing):
 
 
 def count_pieces(labels):
-    """{label: number of separate pieces} (face-connected), e.g. vesicles per cell."""
+    """{label: number of separate pieces}, e.g. vesicles per cell. Pixels that touch at a
+    corner or edge belong to the same piece."""
     labels = np.asarray(labels)
+    full = ndi.generate_binary_structure(labels.ndim, labels.ndim)
     out = {}
     for label, sl in enumerate(ndi.find_objects(labels), start=1):
         if sl is not None:
-            out[label] = int(ndi.label(labels[sl] == label)[1])
+            out[label] = int(ndi.label(labels[sl] == label, structure=full)[1])
     return out
