@@ -22,18 +22,29 @@ _FUNCS = {
 # Latest tables per viewer, so a saved workspace includes them; panels that show them
 # listen for tables restored from a workspace.
 _tables = weakref.WeakKeyDictionary()
-_listeners = weakref.WeakKeyDictionary()
+_listeners = weakref.WeakKeyDictionary()  # told about tables restored from a workspace
+_watchers = weakref.WeakKeyDictionary()  # told about every change (measured or restored)
 
 
 def remember(viewer, tables, notify=False):
+    """Keep the viewer's latest tables. `notify` tells the listeners (tables restored from a
+    workspace, to be shown again); watchers are told about every change."""
     _tables[viewer] = dict(tables)
     if notify:
         for callback in list(_listeners.get(viewer, [])):
             callback(dict(tables))
+    for callback in list(_watchers.get(viewer, [])):
+        callback(dict(_tables[viewer]))
 
 
 def listen(viewer, callback):
+    """Call `callback(tables)` when tables are restored from a workspace."""
     _listeners.setdefault(viewer, []).append(callback)
+
+
+def watch(viewer, callback):
+    """Call `callback(tables)` whenever the viewer's tables change (e.g. after Measure)."""
+    _watchers.setdefault(viewer, []).append(callback)
 
 
 def tables_of(viewer):

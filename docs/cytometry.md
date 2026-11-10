@@ -14,9 +14,11 @@ vtea-core, so VTEA and IBIF napari share them.
 
 1. **Measure the objects first.** In the Measurements section, tick the objects
    (e.g. cells) and the channels, and click **Measure**.
-2. **Choose the objects.** Open the **Cytometry** section and pick the table (one row
-   per object and time point / position) and the labels layer the objects are in.
-   Then click **Use these objects**.
+2. **Choose the objects.** Open the **Cytometry** section. The objects you measured are
+   already chosen: the table (one row per object and time point / position; the joined
+   *All objects* table when several layers were measured) and the labels layer they are
+   in. To analyse another table, pick it and click **Use these objects**. Measuring the
+   objects in use again updates them and keeps the gates, phenotypes and clusterings.
 3. **Open the Cytometry workbench.** It is a separate window, so the plot can be large
    next to the image. It stays above napari and closes with it.
    - **Show** chooses which objects are plotted: all of them, a gate, an image gate or

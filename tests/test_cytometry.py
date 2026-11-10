@@ -249,3 +249,78 @@ def test_clustering_tab(qtbot):
     tab.map.setCurrentIndex(tab.map.findData(None))
     tab.k.setValue(2)
     assert tab.run(wait=True)["n_objects"] == 80
+
+
+def test_measuring_makes_the_objects_available_in_cytometry(qtbot):
+    """Both sections exist before anything is measured (as in the IBIF panel); measuring
+    must offer the objects to Cytometry and choose them, and measuring again must update
+    them without losing the gates."""
+    from ibif_napari._cytometry_widget import CytometryWidget
+    from ibif_napari._measure_widget import COMBINED, MeasureWidget
+
+    v = ViewerModel()
+    labels = np.zeros((40, 60), np.uint16)
+    cd3 = np.full(labels.shape, 10.0)
+    for k, x in enumerate((5, 20, 35, 50), start=1):
+        labels[10:20, x - 4:x + 4] = k
+        labels[25:35, x - 4:x + 4] = k + 4
+        cd3[(labels == k)] = 500  # the top row is CD3+
+    v.add_image(cd3, name="CD3")
+    v.add_image(cd3 / 2, name="CD8")
+    v.add_labels(labels, name="nuclei")
+    v.add_labels(labels, name="cells")
+
+    measure, cyto = MeasureWidget(v), CytometryWidget(v)
+    qtbot.addWidget(measure)
+    qtbot.addWidget(cyto)
+    assert cyto.table_box.count() == 0 and not cyto.use_btn.isEnabled()
+
+    measure.check(objects=["cells"], channels=["CD3", "CD8"])
+    measure.measure()
+    qtbot.waitUntil(lambda: measure._worker is None, timeout=30000)
+    assert cyto.table_box.currentText() == "cells" and cyto.use_btn.isEnabled()
+    assert cyto.layer_box.currentText() == "cells"
+    state = cy.state_of(v)
+    assert state.table is not None and len(state.table) == 8  # chosen without a click
+    assert "8 objects" in cyto.summary.text()
+
+    gate = state.add_gate("CD3+", "CD3 mean", "CD8 mean", [[100, 0], [1e4, 0], [1e4, 1e4], [100, 1e4]])
+    assert state.mask("gate", gate.id).sum() == 4
+
+    # Measuring more objects: the joined table is offered, the objects in use are updated
+    # and the gate still applies.
+    measure.check(objects=["nuclei", "cells"], channels=["CD3", "CD8"])
+    measure.measure()
+    qtbot.waitUntil(lambda: measure._worker is None, timeout=30000)
+    names = [cyto.table_box.itemText(i) for i in range(cyto.table_box.count())]
+    assert names == ["nuclei", "cells", COMBINED]
+    assert state.source == "cells" and len(state.table) == 8
+    assert state.mask("gate", gate.id).sum() == 4
+
+
+def test_reopening_a_workspace_with_the_sections_open_keeps_the_analysis(qtbot, tmp_path):
+    """Restored tables reach the open sections first; the saved gates, phenotypes and
+    clustering must still be the ones in use afterwards."""
+    from ibif_napari._cytometry_widget import CytometryWidget
+    from ibif_napari._measure_widget import MeasureWidget
+
+    v, table = scene()
+    s = cy.state_of(v)
+    s.set_table("cells", table, "cells")
+    s.add_phenotype("T cell", "`CD3 mean` > 100")
+    rows, m = s.matrix(("phenotype", "T cell"), ["CD8 mean", "CD3 mean"])
+    labels, _ = cy.compute_analysis(m, None, "kmeans", k=2, seed=0)
+    s.add_analysis("T split", {"population": ["phenotype", "T cell"], "features": ["CD8 mean", "CD3 mean"]},
+                   rows, labels)
+    expected = s.typed_table()
+    folder, _ = _workspace.save_workspace(v, tmp_path / "w")
+
+    w = ViewerModel()
+    measure, cyto = MeasureWidget(w), CytometryWidget(w)
+    qtbot.addWidget(measure)
+    qtbot.addWidget(cyto)
+    assert _workspace.load_workspace(w, folder) == []
+    restored = cy.state_of(w)
+    assert restored.source == "cells" and list(restored.analyses) == ["T split"]
+    pd.testing.assert_frame_equal(restored.typed_table(), expected, check_dtype=False)
+    assert cyto.table_box.currentText() == "cells" and cyto.use_btn.isEnabled()

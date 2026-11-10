@@ -538,8 +538,11 @@ show every type back on the image. The analysis is done by
 ### 10.1 Choosing the objects
 
 1. Measure the objects first ([section 9](#9-measurements)), including the marker channels.
-2. In **Cytometry**, choose the **Objects** (a measurement table) and **On layer** (the labels
-   layer they are in), then click **Use these objects**.
+2. Open **Cytometry**. The objects you measured are already chosen: **Objects** is the
+   measurement table (the joined *All objects* table when you measured several layers) and
+   **On layer** the labels layer they are in. To analyse another table, choose it and click
+   **Use these objects**. Measuring the objects in use again updates them; gates, phenotypes
+   and clusterings are kept.
 3. Click **Open Cytometry workbench**. The workbench is a separate window, so the plot can be
    large next to the image.
 
