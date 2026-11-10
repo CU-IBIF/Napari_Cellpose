@@ -10,7 +10,7 @@ back as a layer. Jobs from all users share one queue and run one at a time.
 - An NVIDIA GPU with 16 GB of memory or more (24 GB is better for large 3D regions).
 - 64 GB of system RAM, an SSD, and a wired campus network connection.
 - Windows 10/11 or Ubuntu Linux.
-- A fixed address or host name on the campus network, from Creighton DoIT.
+- A fixed address or host name.
 
 ## 2. Install
 
@@ -47,7 +47,7 @@ to keep it somewhere else.
 ibif-napari-server run --allow 10.0.0.0/8
 ```
 
-Use Creighton's campus and VPN address ranges for `--allow` (ask DoIT); the option can be
+Use VPN address ranges for `--allow` (ask DoIT); the option can be
 repeated. Connections from other addresses are refused. The log shows each job with the
 user's name, never their token.
 
@@ -76,7 +76,7 @@ Users do not need Cellpose or a GPU on their own computers to use the server.
 - **Models:** users can choose built-in Cellpose models, or custom models the admin places
   in a folder given with `--models-dir`. Other file paths are refused.
 - **Restricted data:** whether HIPAA-regulated or other restricted data may be processed
-  on this workstation is a decision for Creighton DoIT and the compliance office.
+  on this workstation is a decision for DoIT and compliance office.
 
 ## 6. Run at start-up
 
