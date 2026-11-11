@@ -6,7 +6,7 @@ on them (the same functions the panels call), compares the results with the trut
 standard metrics, and writes a report that explains why the tool can be trusted, or where it
 cannot.
 
-- **Requirements:** [requirements.md](requirements.md). There are 19, each tied to a feature
+- **Requirements:** [requirements.md](requirements.md). There are 22, each tied to a feature
   of the tool, with numeric acceptance criteria.
 - **Code:** `src/ibif_napari/vv/`, with the command `ibif-napari-vv`.
 - **Tests of the suite itself:** `tests/test_vv.py`.
@@ -36,7 +36,7 @@ Useful options for `run` and `all`:
 |---|---|
 | `--quick` (`generate`, `all`) | Smaller scenes. The full suite with Cellpose takes about 35 min on a 4-core CPU (GitHub's runner), much less on a GPU; the quick one is a few times faster. |
 | `--backend cellpose` | The default. Uses the plugin's Cellpose segmentation with the panel's defaults. |
-| `--backend baseline` | A classical threshold + watershed segmenter. It needs no model weights, so it can try the suite anywhere; it does **not** verify Cellpose. |
+| `--backend classic` | The Segmentation section's *Threshold + watershed* tab, with its defaults (`baseline` is the old name). It needs no model weights, so the whole suite runs anywhere in a few minutes; the segmentation requirements then score that tab, and do **not** verify Cellpose. VV-SEG-07 to 09 test the tab on every run, whatever the back-end. |
 | `--backend truth` | An oracle that returns the truth. Every segmentation metric must then be perfect: a self-check of the suite. |
 | `--model NAME`, `--diameter PX`, `--gpu` | Test another Cellpose model, a fixed diameter, or the GPU. |
 | `--only VV-SEG-01 VV-MEAS-03` | Run only some requirements. |
@@ -99,6 +99,8 @@ How a scene is made (`synth.py`):
 | `cells_2d` | 256×256 | 0.5 | nuclei + cytoplasm + membrane channels |
 | `cells_3d` | 20×112×112 | 1.0×0.5×0.5 | 3D cells: secondary objects, measurements, files, workspace |
 | `timelapse_3d` | 3 T × 8×48×48 | 1.0×0.5×0.5 | intensities +25% per time point, offset origin |
+| `touching_2d` | 256×256 | 0.5 | 50 nuclei packed so that some press into each other (12 contacts) |
+| `touching_3d` | 20×112×112 | 1.0×0.5×0.5 | 16 nuclei, 3 contacts, anisotropic voxels |
 | `snr_20`, `snr_8`, `snr_4`, `snr_2` | 256×256 | 0.5 | the same nuclei at falling SNR |
 
 ## How results are scored
@@ -160,6 +162,29 @@ The first runs found two real problems. Both are fixed in the same change as the
    not fixed: from about ×1.2 (3D) or ×1.5 (2D) gaps open in the dimmer membranes and one
    cell can take the whole background (61× and 105× its true size). Keep *Threshold ×* near 1
    for membrane stains, or set a maximum distance.
+
+## The Threshold + watershed tab
+
+VV-SEG-07 to VV-SEG-09 cover the classical segmentation tab (`_classic.py`). It runs on the
+CPU in well under a second per scene, so these run on every V&V run and in the unit tests,
+whatever the segmentation back-end:
+
+- **VV-SEG-07 (verification):** the threshold equals an independent Otsu of the same
+  processed image; *Split: none* is exactly SciPy's connected-components labelling; the
+  watershed only divides the foreground; a manual threshold with nothing else is exactly
+  `image > value`.
+- **VV-SEG-08 (validation):** separated nuclei in 2D, at SNR 4, in 3D and in 3D by planes +
+  stitching. On the suite's scenes F1 = 1.00 (0.97 by planes) with mean IoU 0.91-0.96.
+- **VV-SEG-09 (validation):** touching nuclei. Connected components merge them (F1 0.71 in
+  2D, 0.90 in 3D); the distance watershed splits them (F1 0.97 and 1.00).
+
+To avoid tuning to the test data, the defaults were also run on 12 freshly seeded copies of
+each scene that the suite does not use. Separated nuclei (2D, 3D, SNR 4): F1 1.00 on every
+one. Touching nuclei: watershed F1 mean 0.95 (lowest 0.85) in 2D and 0.98 (lowest 0.90) in 3D,
+against 0.78 (lowest 0.63) and 0.75 (lowest 0.54) for connected components. Hence the 0.85
+limit: nuclei pressed hard together, with no neck between them, can still merge. The images
+are synthetic, with even staining and a dark background; on real tissue, check a few images
+by eye, and prefer Cellpose for crowded or irregular cells.
 
 ## Adding a requirement
 

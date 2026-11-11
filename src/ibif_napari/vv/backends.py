@@ -5,16 +5,17 @@
   automatic diameter, flow threshold 0.4, cell probability 0, minimum size 15, and in 3D
   the anisotropy filled in from the voxel size. This is what the segmentation
   requirements are about.
-* ``baseline``: a classical pipeline (smoothing, Otsu threshold, distance-transform
-  watershed). It needs no model weights, so the whole suite can be exercised on any
-  computer; its results say nothing about Cellpose.
+* ``classic`` (also ``baseline``): the Segmentation section's *Threshold + watershed*
+  tab (``ibif_napari._classic.segment``) with the tab's defaults: smoothing 1 px, Otsu,
+  fill holes, distance-transform watershed, minimum size 15. It needs no model weights,
+  so the whole suite can be exercised on any computer; its results say nothing about
+  Cellpose (they are the Threshold + watershed tab's results).
 * ``truth``: returns the truth labels renumbered (an oracle). Every segmentation metric
   must then be perfect: this checks the suite itself.
 """
 from __future__ import annotations
 
 import numpy as np
-from scipy import ndimage as ndi
 
 
 class Backend:
@@ -96,39 +97,34 @@ class CellposeBackend(Backend):
         )
 
 
-class BaselineBackend(Backend):
-    """Classical segmentation (no deep learning) to exercise the suite."""
+class ClassicBackend(Backend):
+    """The Threshold + watershed tab (no deep learning), with its defaults."""
 
-    name = "baseline"
+    name = "classic"
+
+    def describe(self):
+        from .._classic import Settings
+
+        return {"backend": self.name, "method": "Threshold + watershed tab",
+                "settings": {k: v for k, v in vars(Settings()).items()}}
 
     def segment(self, image, *, nuclei=None, spacing, do_3D=True, truth=None, kind="nuclei"):
-        from skimage import filters
-        from skimage.feature import peak_local_max
-        from skimage.segmentation import watershed
+        from .. import _classic
 
-        sp = np.asarray(spacing, float)
         if kind == "cells" and nuclei is not None:
+            # Whole cells: grown from the nuclei, as the Secondary objects section does.
             from .. import _secondary
 
             seeds = self.segment(nuclei, spacing=spacing, kind="nuclei")
             cells, _ = _secondary.seeded_cells(seeds, image, spacing, kind="cytoplasm", smooth=0.5)
             return cells
-        img = ndi.gaussian_filter(np.asarray(image, float), sigma=list(1.0 / sp))
-        mask = img > filters.threshold_otsu(img)
-        mask = ndi.binary_opening(mask, iterations=1)
-        mask = ndi.binary_fill_holes(mask)
-        dist = ndi.distance_transform_edt(mask, sampling=sp)
-        dist = ndi.gaussian_filter(dist, sigma=list(0.7 / sp))
-        min_px = max(2, int(round(2.0 / sp.min())))  # peaks at least ~2 µm apart
-        peaks = peak_local_max(dist, min_distance=min_px, threshold_abs=1.0, labels=ndi.label(mask)[0],
-                               exclude_border=False)
-        markers = np.zeros(mask.shape, np.int32)
-        markers[tuple(peaks.T)] = np.arange(1, len(peaks) + 1)
-        labels = watershed(-dist, markers, mask=mask)
-        sizes = np.bincount(labels.ravel())
-        small = np.flatnonzero(sizes < 15)
-        labels[np.isin(labels, small[small > 0])] = 0
-        return labels.astype(np.uint16)
+        image = np.asarray(image)
+        if image.ndim == 3 and not do_3D:  # per plane (the tab's "2D per plane")
+            return _classic.segment_planes(image, spacing)[0]
+        return _classic.segment(image, spacing)[0]
+
+
+BaselineBackend = ClassicBackend  # the name used before the tab existed
 
 
 class TruthBackend(Backend):
@@ -157,7 +153,8 @@ def _version(dist):
         return None
 
 
-BACKENDS = {"cellpose": CellposeBackend, "baseline": BaselineBackend, "truth": TruthBackend}
+BACKENDS = {"cellpose": CellposeBackend, "classic": ClassicBackend, "baseline": ClassicBackend,
+            "truth": TruthBackend}
 
 
 def make(name, **kwargs):

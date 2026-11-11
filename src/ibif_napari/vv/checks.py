@@ -444,6 +444,155 @@ def _snr(ctx, res):
         "F1 at IoU 0.5 by SNR: " + ", ".join(f"SNR {r['SNR']}: {r['f1@0.5']:.3f}" for r in rows) + ".")
 
 
+@check("VV-SEG-07")
+def _classic_steps(ctx, res):
+    from skimage.filters import threshold_otsu
+
+    from .. import _classic
+
+    rows, worst = [], {"thr": 0.0, "cc": True, "cover": True, "within": True, "numbers": True, "manual": True}
+    for name in ("nuclei_2d", "nuclei_3d"):
+        sc = ctx.scene(name)
+        image = np.asarray(sc.acquired["nuclei"], float)
+        sp = np.asarray(sc.spec.spacing, float)
+        rel = sp / sp[-1]
+        s = _classic.Settings()
+        # Independent: the same normalisation, smoothing and Otsu, with numpy / scipy.
+        lo, hi = np.percentile(image, (0.1, 99.9))
+        work = np.clip((image - lo) / (hi - lo), 0, 1)
+        work = ndi.gaussian_filter(work.astype(np.float32), sigma=list(s.smooth / rel))
+        expected = float(threshold_otsu(work)) * (hi - lo) + lo
+        fg, info, _ = _classic.foreground(image, s, rel)
+        thr_err = abs(info["threshold"] - expected) / abs(expected)
+        worst["thr"] = max(worst["thr"], thr_err)
+        # Connected components of the same foreground.
+        cc, _ = _classic.segment(image, sp, split="none")
+        ref, _ = ndi.label(fg, structure=ndi.generate_binary_structure(fg.ndim, 1))
+        sizes = np.bincount(ref.ravel())
+        ref = np.where(sizes[ref] >= s.min_size, ref, 0)
+        same_cc = _same_partition(cc, ref)
+        worst["cc"] &= same_cc
+        # The watershed: within the foreground, each object inside one component.
+        ws, _ = _classic.segment(image, sp)
+        kept = np.zeros(fg.shape, bool)
+        cover = bool(np.all(ws[~fg] == 0))
+        # Pixels lost only from pieces the minimum size removed.
+        lost = fg & (ws == 0)
+        if lost.any():
+            pieces, _ = ndi.label(lost)
+            cover &= bool(np.all(np.bincount(pieces.ravel())[1:] < s.min_size))
+        kept |= ws > 0
+        pairs = np.unique(np.stack([ws[kept], ref[kept]]), axis=1)
+        within = len(np.unique(pairs[0])) == pairs.shape[1]
+        n = int(ws.max())
+        numbers = set(np.unique(ws)) == set(range(n + 1)) and \
+            (np.bincount(ws.ravel())[1:] >= s.min_size).all()
+        worst["cover"] &= cover
+        worst["within"] &= within
+        worst["numbers"] &= numbers
+        # Manual threshold, nothing else: exactly image > value.
+        value = float(np.percentile(image, 97))
+        man, _ = _classic.segment(image, sp, threshold="manual", value=value, smooth=0, fill_holes=False,
+                                  min_size=0, split="none")
+        ref_man, _ = ndi.label(image > value, structure=ndi.generate_binary_structure(image.ndim, 1))
+        same_man = _same_partition(man, ref_man)
+        worst["manual"] &= same_man
+        rows.append({"scene": name, "threshold": info["threshold"], "independent Otsu": expected,
+                     "relative error": thr_err, "components identical": same_cc,
+                     "objects (watershed)": n, "objects (components)": int(cc.max()),
+                     "within the foreground": cover, "within one component": within,
+                     "numbered 1..n": numbers, "manual = image > value": same_man})
+    res.check("threshold vs independent Otsu (relative error)", worst["thr"], "<=", ctx.limits["exact_rel"], "{:.2g}")
+    res.check("connected components identical", worst["cc"], "is", True)
+    res.check("watershed objects cover the foreground", worst["cover"], "is", True)
+    res.check("each watershed object within one component", worst["within"], "is", True)
+    res.check("numbered 1..n, none below the minimum size", worst["numbers"], "is", True)
+    res.check("manual threshold = components of image > value", worst["manual"], "is", True)
+    res.tables["steps"] = pd.DataFrame(rows)
+    res.evidence.append(
+        "On both scenes the threshold equals an independent Otsu of the same processed image, "
+        "'Split: none' is exactly SciPy's connected-components labelling of the same foreground, "
+        "and the watershed only divides that foreground: "
+        + "; ".join(f"{r['scene']}: {r['objects (components)']} components -> {r['objects (watershed)']} objects"
+                    for r in rows) + ".")
+
+
+def _same_partition(a, b):
+    """True if two label images are the same objects (numbering aside)."""
+    if a.shape != b.shape or not np.array_equal(a > 0, b > 0):
+        return False
+    both = a > 0
+    if not both.any():
+        return True
+    pairs = np.unique(np.stack([a[both], b[both]]), axis=1)
+    return len(np.unique(pairs[0])) == len(np.unique(pairs[1])) == pairs.shape[1]
+
+
+@check("VV-SEG-08")
+def _classic_nuclei(ctx, res):
+    from .. import _classic
+
+    rows = []
+    cases = (("nuclei_2d", "2D", _classic.segment, "classic2d_f1", "classic2d_iou"),
+             ("snr_4", "SNR 4", _classic.segment, "classic_snr4_f1", None),
+             ("nuclei_3d", "3D", _classic.segment, "classic3d_f1", "classic3d_iou"),
+             ("nuclei_3d", "3D by planes + stitch", _classic.segment_planes, "classic3d_f1", None))
+    for name, label, func, f1_limit, iou_limit in cases:
+        sc = ctx.scene(name)
+        t0 = time.perf_counter()
+        pred, info = func(sc.acquired["nuclei"], sc.spec.spacing)
+        seconds = time.perf_counter() - t0
+        m = metrics.match(sc.nuclei, pred)
+        res.check(f"{label}: F1 at IoU 0.5", m["f1@0.5"], ">=", ctx.limits[f1_limit])
+        if iou_limit:
+            res.check(f"{label}: mean IoU of matched nuclei", m["mean_iou"], ">=", ctx.limits[iou_limit])
+        rows.append({"case": label, "scene": name, **metrics.summary(m), "seconds": seconds,
+                     "threshold": info.get("threshold")})
+        if label in ("2D", "3D"):
+            _seg_account(res, m, f"nuclei ({label})", "Threshold + watershed")
+            res.figures.append((f"Threshold + watershed, {name}: truth and result outlines",
+                                seg_figure(sc.acquired["nuclei"], sc.nuclei, pred, name)))
+    res.tables["classic"] = pd.DataFrame(rows)
+    res.metrics = {r["case"]: {k: r[k] for k in ("f1@0.5", "mean_iou", "seconds")} for r in rows}
+    res.evidence.append("Times on this computer's CPU: " + ", ".join(
+        f"{r['case']} {r['seconds']:.2f} s" for r in rows) + ".")
+
+
+@check("VV-SEG-09")
+def _touching(ctx, res):
+    from .. import _classic
+
+    rows = []
+    for name in ("touching_2d", "touching_3d"):
+        sc = ctx.scene(name)
+        _, groups = ndi.label(sc.nuclei > 0)
+        n_true = int(len(np.unique(sc.nuclei)) - 1)
+        out = {}
+        for split in ("distance", "none"):
+            pred, _ = _classic.segment(sc.acquired["nuclei"], sc.spec.spacing, split=split)
+            out[split] = (pred, metrics.match(sc.nuclei, pred))
+        ws, cc = out["distance"][1], out["none"][1]
+        dim = name.split("_")[1].upper()
+        res.check(f"{dim}: F1 at IoU 0.5 with the watershed", ws["f1@0.5"], ">=", ctx.limits["touch_f1"])
+        res.check(f"{dim}: F1 gained over connected components", ws["f1@0.5"] - cc["f1@0.5"], ">=",
+                  ctx.limits["touch_gain"])
+        res.check(f"{dim}: merges, watershed minus components", ws["merges"] - cc["merges"], "<=", -1, "{:.0f}")
+        rows.append({"scene": name, "true nuclei": n_true, "touching contacts": n_true - groups,
+                     "F1 watershed": ws["f1@0.5"], "F1 components": cc["f1@0.5"],
+                     "merges watershed": ws["merges"], "merges components": cc["merges"],
+                     "mean IoU watershed": ws["mean_iou"]})
+        res.figures.append((f"{name}: truth and watershed outlines",
+                            seg_figure(sc.acquired["nuclei"], sc.nuclei, out["distance"][0], name)))
+        res.figures.append((f"{name}: truth and connected components (no split)",
+                            seg_figure(sc.acquired["nuclei"], sc.nuclei, out["none"][0], name + " (components)")))
+    res.tables["touching"] = pd.DataFrame(rows)
+    res.metrics = {r["scene"]: {k: v for k, v in r.items() if k != "scene"} for r in rows}
+    res.evidence.append("; ".join(
+        f"{r['scene']}: {r['touching contacts']} contact(s) between nuclei; connected components merge "
+        f"{r['merges components']} (F1 {r['F1 components']:.3f}), the watershed {r['merges watershed']} "
+        f"(F1 {r['F1 watershed']:.3f})" for r in rows) + ".")
+
+
 @check("VV-SEG-06")
 def _region(ctx, res):
     from .._region import keep_inside, painted_mask, region_crop

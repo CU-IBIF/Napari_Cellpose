@@ -36,7 +36,7 @@ def test_guide_window_and_help_menu(qtbot):
     window.show()
     qtbot.waitExposed(window)
     window.fit_images()
-    assert window.go_to("7-segmentation-with-cellpose")
+    assert window.go_to("7-segmentation-cellpose-or-threshold--watershed")
     assert window.browser.verticalScrollBar().value() > 0
     assert not window.go_to("no-such-heading")
     window.find_box.setText("anisotropy")

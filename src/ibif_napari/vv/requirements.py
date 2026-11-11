@@ -25,6 +25,12 @@ LIMITS = {
     "snr_high_f1": 0.90,  # SNR >= 8
     "snr_low_f1": 0.70,  # SNR 4
     "region_f1_drop": 0.05,
+    # Segmentation (Threshold + watershed tab, its defaults)
+    "classic2d_f1": 0.90, "classic2d_iou": 0.80,
+    "classic3d_f1": 0.85, "classic3d_iou": 0.75,
+    "classic_snr4_f1": 0.85,
+    "touch_f1": 0.85,  # touching nuclei, with the watershed (12 fresh 2D scenes: mean 0.95, lowest 0.85)
+    "touch_gain": 0.05,  # F1 gained over connected components alone
     # Secondary objects
     "seeded_iou": 0.80, "seeded_f1": 0.90,
     "membrane_agree": 0.95,  # mean IoU between the cells of different automatic thresholds
@@ -137,6 +143,46 @@ REQUIREMENTS = [
         ["the image read is the region's bounding box", "no object mostly outside the painted area",
          "F1 at IoU 0.5 within {region_f1_drop} of the whole-image F1 (or better)"],
         needs=["segmentation"], scenes=["nuclei_2d"]),
+    Requirement(
+        "VV-SEG-07", "Segmentation", "Threshold + watershed does each step as specified",
+        "The Threshold + watershed tab shall threshold at the value the chosen method gives, "
+        "label connected components exactly, and split objects only within the foreground, "
+        "numbering them 1..n.",
+        "Segmentation section, Threshold + watershed tab",
+        "Test on nuclei_2d and nuclei_3d against an independent calculation with SciPy / "
+        "scikit-image: the Otsu threshold of the same normalised, smoothed image; connected "
+        "components of the same foreground; a manual threshold with no smoothing or clean-up "
+        "against the plain image > value.",
+        ["threshold = Otsu of the processed image (relative error <= {exact_rel:g})",
+         "Split: none gives exactly the connected components of the foreground",
+         "the watershed objects cover exactly the foreground, and each lies within one component",
+         "objects numbered 1..n, none smaller than the minimum size",
+         "manual threshold: objects = connected components of image > value, exactly"],
+        kind="verification", scenes=["nuclei_2d", "nuclei_3d"]),
+    Requirement(
+        "VV-SEG-08", "Segmentation", "Threshold + watershed finds nuclei in 2D and 3D",
+        "With its defaults, the Threshold + watershed tab shall find and outline separated "
+        "nuclei in 2D and in anisotropic 3D stacks, also at low signal-to-noise. (It needs no "
+        "GPU or model, so it is checked on every run, whichever segmentation back-end is chosen.)",
+        "Segmentation section, Threshold + watershed tab (3D, and 2D per plane + stitch)",
+        "Test on nuclei_2d (SNR 12), snr_4 and nuclei_3d (Z step 1 µm, pixels 0.5 µm), with the "
+        "tab's defaults: smoothing 1 px, Otsu, fill holes, distance watershed, min size 15.",
+        ["2D: F1 at IoU 0.5 >= {classic2d_f1}, mean IoU >= {classic2d_iou}",
+         "SNR 4: F1 at IoU 0.5 >= {classic_snr4_f1}",
+         "3D: F1 at IoU 0.5 >= {classic3d_f1}, mean IoU >= {classic3d_iou}",
+         "3D by 2D planes + stitching: F1 at IoU 0.5 >= {classic3d_f1}"],
+        scenes=["nuclei_2d", "snr_4", "nuclei_3d"]),
+    Requirement(
+        "VV-SEG-09", "Segmentation", "Touching nuclei are split by the watershed",
+        "Nuclei that touch shall be separated by the watershed rather than merged as one "
+        "connected component.",
+        "Segmentation section, Threshold + watershed tab: Split touching objects",
+        "Test on touching_2d and touching_3d (nuclei packed so that some press into each other), "
+        "with the distance watershed (default) and with connected components only.",
+        ["with the watershed: F1 at IoU 0.5 >= {touch_f1} in 2D and 3D",
+         "the watershed's F1 is at least {touch_gain} higher than connected components alone",
+         "the watershed merges fewer nuclei than connected components"],
+        scenes=["touching_2d", "touching_3d"]),
     # ---- secondary objects ------------------------------------------------------------------
     Requirement(
         "VV-SEC-01", "Secondary objects", "Expand grows objects by the set distance",

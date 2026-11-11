@@ -48,8 +48,9 @@ SECTIONS = (
             "Time, position and Z sliders, channels, 2D/3D view, projections and the 3D brush",
             "._dims_widget:DimensionsWidget"),
     Section("segmentation", "Segmentation",
-            "Cellpose segmentation in 2D or 3D, on this computer, a facility server or a cluster",
-            "._cellpose_widget:CellposeWidget"),
+            "Cellpose segmentation in 2D or 3D, on this computer, a facility server or a cluster; "
+            "or a classical threshold + watershed on the CPU (no GPU needed)",
+            "._segmentation_widget:SegmentationWidget"),
     Section("secondary_objects", "Secondary objects",
             "Expand, rings, rims and whole cells grown from the segmented nuclei",
             "._secondary_widget:SecondaryWidget"),

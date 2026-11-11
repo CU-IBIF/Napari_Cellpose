@@ -18,7 +18,7 @@ def main(argv=None):
     g.add_argument("--quick", action="store_true", help="smaller scenes (minutes instead of tens of minutes on CPU)")
 
     def run_args(sp):
-        sp.add_argument("--backend", default="cellpose", choices=["cellpose", "baseline", "truth"],
+        sp.add_argument("--backend", default="cellpose", choices=["cellpose", "classic", "baseline", "truth"],
                         help="segmentation to test (default: cellpose, as the Segmentation section runs it)")
         sp.add_argument("--model", help="Cellpose model (default: the panel's default model)")
         sp.add_argument("--gpu", action="store_true", help="run Cellpose on the GPU")

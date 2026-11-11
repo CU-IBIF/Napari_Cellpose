@@ -135,7 +135,7 @@ def _html(summary, results_dir):
     if not summary["verifies_cellpose"]:
         h.append("<div class='banner'><b>Segmentation back-end: "
                  f"{html.escape(summary['backend'])}.</b> The segmentation results in this report come from "
-                 "a stand-in, not Cellpose, so they exercise the suite but do not verify Cellpose. Run "
+                 f"{_backend_words(summary['backend'])}, not Cellpose, so they do not verify Cellpose. Run "
                  "<code>ibif-napari-vv run --backend cellpose</code> for that.</div>")
     elif not summary["backend_available"]:
         h.append("<div class='banner'><b>Cellpose was not available</b>, so the segmentation requirements "
@@ -225,8 +225,8 @@ def _markdown(summary):
              f"{env.get('date')} · ibif-napari {env.get('ibif-napari')} · commit {env.get('git commit')} · "
              f"segmentation: {summary['backend']}", ""]
     if not summary["verifies_cellpose"]:
-        lines += [f"> **Segmentation back-end: {summary['backend']}** — a stand-in, not Cellpose; segmentation "
-                  "results do not verify Cellpose.", ""]
+        lines += [f"> **Segmentation back-end: {summary['backend']}** — {_backend_words(summary['backend'])}, "
+                  "not Cellpose; segmentation results do not verify Cellpose.", ""]
     elif not summary["backend_available"]:
         lines += [f"> **Cellpose was not available**: {summary['backend_note']}", ""]
     lines += [f"**Verdict:** {_conclusion(summary)}", "",
@@ -244,3 +244,9 @@ def _markdown(summary):
 
 
 __all__ = ["build", "REQUIREMENTS"]
+
+
+def _backend_words(backend):
+    """What a non-Cellpose back-end is, for the report's banner."""
+    return {"classic": "the Threshold + watershed tab", "baseline": "the Threshold + watershed tab",
+            "truth": "an oracle that returns the truth (a self-check of the suite)"}.get(backend, "a stand-in")

@@ -41,7 +41,13 @@ def test_opens_on_configuration_and_switches(panel):
     assert panel.buttons["configuration"].isChecked()
     panel.buttons["segmentation"].click()
     assert panel.current_section() == "segmentation" and panel.title.text() == "Segmentation"
-    assert isinstance(panel.pages["segmentation"], CellposeWidget)
+    from ibif_napari._classic_widget import ClassicWidget
+    from ibif_napari._segmentation_widget import CLASSIC_TAB, SegmentationWidget
+
+    seg = panel.pages["segmentation"]
+    assert isinstance(seg, SegmentationWidget) and isinstance(seg.cellpose, CellposeWidget)
+    assert [seg.tabs.tabText(i) for i in range(seg.tabs.count())] == ["Cellpose", "Threshold + watershed"]
+    assert isinstance(seg.show_tab(CLASSIC_TAB), ClassicWidget) and seg.tabs.currentWidget() is seg.classic
     assert not panel.buttons["configuration"].isChecked()
     assert isinstance(panel.show_section("save_workspace"), WorkspaceWidget)
     from ibif_napari._cytometry_widget import CytometryWidget
@@ -69,5 +75,6 @@ def test_manifest_lists_the_panel_and_sections():
 
     manifest = yaml.safe_load((Path(_workspace.__file__).with_name("napari.yaml")).read_text())
     names = [w["display_name"] for w in manifest["contributions"]["widgets"]]
-    assert names == ["IBIF napari", "Configuration", "Segmentation (Cellpose)", "Secondary objects",
+    assert names == ["IBIF napari", "Configuration", "Segmentation (Cellpose)",
+                     "Segmentation (threshold + watershed)", "Secondary objects",
                      "Measurements", "Cytometry", "Filament tracing", "Save workspace"]

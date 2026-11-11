@@ -17,6 +17,9 @@ contributions:
     - id: ibif-napari.cellpose_widget
       python_name: ibif_napari._cellpose_widget:CellposeWidget
       title: Segmentation (Cellpose)
+    - id: ibif-napari.classic_widget
+      python_name: ibif_napari._classic_widget:ClassicWidget
+      title: Segmentation (threshold + watershed)
     - id: ibif-napari.filament_widget
       python_name: ibif_napari._filament_widget:FilamentWidget
       title: Filament tracing
@@ -54,6 +57,8 @@ contributions:
       display_name: Configuration
     - command: ibif-napari.cellpose_widget
       display_name: Segmentation (Cellpose)
+    - command: ibif-napari.classic_widget
+      display_name: Segmentation (threshold + watershed)
     - command: ibif-napari.secondary_widget
       display_name: Secondary objects
     - command: ibif-napari.measure_widget
