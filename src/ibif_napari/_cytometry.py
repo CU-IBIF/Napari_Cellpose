@@ -529,6 +529,31 @@ class Cytometry:
         suffix = "phenotypes" if level is None else f"phenotypes level {level}"
         return self.paint(values, f"{self.layer_name} {suffix}", colors)
 
+    def population_color(self, kind, key):
+        return (self.gates.get(key).color if kind == "gate" else
+                self.image_gates[key]["color"] if kind == "image" else
+                self.tree.get(key).color if kind == "phenotype" else "#ffff00")
+
+    def show_populations(self, items, overlap_color="#ffffff"):
+        """Several gates (or phenotypes) on the image at once, each in its colour, in the
+        "<objects> selection" layer; objects in more than one get `overlap_color`.
+        Returns (layer, {item: objects}, objects in more than one)."""
+        items = [tuple(i) for i in items]
+        if len(items) == 1:
+            kind, key = items[0]
+            return self.show_population(kind, key), {items[0]: int(self.mask(kind, key).sum())}, 0
+        masks = [self.mask(*i) for i in items]
+        values = np.zeros(len(self.table), np.int64)
+        for code, mask in enumerate(masks, start=1):
+            values[mask] = code
+        several = np.sum(masks, axis=0) > 1
+        overlap = len(items) + 1
+        values[several] = overlap
+        colors = {code: self.population_color(*i) for code, i in enumerate(items, start=1)}
+        colors[overlap] = overlap_color
+        layer = self.paint(values, f"{self.layer_name} selection", colors)
+        return layer, {i: int(m.sum()) for i, m in zip(items, masks)}, int(several.sum())
+
     def show_population(self, kind, key, color=None):
         mask = self.mask(kind, key)
         if color is None:

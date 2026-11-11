@@ -38,7 +38,11 @@ vtea-core, so VTEA and IBIF napari share them.
      counts when its centre's Y/X is inside, whatever its Z.
    - As soon as a gate is drawn, its objects are coloured on their segmented pixels in
      the image (the *<objects> selection* labels layer); selecting a gate in the list
-     shows that one. In a joined table (*All objects*), centres and positions come from
+     shows that one. Ctrl- or Shift-click selects several gates: each is shown in its
+     colour, objects in more than one in white. Delete removes every selected gate.
+   - **Points** (plot toolbar or right-click): point size, style and opacity.
+   - The workbench opens as large as fits on the screen: a 4:3 plot, and the gate and
+     phenotype lists at about half its width (drag the divider to change it). In a joined table (*All objects*), centres and positions come from
      the measurements of the chosen objects layer (e.g. `cells: centroid Y (µm)`).
    - Click a point to go to that object in the viewer. Click an object in the viewer
      to ring it on the plot.
@@ -70,7 +74,9 @@ vtea-core, so VTEA and IBIF napari share them.
      `<name> UMAP 1/2`.
    - The results show a **heat map** of the clusters (z-score of each feature's
      mean) and a table with each cluster's size and markers (e.g.
-     *CD8 mean+ CD3 mean+ / CD4 mean−*).
+     *CD8 mean+ CD3 mean+ / CD4 mean−*). Long names are shortened to fit (shared file
+     name dropped, layer and statistic abbreviated: *Cell Alexa 647 mean*, *Nuc vol*);
+     hover a label or a marker cell for the full name.
    - Type a **phenotype name** next to clusters and click **Make phenotypes**. Clusters
      given the same name become one phenotype, which is how an over-split population
      is merged.
@@ -88,9 +94,10 @@ vtea-core, so VTEA and IBIF napari share them.
    phenotype with an empty rule is "the rest of its parent": everything in the parent
    that an earlier sibling did not claim (e.g. *Other T*).
 6. **Use the result.**
-   - **Show phenotypes on image** colours every object by its phenotype, either the
-     deepest (most specific) one or the one at a chosen level of the hierarchy.
-   - **Export table…** writes the objects with every gate column, their phenotype, its
+   - **Show phenotypes on image** (workbench: **Show on image**) colours every object by
+     its phenotype, either the deepest (most specific) one or the one at a chosen level
+     of the hierarchy.
+   - **Export…** (workbench) writes the objects with every gate column, their phenotype, its
      path, and the phenotype at each level (CSV or Excel).
 
 The tree shows, for each phenotype, its objects and its % of the parent. If an object

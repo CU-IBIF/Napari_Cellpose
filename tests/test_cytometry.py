@@ -415,3 +415,106 @@ def test_joined_table_of_several_layers():
     empty = v.add_labels(np.zeros_like(data), name="other", scale=(1, 0.5, 0.5))
     s.layer_name = empty.name
     assert "Only 0 of the 12 labels" in s.describe()
+
+
+def test_several_gates_on_the_image_at_once(qtbot):
+    from ibif_napari._cyto_workbench import Workbench
+
+    v, table = scene()
+    s = cy.state_of(v)
+    s.set_table("cells", table, "cells")
+    left = s.add_image_gate("left", [[[0, 0], [0, 20], [30, 20], [30, 0]]], color="#00ff00")  # 12 cells
+    top = s.add_gate("top", "CD3 mean", "CD8 mean", [[0, 100], [1e4, 100], [1e4, 1e4], [0, 1e4]],
+                     color="#ff0000")  # the CD8-bright row: 4 cells, all also in "left"
+    bench = Workbench(v)
+    qtbot.addWidget(bench)
+    bench.select_gates([("image", left), ("gate", top.id)])
+    assert bench.selected_gates() == [("image", left), ("gate", top.id)]
+    assert not bench.gate_pheno_btn.isEnabled() and bench.gate_delete_btn.isEnabled()
+    layer = v.layers["cells selection"]
+    codes = np.unique(layer.data)
+    assert set(codes) == {0, 1, 3}  # left only, and both (top is inside left)
+    assert tuple(layer.colormap.map(1)[:3]) == pytest.approx((0, 1, 0))
+    assert tuple(layer.colormap.map(3)[:3]) == pytest.approx((1, 1, 1))  # in both: white
+    assert "2 gates shown" in bench.status.text() and "4 in more than one" in bench.status.text()
+    # One gate alone: its own colour, and the phenotype / rename buttons come back.
+    bench.select_gates([("gate", top.id)])
+    assert bench.gate_pheno_btn.isEnabled() and set(np.unique(v.layers["cells selection"].data)) == {0, 1}
+    # Deleting several at once.
+    bench.select_gates([("image", left), ("gate", top.id)])
+    bench.delete_gate()
+    assert not s.order
+
+
+def test_short_feature_labels():
+    from ibif_napari._cyto_labels import short_names
+
+    stem = "Kidney_Cortex_Human_1-1"
+    names = [f"cells: {stem} DAPI mean", f"nuclei: {stem} DAPI median", f"cells: {stem} Alexa Fluor 647 std",
+             f"nuclei: {stem} Oregon Green 488 BAPTA-1 mean", "cells: volume (µm³)",
+             "nuclei: equivalent diameter (µm)", "cells: centroid X (µm)"]
+    short = short_names(names)
+    assert short[names[0]] == "Cell DAPI mean" and short[names[1]] == "Nuc DAPI med"
+    assert short[names[2]] == "Cell Alexa 647 sd"  # first and last words of the dye
+    assert short[names[3]] == "Nuc Oregon… mean"
+    assert short[names[4]] == "Cell vol" and short[names[5]] == "Nuc diam" and short[names[6]] == "Cell X"
+    assert all(len(v) <= 18 for v in short.values()) and len(set(short.values())) == len(names)
+    # One layer only: no layer prefix; nothing shared: names kept.
+    assert short_names(["CD3 mean", "CD8 median", "volume (µm³)"]) == \
+        {"CD3 mean": "CD3 mean", "CD8 median": "CD8 med", "volume (µm³)": "vol"}
+    long = "a custom measurement with a very long name"
+    assert short_names([long])[long].endswith("…") and len(short_names([long])[long]) <= 18
+    # Labels that would collide fall back to (cut) full names.
+    clash = short_names(["x: A B C mean", "x: A D C mean"], max_len=8)
+    assert len(set(clash.values())) == 2
+
+
+def test_heatmap_fits_long_names_and_shows_them_on_hover(qtbot):
+    from ibif_napari._cyto_cluster import Heatmap
+
+    z = pd.DataFrame(np.random.default_rng(0).normal(size=(3, 6)), index=[1, 2, 3],
+                     columns=[f"cells: Some_Long_File_Name_2026 Channel{k} mean" for k in range(6)])
+    counts = pd.DataFrame({"objects": [10, 20, 30]}, index=[1, 2, 3])
+    h = Heatmap()
+    qtbot.addWidget(h)
+    h.resize(600, 400)
+    h.show(z, counts)
+    h.canvas.draw()
+    labels = [t.get_text() for t in h.figure.axes[0].get_xticklabels()]
+    assert labels[0] == "Channel0 mean"
+    tick, full = h._ticks[2]
+    box = tick.get_window_extent(h.canvas.get_renderer())
+    assert h.full_name((box.x0 + box.x1) / 2, (box.y0 + box.y1) / 2) == full == z.columns[2]
+    assert h.full_name(-50, -50) is None
+
+
+def test_points_menu_and_window_shape(qtbot):
+    from ibif_napari._cyto_plot import ASPECT, STYLES
+    from ibif_napari._cyto_workbench import Workbench
+
+    v, table = scene()
+    cy.state_of(v).set_table("cells", table, "cells")
+    bench = Workbench(v)
+    qtbot.addWidget(bench)
+    plot = bench.plot
+    titles = [a.text() for a in plot.points_menu.actions()]
+    assert titles == ["Size", "Style", "Opacity"]
+    plot.set_point_style(point_size=30.0, marker="+", alpha=0.4)
+    sc = plot.axes.collections[-1]
+    assert sc.get_sizes()[0] == 30.0 and sc.get_alpha() == 0.4 and sc.get_linewidths()[0] > 0  # + is lines
+    assert plot._actions[("marker", "Plus")].isChecked() and not plot._actions[("marker", "Dot")].isChecked()
+    plot._actions[("marker", "Square")].trigger()
+    assert plot.marker == STYLES["Square"] and plot.axes.collections[-1].get_linewidths()[0] == 0
+    bench.x_col.setCurrentText("CD8 mean")  # replotting keeps the chosen style
+    assert plot.axes.collections[-1].get_sizes()[0] == 30.0
+    for avail in ((1920, 1080), (1366, 768), (2560, 1440)):
+        plot_w, side_w = bench.fit_to_screen(avail)
+        assert bench.width() <= avail[0] and bench.height() <= avail[1]
+        assert bench.width() >= bench.minimumWidth() and bench.height() >= bench.minimumHeight()
+        assert side_w >= plot_w // 2 and (side_w == plot_w // 2 or side_w == max(
+            bench.side.minimumSizeHint().width(), 260))
+    bench.show()
+    bench.fit_to_screen((1920, 1080))
+    qtbot.waitExposed(bench)
+    canvas = plot.canvas
+    assert canvas.width() / canvas.height() == pytest.approx(ASPECT, abs=0.02)
