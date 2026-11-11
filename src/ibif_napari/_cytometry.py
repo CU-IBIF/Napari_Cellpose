@@ -92,6 +92,10 @@ class Cytometry:
         self.analyses = {}
         self.derived = None
         self.last_rewrite = {}  # names in the last rule added / edited that were matched to columns
+        # The workbench plot's set-up (axes, scales, population, colour, point style),
+        # saved with the workspace; view_version changes when a workspace restores it.
+        self.view = {}
+        self.view_version = 0
         self._listeners = []
         self._cache = None
 
@@ -114,7 +118,9 @@ class Cytometry:
         self.source = source
         self.layer_name = layer_name
         self.table = table.reset_index(drop=True).copy()
-        if not same:  # clustering results belong to the objects they were run on
+        self.dropped_analyses = []
+        if not same and self.analyses:  # clustering results belong to the objects they were run on
+            self.dropped_analyses = list(self.analyses)
             self.analyses, self.derived = {}, None
         self.changed()
 
@@ -180,13 +186,16 @@ class Cytometry:
         return int(np.isin(wanted, present).sum()), len(wanted)
 
     def column(self, name):
-        """A table column, or a transformed one computed on the fly."""
+        """A table column, or a transformed one computed on the fly. KeyError if there
+        is no such column (e.g. the map of a clustering result that was deleted)."""
         if name in self.table.columns:
             return self.table[name].to_numpy(float)
         if self.derived is not None and name in self.derived.columns:
             return self.derived[name].to_numpy(float)
         column, transform, cofactor = split_axis(name)
-        values = self.column(column) if column not in self.table.columns else self.table[column].to_numpy(float)
+        if transform == "linear" or column == name:
+            raise KeyError(f"there is no column {name!r}")
+        values = self.column(column)
         if transform == "log10":
             with np.errstate(divide="ignore", invalid="ignore"):
                 return np.log10(np.where(values > 0, values, np.nan))
@@ -202,10 +211,17 @@ class Cytometry:
         if self.derived is not None:
             for c in self.derived.columns:
                 frame[c] = self.derived[c].to_numpy()
+        self._missing = {}  # (kind, key) -> columns a gate is drawn on that are gone
         for gate in self.gates:  # the axis columns gates are drawn on
             for axis in (gate.x_axis, gate.y_axis):
                 if axis not in frame.columns:
-                    frame[axis] = self.column(axis)
+                    try:
+                        frame[axis] = self.column(axis)
+                    except KeyError:
+                        # e.g. a gate on the map of a clustering result that was deleted or
+                        # cleared: it selects nothing until the column is back.
+                        frame[axis] = np.full(len(frame), np.nan)
+                        self._missing.setdefault(("gate", gate.id), []).append(axis)
         # In creation order: a gate drawn within a phenotype or an image gate needs the
         # columns of the gates made before it.
         for kind, key in self.order:
@@ -220,6 +236,20 @@ class Cytometry:
             frame[column] = mask
         self._cache = frame
         return frame
+
+    def missing_gate_columns(self):
+        """{(kind, key): [column, ...]} for gates drawn on columns that are not in the
+        table any more (they select no objects until the columns are back)."""
+        if self.frame() is None:
+            return {}
+        return {item: cols for item, cols in getattr(self, "_missing", {}).items()
+                if item[0] == "gate" and item[1] in self.gates}
+
+    def gates_using(self, columns):
+        """Names of the plot gates drawn on any of `columns`."""
+        columns = set(columns)
+        return [g.name for g in self.gates
+                if {split_axis(g.x_axis)[0], split_axis(g.y_axis)[0], g.x_axis, g.y_axis} & columns]
 
     def _scope_mask(self, item, frame):
         scope = self.scope.get(item)
@@ -725,12 +755,16 @@ class Cytometry:
         return self.analyses[name]
 
     def remove_analysis(self, name):
+        """Delete a clustering / map result. Returns the gates that were drawn on its
+        map (they select nothing until a result of the same name is made again)."""
         info = self.analyses.pop(name)
         cols = [info["columns"].get("cluster")] + list(info["columns"].get("map", []))
+        orphaned = self.gates_using([c for c in cols if c])
         self.derived = self.derived.drop(columns=[c for c in cols if c and c in self.derived.columns])
         if self.derived.shape[1] == 0:
             self.derived = None
         self.changed()
+        return orphaned
 
     def clusters(self, name):
         """Cluster id per table row (0 = not clustered)."""
@@ -781,7 +815,7 @@ class Cytometry:
                 "gates": gate_set_to_dict(self.gates), "image_gates": self.image_gates,
                 "order": [list(item) for item in self.order],
                 "scope": [[list(item), list(scope)] for item, scope in self.scope.items()],
-                "phenotypes": self.tree.to_dict(), "analyses": self.analyses}
+                "phenotypes": self.tree.to_dict(), "analyses": self.analyses, "view": dict(self.view)}
 
     def save_derived(self, folder):
         """Write the clustering / map columns next to the workspace; returns the path."""
@@ -803,7 +837,9 @@ class Cytometry:
             if col in self.derived.columns:
                 self.derived[col] = self.derived[col].fillna(0).astype(np.int64)
 
-    def load_dict(self, data, tables):
+    def load_dict(self, data, tables, derived_path=None):
+        """Restore a saved analysis. `derived_path`: the saved clustering / map columns,
+        read before anything is told about the change (gates drawn on a map need them)."""
         from vtea_core.classes import PhenotypeTree
         from vtea_core.gates.io import gate_set_from_dict
 
@@ -821,6 +857,18 @@ class Cytometry:
             self.table = None
             if self.source:
                 notes.append(f"cytometry: the measurement table {self.source!r} was not found")
+        self.view = dict(data.get("view") or {})
+        self.view_version += 1
+        if derived_path is not None and self.table is not None:
+            if derived_path.exists():
+                self.load_derived(derived_path)
+            else:
+                notes.append(f"cytometry: clustering results not found ({derived_path.name})")
+        missing = self.missing_gate_columns() if self.table is not None else {}
+        if missing:
+            names = sorted({c for cols in missing.values() for c in cols})
+            notes.append("cytometry: gates drawn on columns that could not be restored select nothing: "
+                         + ", ".join(names))
         self.changed()
         return notes
 
@@ -902,15 +950,8 @@ def _load(viewer, folder, data):
     from . import _measure
 
     state = state_of(viewer)
-    notes = state.load_dict(data, _measure.tables_of(viewer))
-    if data.get("derived") and state.table is not None:
-        path = folder / data["derived"]
-        if path.exists():
-            state.load_derived(path)
-            state.changed()
-        else:
-            notes.append(f"cytometry: clustering results not found ({data['derived']})")
-    return notes
+    derived = folder / data["derived"] if data.get("derived") else None
+    return state.load_dict(data, _measure.tables_of(viewer), derived_path=derived)
 
 
 def _by_size(labels):

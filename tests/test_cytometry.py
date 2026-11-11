@@ -595,3 +595,92 @@ def test_phenotype_dialog_checks_the_rule_while_typing(qtbot):
     d.insert.activated.emit(items.index("gate: CD3+"))
     d._insert_operator("AND")
     assert d.rule.text().strip() == "`gate: CD3+` AND"
+
+
+def test_a_gate_on_a_deleted_map_does_not_break_the_workbench(qtbot):
+    """A gate drawn on a clustering's map, after the clustering result is deleted (or
+    cleared by measuring other objects): the workbench used to recurse forever
+    looking for the map's column."""
+    from ibif_napari._cyto_workbench import Workbench
+
+    table, kind = cell_types()
+    v = ViewerModel()
+    s = cy.state_of(v)
+    s.set_table("cells", table, "cells")
+    feats = ["CD3 mean", "CD8 mean"]
+
+    def cluster():
+        rows, m = s.matrix(("all", None), feats, asinh=True)
+        labels, emb = cy.compute_analysis(m, "pca", "kmeans", k=3, seed=0)
+        s.add_analysis("Clustering 1", {"population": ["all", None], "features": feats, "map": "UMAP",
+                                        "clustering": "kmeans"}, rows, labels, emb)
+
+    cluster()
+    gate = s.add_gate("on map", "Clustering 1 UMAP 1", cy.axis_column("Clustering 1 UMAP 2", "asinh"),
+                      [[-99, -99], [99, -99], [99, 99], [-99, 99]])
+    assert s.mask("gate", gate.id).sum() == 240
+    with pytest.raises(KeyError):
+        s.column("no such column")
+    with pytest.raises(KeyError):
+        s.column("log10(no such column)")
+    assert s.remove_analysis("Clustering 1") == ["on map"]
+    assert s.mask("gate", gate.id).sum() == 0
+    assert set(s.missing_gate_columns()[("gate", gate.id)]) == {"Clustering 1 UMAP 1",
+                                                               "asinh(Clustering 1 UMAP 2/150)"}
+    bench = Workbench(v)  # used to raise RecursionError
+    qtbot.addWidget(bench)
+    item = bench.gate_tree.topLevelItem(0)
+    assert item.text(1) == "missing column" and "Clustering 1 UMAP 1" in item.toolTip(0)
+    assert "select nothing" in bench.status.text()
+    # Running a clustering of the same name brings the gate back.
+    cluster()
+    assert s.mask("gate", gate.id).sum() == 240 and not s.missing_gate_columns()
+    assert bench.gate_tree.topLevelItem(0).text(1) == "240"
+    # Measuring other objects clears the results, and says so.
+    s.set_table("cells", table.iloc[:200], "cells")
+    assert s.dropped_analyses == ["Clustering 1"] and s.mask("gate", gate.id).sum() == 0
+
+
+def test_reopening_a_workspace_restores_the_map_gates_and_the_plot(qtbot, tmp_path):
+    """The reported bug: a workspace with a gate drawn on a UMAP map. Reopening it
+    told the Cytometry panel about the gates before the map's columns were read back,
+    the panel's refresh recursed forever, and the map columns were never restored."""
+    from ibif_napari._cyto_workbench import Workbench
+    from ibif_napari._cytometry_widget import CytometryWidget
+    from ibif_napari._measure_widget import MeasureWidget
+
+    v, table = scene()
+    measure, cyto = MeasureWidget(v), CytometryWidget(v)
+    qtbot.addWidget(measure)
+    qtbot.addWidget(cyto)
+    measure._measured({"cells": table})
+    s = cyto.state
+    feats = ["CD3 mean", "CD8 mean"]
+    rows, m = s.matrix(("all", None), feats, asinh=True)
+    labels, emb = cy.compute_analysis(m, "pca", "kmeans", k=2, seed=0)
+    s.add_analysis("Clustering 1", {"population": ["all", None], "features": feats, "map": "UMAP",
+                                    "clustering": "kmeans"}, rows, labels, emb)
+    gate = s.add_gate("map gate", "Clustering 1 UMAP 1", "Clustering 1 UMAP 2",
+                      [[-99, -99], [99, -99], [99, 99], [-99, 99]])
+    s.add_phenotype("In map gate", "`gate: map gate` & `Clustering 1 cluster` == 1")
+    expected = int(s.mask("phenotype", "In map gate").sum())
+    bench = Workbench(v)
+    qtbot.addWidget(bench)
+    bench.x_col.setCurrentText("CD8 mean")
+    bench.y_tf.setCurrentText("asinh")
+    bench.plot.set_point_style(point_size=14.0, marker="D", alpha=0.4)
+    folder, _ = _workspace.save_workspace(v, tmp_path / "w")
+
+    w = ViewerModel()
+    measure2, cyto2 = MeasureWidget(w), CytometryWidget(w)  # the panels are open, as in the app
+    qtbot.addWidget(measure2)
+    qtbot.addWidget(cyto2)
+    assert _workspace.load_workspace(w, folder) == []
+    s2 = cy.state_of(w)
+    assert "Clustering 1 UMAP 1" in s2.derived.columns and not s2.missing_gate_columns()
+    assert s2.mask("gate", next(iter(s2.gates)).id).sum() == s.mask("gate", gate.id).sum()
+    assert s2.mask("phenotype", "In map gate").sum() == expected
+    bench2 = Workbench(w)  # used to raise RecursionError
+    qtbot.addWidget(bench2)
+    assert bench2.x_col.currentText() == "CD8 mean" and bench2.y_tf.currentText() == "asinh"
+    assert (bench2.plot.point_size, bench2.plot.marker, bench2.plot.alpha) == (14.0, "D", 0.4)
