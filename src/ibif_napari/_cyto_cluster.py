@@ -388,10 +388,15 @@ class ClusteringTab(QWidget):
     def delete(self):
         name = self.analysis.currentText()
         if name in self.state.analyses:
-            self.state.remove_analysis(name)
+            orphaned = self.state.remove_analysis(name) or []
             broken = self.state.broken_phenotypes()
-            self.status.setText(f"Deleted {name}." + (" These phenotypes used it and need a new rule: "
-                                                       + ", ".join(broken) if broken else ""))
+            text = f"Deleted {name}."
+            if orphaned:
+                text += (f" Gates drawn on its map ({', '.join(orphaned)}) select nothing now; run a "
+                         f"clustering called {name!r} again to bring them back, or delete them.")
+            if broken:
+                text += " These phenotypes used it and need a new rule: " + ", ".join(broken)
+            self.status.setText(text)
 
 
 class Heatmap(QWidget):

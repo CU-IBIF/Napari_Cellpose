@@ -152,7 +152,12 @@ class CytometryWidget(QWidget):
             return
         self.state.set_table(source, table, layer or None)
         self._used = table
-        self.status.setText(f"Analysing {len(table):,} objects from {source}.")
+        text = f"Analysing {len(table):,} objects from {source}."
+        dropped = getattr(self.state, "dropped_analyses", [])
+        if dropped:
+            text += (f" The clustering results ({', '.join(dropped)}) were for other objects and were "
+                     "cleared; gates drawn on their maps select nothing until they are run again.")
+        self.status.setText(text)
 
     # ---- summary ---------------------------------------------------------------------------
 

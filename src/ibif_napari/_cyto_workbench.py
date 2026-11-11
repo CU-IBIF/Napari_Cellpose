@@ -164,6 +164,7 @@ class Workbench(QWidget):
         for w in (self.x_tf, self.y_tf):
             w.currentIndexChanged.connect(self.replot)
         self.plot.on_pick(self.go_to_row)
+        self.plot.on_style = self._style_changed
         from ._cyto_cluster import ClusteringTab
 
         self.clustering = ClusteringTab(self)
@@ -225,11 +226,23 @@ class Workbench(QWidget):
         self._fill_gates()
         self._fill_phenotypes()
         self._watch_layer()
+        if getattr(self, "_view_version", None) != state.view_version:
+            self._view_version = state.view_version
+            self.apply_view(state.view)  # e.g. restored from a workspace
         self.replot()
         if hasattr(self, "clustering"):
             self.clustering.refresh()
         if state.table is None:
             self.status.setText("Choose the objects to analyse in the Cytometry section (Measure them first).")
+        else:
+            missing = state.missing_gate_columns()
+            if missing:
+                names = ", ".join(self._gate_name(i) for i in missing)
+                cols = sorted({c for v in missing.values() for c in v})
+                self.status.setText(
+                    f"Gates {names} are drawn on {', '.join(cols)}, which is not in the table any more: "
+                    "they select nothing. Run the clustering again under the same name to bring them "
+                    "back, or delete them.")
 
     def _fill_gates(self):
         self._filling = True  # rebuilding the list is not the user choosing a gate
@@ -246,6 +259,7 @@ class Workbench(QWidget):
             return
         frame = state.frame()
         n_all = len(frame)
+        missing = state.missing_gate_columns()
         items = {}
         for kind, key in state.order:
             if kind == "gate":
@@ -263,6 +277,16 @@ class Workbench(QWidget):
             item = QTreeWidgetItem([label, f"{int(mask.sum()):,}", _pct(mask.sum(), parent_n)])
             item.setData(0, Qt.UserRole, (kind, key))
             item.setForeground(0, QColor(color))
+            if (kind, key) in missing:
+                gone = ", ".join(missing[(kind, key)])
+                item.setText(1, "missing column")
+                item.setText(2, "")
+                item.setForeground(1, QColor("#d62728"))
+                for c in range(3):
+                    item.setToolTip(c, f"Drawn on {gone}, which is not in the table any more (a "
+                                       "clustering result deleted, or cleared by measuring again). "
+                                       "It selects nothing until a result of the same name is made "
+                                       "again; or delete the gate.")
             parent = items.get(tuple(parent_item)) if parent_item and parent_item[0] != "phenotype" else None
             (parent.addChild(item) if parent is not None else tree.addTopLevelItem(item))
             items[(kind, key)] = item
@@ -333,8 +357,47 @@ class Workbench(QWidget):
         return (cy.axis_column(self.x_col.currentText(), self.x_tf.currentText()),
                 cy.axis_column(self.y_col.currentText(), self.y_tf.currentText()))
 
+    def view(self):
+        """The plot's set-up: axes, scales, population, colour and point style."""
+        plot = self.plot
+        return {"x": self.x_col.currentText(), "x_scale": self.x_tf.currentText(),
+                "y": self.y_col.currentText(), "y_scale": self.y_tf.currentText(),
+                "population": self.population.currentData(), "colour": self.color_by.currentText(),
+                "point_size": plot.point_size, "marker": plot.marker, "alpha": plot.alpha}
+
+    def _style_changed(self):
+        if self.state.table is not None and self.x_col.currentText():
+            self.state.view = self.view()
+
+    def apply_view(self, view):
+        """Set the plot up as `view` says (what is not available any more is skipped)."""
+        if not view:
+            return
+        boxes = [self.population, self.x_col, self.y_col, self.color_by, self.x_tf, self.y_tf]
+        for box in boxes:
+            box.blockSignals(True)
+        try:
+            for box, key in ((self.x_col, "x"), (self.y_col, "y"), (self.color_by, "colour"),
+                             (self.x_tf, "x_scale"), (self.y_tf, "y_scale")):
+                if view.get(key) and box.findText(view[key]) >= 0:
+                    box.setCurrentText(view[key])
+            index = self.population.findData(view.get("population"))
+            if index >= 0:
+                self.population.setCurrentIndex(index)
+        finally:
+            for box in boxes:
+                box.blockSignals(False)
+        style = {k: view[k] for k in ("point_size", "marker", "alpha") if k in view}
+        if style:
+            self.plot.point_size = style.get("point_size", self.plot.point_size)
+            self.plot.marker = style.get("marker", self.plot.marker)
+            self.plot.alpha = style.get("alpha", self.plot.alpha)
+            self.plot.set_point_style()  # ticks the menu (and redraws)
+
     def replot(self, *_):
         state = self.state
+        if state.table is not None and self.x_col.currentText():
+            state.view = self.view()  # saved with the workspace
         if state.table is None or not self.x_col.currentText() or not self.y_col.currentText():
             self.plot.show([], [], [], xlabel="", ylabel="")
             return

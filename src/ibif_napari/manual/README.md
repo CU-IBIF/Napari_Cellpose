@@ -806,7 +806,7 @@ small table of very uniform populations can split one population into two cluste
 every core. UMAP is compiled in the background when the workbench opens, so the first map
 does not wait for it.
 
-Everything (gates, phenotypes, clustering results) is saved with the workspace. Phenotypes are
+Everything (gates, phenotypes, clustering results and their maps, and how the workbench plot was set up: axes, scales, colours and point style) is saved with the workspace. If a clustering result is deleted, a gate drawn on its map selects nothing (the Gates list says *missing column*) until a clustering of the same name is run again. Phenotypes are
 saved as rules, so the same tree can be applied to the next sample.
 
 ---

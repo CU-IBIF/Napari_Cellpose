@@ -56,6 +56,7 @@ class ScatterPlot(QWidget):
         self.marker = "o"
         self.alpha = 1.0
         self._last = None  # the last show() call, to redraw with a new point style
+        self.on_style = None  # called after the point style changes
         self.points_menu = self._make_points_menu()
         button = QToolButton()
         button.setText("Points")
@@ -166,6 +167,8 @@ class ScatterPlot(QWidget):
         for (attr, label), action in self._actions.items():
             options = {"point_size": SIZES, "marker": STYLES, "alpha": OPACITIES}[attr]
             action.setChecked(options[label] == getattr(self, attr))
+        if self.on_style is not None:
+            self.on_style()
         if self._last is not None:
             self.show(**self._last)
 
