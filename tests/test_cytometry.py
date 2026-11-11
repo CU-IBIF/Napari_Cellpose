@@ -122,6 +122,10 @@ def test_section_and_workbench(qtbot, tmp_path):
     gate = bench.add_gate("T", [[100, 0], [1e4, 0], [1e4, 1e4], [100, 1e4]])
     assert gate is not None and bench.gate_tree.topLevelItemCount() == 1
     assert bench.gate_tree.topLevelItem(0).text(1) == "12"
+    # A drawn gate is mapped on the segmented pixels straight away (no extra button).
+    sel = v.layers["cells selection"].data
+    assert (sel > 0).any() and ((sel > 0) <= (v.layers["cells"].data > 0)).all()
+    assert not hasattr(bench, "gate_show_btn")
     bench.gate_tree.setCurrentItem(bench.gate_tree.topLevelItem(0))
     assert bench.phenotype_from_gate(name="T cell") is not None
     assert section.tree.topLevelItem(0).text(0) == "T cell"  # the section follows
@@ -324,3 +328,38 @@ def test_reopening_a_workspace_with_the_sections_open_keeps_the_analysis(qtbot, 
     assert restored.source == "cells" and list(restored.analyses) == ["T split"]
     pd.testing.assert_frame_equal(restored.typed_table(), expected, check_dtype=False)
     assert cyto.table_box.currentText() == "cells" and cyto.use_btn.isEnabled()
+
+
+def test_joined_table_of_several_layers():
+    """Nuclei and cells measured together: Cytometry uses the joined "All objects" table,
+    whose columns are prefixed with the layer. Features are the measurements of the
+    segmented objects, and positions come from the chosen layer's own centroids."""
+    from ibif_napari._measure_widget import COMBINED
+
+    v, cells = scene()
+    nuclei = np.where(v.layers["cells"].data > 0, 0, 0).astype(np.uint16)
+    data = v.layers["cells"].data
+    for k in range(1, 13):  # a smaller nucleus inside each cell, same number
+        ys, xs = np.nonzero(data[0] == k)
+        nuclei[:, ys.min() + 3:ys.max() - 2, xs.min() + 3:xs.max() - 2] = k
+    layer = v.add_labels(nuclei, name="nuclei", scale=(1, 0.5, 0.5),
+                         metadata=v.layers["cells"].metadata)
+    tables = {"cells": cells, "nuclei": _measure.measure_layer(v, layer, [v.layers["CD3"]])}
+    tables[COMBINED] = _measure.combine(tables)
+    s = cy.state_of(v)
+    s.set_table(COMBINED, tables[COMBINED], "cells")
+    feats = s.features()
+    assert "cells: area (µm²)" in feats and "nuclei: CD3 mean" in feats
+    assert not any(f.endswith("voxels") or f in ("T", "label") for f in feats)
+    assert not any("centroid" in f for f in s.measured_features())
+    assert s.centroid_columns() == {"Y": "cells: centroid Y (µm)", "X": "cells: centroid X (µm)"}
+    assert "24 objects" in s.describe() and "cells" in s.describe()
+    s.add_image_gate("left", [[[0, 0], [0, 20], [30, 20], [30, 0]]])
+    assert s.mask("image", "left").sum() == 12
+    shown = s.show_population("image", "left").data
+    assert (shown > 0).sum() == ((data > 0) & (np.arange(80) < 40)[None, None, :]).sum()
+    # A layer that does not hold the table's objects is reported.
+    s.set_table(COMBINED, tables[COMBINED], "cells")
+    empty = v.add_labels(np.zeros_like(data), name="other", scale=(1, 0.5, 0.5))
+    s.layer_name = empty.name
+    assert "Only 0 of the 12 labels" in s.describe()

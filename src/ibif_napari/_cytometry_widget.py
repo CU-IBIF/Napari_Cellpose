@@ -41,11 +41,13 @@ class CytometryWidget(QWidget):
         layout.addWidget(intro)
         form = QFormLayout()
         self.table_box = QComboBox()
-        self.table_box.setToolTip("A Measurements table: one row per object (and time point / position)")
+        self.table_box.setToolTip("A Measurements table: one row per segmented object (and time point / "
+                                  "position), with its size and intensity measurements")
         form.addRow("Objects", self.table_box)
         self.layer_box = QComboBox()
-        self.layer_box.setToolTip("The labels layer those objects are in (for showing results on the image)")
-        form.addRow("On layer", self.layer_box)
+        self.layer_box.setToolTip("The segmentation (labels layer) those objects are in: gates and "
+                                  "phenotypes are shown on its pixels")
+        form.addRow("Segmented in", self.layer_box)
         layout.addLayout(form)
         self.use_btn = QPushButton("Use these objects")
         self.use_btn.clicked.connect(self.use)
@@ -158,12 +160,11 @@ class CytometryWidget(QWidget):
         state = self.state
         self.tree.clear()
         if state.table is None:
-            self.summary.setText("No objects chosen yet.")
+            self.summary.setText(state.describe())
             self.show_btn.setEnabled(False)
             return
-        self.summary.setText(
-            f"<b>{len(state.table):,} objects</b> from {state.source} (on {state.layer_name}); "
-            f"{len(state.order)} gates, {len(state.tree)} phenotypes.")
+        self.summary.setText(state.describe()
+                             + f"<br>{len(state.order)} gates, {len(state.tree)} phenotypes.")
         counts = state.counts()
         broken = state.broken_phenotypes()
         rows = counts.set_index("phenotype") if counts is not None else None

@@ -540,7 +540,9 @@ show every type back on the image. The analysis is done by
 1. Measure the objects first ([section 9](#9-measurements)), including the marker channels.
 2. Open **Cytometry**. The objects you measured are already chosen: **Objects** is the
    measurement table (the joined *All objects* table when you measured several layers) and
-   **On layer** the labels layer they are in. To analyse another table, choose it and click
+   **Segmented in** the labels layer (segmentation) they are in. The panel says how many objects
+   there are and which size and intensity measurements they have, and warns when the table's
+   objects are not in that layer. To analyse another table, choose it and click
    **Use these objects**. Measuring the objects in use again updates them; gates, phenotypes
    and clusterings are kept.
 3. Click **Open Cytometry workbench**. The workbench is a separate window, so the plot can be
@@ -566,6 +568,9 @@ the gates and the phenotype hierarchy on the right.*
 - **Gate on image…** lets you draw regions on the image instead (for example a tumour
   region); an object is inside when its centre is inside a region.
 - Click a point to go to that object in the viewer.
+- As soon as a gate is drawn (on the plot or the image) its objects are coloured on their
+  segmented pixels in the image, in a layer named after them (e.g. *cells selection*). Selecting a gate in
+  the **Gates** list shows that gate instead.
 
 Set gates using controls: draw the *negative* gate on cells or regions known to lack the
 marker, and use fluorescence-minus-one or secondary-only controls to decide where
