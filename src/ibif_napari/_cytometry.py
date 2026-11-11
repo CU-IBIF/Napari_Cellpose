@@ -11,8 +11,10 @@ adds what IBIF napari needs around it:
 - **gates** drawn on the plot over two columns; a gate drawn while the plot shows a gate
   is that gate's subgate, and one drawn while it shows a phenotype is limited to that
   phenotype (its *scope*);
-- **image gates**: polygons drawn on the image; an object is in one when its centroid is
-  (Y/X, so a 3D object is in a region drawn on any of its planes);
+- **image gates**: regions painted on the image (or polygons, from scripts and older
+  workspaces); an object is in one when its centroid is on a painted pixel. A region
+  painted in 2D applies to every Z plane; one painted with the 3D ball brush keeps its
+  depth;
 - each gate becomes a column of the table (``gate: <name>``), so a phenotype rule can
   use it: ```gate: CD3+` AND NOT `gate: CD4+```;
 - saving all of it with the workspace.
@@ -338,14 +340,25 @@ class Cytometry:
     def _next_color(self):
         return PALETTE[(len(self.order) + len(self.tree)) % len(PALETTE)]
 
-    def add_image_gate(self, name, polygons, population=("all", None), color=None):
-        """Objects whose centroid (Y, X, world units) is inside any of `polygons`."""
+    def add_image_gate(self, name, polygons=None, population=("all", None), color=None, *, mask=None,
+                       scale=None, translate=None):
+        """An image gate: objects whose centroid (world units) is inside any of
+        `polygons` (Y, X), or on a painted pixel of `mask` (a Y X or Z Y X boolean
+        array with the `scale` and `translate` of the layer it was painted on; a Y X
+        mask applies to every Z plane)."""
         if name in self.gate_names():
             raise ValueError(f"there is already a gate called {name!r}")
-        polygons = [np.asarray(p, float)[:, -2:].tolist() for p in polygons if len(p) >= 3]
-        if not polygons:
-            raise ValueError("draw at least one polygon or rectangle")
-        self.image_gates[name] = {"polygons": polygons, "color": color or self._next_color()}
+        if mask is not None:
+            gate = _painted_gate(mask, scale, translate)
+            if gate is None:
+                raise ValueError("paint over the objects to gate first")
+        else:
+            polygons = [np.asarray(p, float)[:, -2:].tolist() for p in polygons or [] if len(p) >= 3]
+            if not polygons:
+                raise ValueError("draw at least one polygon or rectangle")
+            gate = {"polygons": polygons}
+        gate["color"] = color or self._next_color()
+        self.image_gates[name] = gate
         self.order.append(("image", name))
         kind, key = population
         if kind != "all":
@@ -388,6 +401,21 @@ class Cytometry:
             node.rule = _rename_in_rule(node.rule, prefix + old, prefix + new)
         self.changed()
 
+    def set_gate_color(self, kind, key, color):
+        """Change the colour of a plot gate or image gate (its outline on the plot, its
+        objects on the image, the outline of image-gated objects on the plot)."""
+        if kind == "gate":
+            self.gates.get(key).color = color
+        else:
+            self.image_gates[key]["color"] = color
+        self.changed()
+
+    def image_gated(self):
+        """[(name, mask over the table rows, colour)] of every image gate."""
+        if self.frame() is None:
+            return []
+        return [(name, self.mask("image", name), gate["color"]) for name, gate in self.image_gates.items()]
+
     def gate_column(self, kind, key):
         if kind == "gate":
             return GATE_PREFIX + self.gates.get(key).name
@@ -401,6 +429,9 @@ class Cytometry:
         xs = frame[cols["X"]].to_numpy(float) if "X" in cols else None
         if ys is None or xs is None:
             return np.zeros(len(frame), bool)
+        if "mask" in gate:
+            zs = frame[cols["Z"]].to_numpy(float) if "Z" in cols else None
+            return _in_painted(gate, zs, ys, xs)
         mask = np.zeros(len(frame), bool)
         for poly in gate["polygons"]:
             mask |= polygon_gate(ys, xs, np.asarray(poly, float))
@@ -680,7 +711,7 @@ class Cytometry:
     def population_color(self, kind, key):
         return (self.gates.get(key).color if kind == "gate" else
                 self.image_gates[key]["color"] if kind == "image" else
-                self.tree.get(key).color if kind == "phenotype" else "#ffff00")
+                (self.tree.get(key).color or "#ffff00") if kind == "phenotype" else "#ffff00")
 
     def show_populations(self, items, overlap_color="#ffffff"):
         """Several gates (or phenotypes) on the image at once, each in its colour, in the
@@ -705,9 +736,7 @@ class Cytometry:
     def show_population(self, kind, key, color=None):
         mask = self.mask(kind, key)
         if color is None:
-            color = (self.gates.get(key).color if kind == "gate" else
-                     self.image_gates[key]["color"] if kind == "image" else
-                     self.tree.get(key).color if kind == "phenotype" else "#ffff00")
+            color = self.population_color(kind, key)
         values = np.where(mask, 1, 0)
         return self.paint(values, f"{self.layer_name} selection", {1: color})
 
@@ -819,7 +848,8 @@ class Cytometry:
         from vtea_core.gates.io import gate_set_to_dict
 
         return {"version": 1, "source": self.source, "layer": self.layer_name,
-                "gates": gate_set_to_dict(self.gates), "image_gates": self.image_gates,
+                "gates": gate_set_to_dict(self.gates),
+                "image_gates": {name: _image_gate_to_json(g) for name, g in self.image_gates.items()},
                 "order": [list(item) for item in self.order],
                 "scope": [[list(item), list(scope)] for item, scope in self.scope.items()],
                 "phenotypes": self.tree.to_dict(), "analyses": self.analyses, "view": dict(self.view)}
@@ -852,7 +882,7 @@ class Cytometry:
 
         notes = []
         self.gates = gate_set_from_dict(data["gates"])
-        self.image_gates = dict(data.get("image_gates") or {})
+        self.image_gates = {name: _image_gate_from_json(g) for name, g in (data.get("image_gates") or {}).items()}
         self.order = [tuple(item) for item in data.get("order") or []]
         self.scope = {tuple(item): tuple(scope) for item, scope in data.get("scope") or []}
         self.tree = PhenotypeTree.from_dict(data["phenotypes"])
@@ -902,6 +932,66 @@ def _rename_in_rule(rule, old_or_mapping, new=None):
         return rename_columns(rule, mapping)
     except Exception:
         return rule
+
+
+def _painted_gate(mask, scale, translate):
+    """An image gate from a painted Y X or Z Y X mask, cropped to what was painted
+    (None if nothing was): {"mask", "scale", "translate"} in world units."""
+    mask = np.asarray(mask) != 0
+    if mask.ndim not in (2, 3):
+        raise ValueError("a painted image gate is a Y X or Z Y X mask")
+    n = mask.ndim
+    scale = np.asarray(scale if scale is not None else np.ones(n), float)[-n:]
+    translate = np.asarray(translate if translate is not None else np.zeros(n), float)[-n:]
+    if not mask.any():
+        return None
+    lo = [int(np.flatnonzero(mask.any(axis=tuple(a for a in range(n) if a != k))).min()) for k in range(n)]
+    hi = [int(np.flatnonzero(mask.any(axis=tuple(a for a in range(n) if a != k))).max()) + 1 for k in range(n)]
+    crop = mask[tuple(slice(a, b) for a, b in zip(lo, hi))].copy()
+    return {"mask": crop, "scale": scale.tolist(), "translate": (translate + np.asarray(lo) * scale).tolist()}
+
+
+def _in_painted(gate, zs, ys, xs):
+    """Which centroids (world units; zs may be None) fall on a painted pixel. A Z Y X
+    mask without Z centroids counts every plane."""
+    mask = gate["mask"]
+    scale, translate = np.asarray(gate["scale"], float), np.asarray(gate["translate"], float)
+    if mask.ndim == 3 and zs is None:
+        mask, scale, translate = mask.any(axis=0), scale[1:], translate[1:]
+    coords = [zs, ys, xs][-mask.ndim:]
+    inside = np.ones(len(ys), bool)
+    index = []
+    for k, world in enumerate(coords):
+        with np.errstate(invalid="ignore"):
+            i = np.round((np.asarray(world, float) - translate[k]) / scale[k])
+        ok = np.isfinite(i) & (i >= 0) & (i < mask.shape[k])
+        inside &= ok
+        index.append(np.where(ok, i, 0).astype(np.int64))
+    return inside & mask[tuple(index)]
+
+
+def _image_gate_to_json(gate):
+    """A painted mask goes into the workspace file as zlib-compressed bits."""
+    if "mask" not in gate:
+        return dict(gate)
+    import base64
+    import zlib
+
+    mask = np.asarray(gate["mask"], bool)
+    packed = base64.b64encode(zlib.compress(np.packbits(mask).tobytes(), 9)).decode("ascii")
+    return {**{k: v for k, v in gate.items() if k != "mask"}, "mask": {"shape": list(mask.shape), "bits": packed}}
+
+
+def _image_gate_from_json(gate):
+    gate = dict(gate)
+    if isinstance(gate.get("mask"), dict):
+        import base64
+        import zlib
+
+        shape = tuple(gate["mask"]["shape"])
+        bits = np.frombuffer(zlib.decompress(base64.b64decode(gate["mask"]["bits"])), np.uint8)
+        gate["mask"] = np.unpackbits(bits, count=int(np.prod(shape))).astype(bool).reshape(shape)
+    return gate
 
 
 def _spatial_ndim(layer):

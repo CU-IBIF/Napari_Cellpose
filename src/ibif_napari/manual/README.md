@@ -671,13 +671,21 @@ the gates and the phenotype hierarchy on the right.*
 - **Colour** the points by population, by phenotype or by any measurement.
 - **Rectangle gate**, **Polygon gate** and **Lasso gate**: draw on the plot, then name the
   gate. For a polygon, click its corners and click the first corner again to close it.
-- **Gate on image…** lets you draw regions on the image instead (for example a tumour
-  region); an object is inside when its centre is inside a region.
+- **Gate on image…** lets you paint a region on the image instead (for example a tumour
+  region). A labels layer, *Cytometry image gate*, is added and selected for painting with the
+  same brush as the segmentation region (brush size and eraser in the layer controls; in the
+  3D view the brush paints balls). Paint over the objects, click **Make image gate** and name
+  it. An object is inside when its centre is on a painted pixel; a region painted in 2D counts
+  on every Z plane. Delete the layer to cancel.
+- Objects in an image gate are **ringed** on the plot in the gate's colour. Select a gate and
+  click **Colour…** to change its colour; **Points > Ring objects in image gates** turns the
+  rings off.
 - Click a point to go to that object in the viewer.
 - **Points** (on the plot's toolbar, or right-click the plot) sets the **size**, **style**
   (dot, square, diamond, triangle, plus, cross, pixel) and **opacity** of the points. Small,
   semi-transparent points show where dense populations overlap; large ones suit a few hundred
-  objects.
+  objects. **Size > Custom size…** sets a diameter in pt; **Size by a measurement…** makes
+  each point's size follow a measurement such as volume.
 - As soon as a gate is drawn (on the plot or the image) its objects are coloured on their
   segmented pixels in the image, in a layer named after them (e.g. *cells selection*).
   Selecting a gate in the **Gates** list shows that gate instead. **Ctrl-click** (or
@@ -732,6 +740,10 @@ the top) whose rule it matches, so the order you add them in matters. A phenotyp
 empty rule is "the rest of its parent" (for example *Other T*). The tree shows each
 phenotype's number of objects and its percentage of the parent, and notes objects that a
 rule matched but an earlier sibling had already claimed.
+
+Selecting a phenotype in the workbench's list shows its objects on the image, as selecting a
+gate does; **Ctrl-click** (or Shift-click) selects several, each in its own colour (objects in
+more than one in white).
 
 **Show phenotypes on image** (in the panel; **Show on image** in the workbench) colours every
 object by its phenotype; **Level** chooses the level of the hierarchy. **Export…** writes every

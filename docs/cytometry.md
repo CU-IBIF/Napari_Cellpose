@@ -32,15 +32,29 @@ vtea-core, so VTEA and IBIF napari share them.
      measurement.
    - **Rectangle / Polygon / Lasso gate**: draw on the plot, then name the gate. For a
      polygon, click its corners and click the first corner again to close it.
-   - **Gate on image…**: draw rectangles or polygons on the image (a Shapes layer is
-     added), then click **Make image gate**. An object is in an image gate when its
-     centre is inside one of the regions. Regions are drawn in Y/X, so a 3D object
-     counts when its centre's Y/X is inside, whatever its Z.
+   - **Gate on image…**: a labels layer (*Cytometry image gate*) is added over the
+     objects and selected for painting, with the same brush as the segmentation
+     region: set the brush size and the eraser in napari's layer controls; in the 3D
+     view the brush paints balls on the image. Paint over the objects to gate and
+     click **Make image gate**, then name it. An object is in the gate when its centre
+     is on a painted pixel. What is painted in 2D counts on every Z plane; a region
+     painted with the 3D ball brush keeps its depth. Delete the layer to cancel.
+   - Objects in an image gate are **ringed** on the plot in the gate's colour,
+     whatever the plot shows, so you can see where a region's objects fall. Select a
+     gate and click **Colour…** to change its colour (its outline, its objects on the
+     image, and its rings). **Points > Ring objects in image gates** turns the rings
+     off.
    - As soon as a gate is drawn, its objects are coloured on their segmented pixels in
      the image (the *<objects> selection* labels layer); selecting a gate in the list
      shows that one. Ctrl- or Shift-click selects several gates: each is shown in its
      colour, objects in more than one in white. Delete removes every selected gate.
-   - **Points** (plot toolbar or right-click): point size, style and opacity.
+   - **Points** (plot toolbar or right-click): point size, style and opacity. Under
+     **Size**, **Custom size…** sets a diameter in pt, and **Size by a measurement…**
+     sizes each point by a measurement (e.g. volume), from a smallest to a largest
+     diameter over the 1st–99th percentile of its values.
+   - The rectangle, polygon and lasso gates follow the mouse smoothly however many
+     points there are: while a gate is drawn only its outline is redrawn (matplotlib
+     blitting), not the points.
    - The workbench opens as large as fits on the screen: a 4:3 plot, and the gate and
      phenotype lists at about half its width (drag the divider to change it). In a joined table (*All objects*), centres and positions come from
      the measurements of the chosen objects layer (e.g. `cells: centroid Y (µm)`).
@@ -82,7 +96,9 @@ vtea-core, so VTEA and IBIF napari share them.
      is merged.
    - **Plot the map** shows the map on the Gating tab, coloured by cluster, where you
      can gate on it. **Show clusters on image** colours the objects by cluster.
-5. **Make phenotypes.** Select a gate and click **Make phenotype…**, choosing the
+5. **Make phenotypes.** Selecting phenotypes in the list shows their objects on the
+   image, as selecting gates does: Ctrl- or Shift-click several, each is shown in its
+   colour and objects in more than one in white. Select a gate and click **Make phenotype…**, choosing the
    phenotype it belongs **within**. Or click **Add…** to write a rule yourself, for
    example:
    - `` `gate: CD3+` AND NOT `gate: CD4+` ``

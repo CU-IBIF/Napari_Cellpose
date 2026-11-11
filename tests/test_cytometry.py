@@ -497,8 +497,8 @@ def test_points_menu_and_window_shape(qtbot):
     bench = Workbench(v)
     qtbot.addWidget(bench)
     plot = bench.plot
-    titles = [a.text() for a in plot.points_menu.actions()]
-    assert titles == ["Size", "Style", "Opacity"]
+    titles = [a.text() for a in plot.points_menu.actions() if not a.isSeparator()]
+    assert titles == ["Size", "Style", "Opacity", "Ring objects in image gates"]
     plot.set_point_style(point_size=30.0, marker="+", alpha=0.4)
     sc = plot.axes.collections[-1]
     assert sc.get_sizes()[0] == 30.0 and sc.get_alpha() == 0.4 and sc.get_linewidths()[0] > 0  # + is lines
@@ -743,3 +743,185 @@ def test_the_vtea_core_pin_is_one_and_an_old_install_is_reported(qtbot, monkeypa
     w = CytometryWidget(v)
     qtbot.addWidget(w)
     assert not w.vtea_warning.isHidden() and "older than" in w.vtea_warning.text()
+
+
+def test_painted_image_gate_rings_its_objects_and_is_saved(qtbot, tmp_path):
+    from ibif_napari._cyto_workbench import IMAGE_GATE_LAYER, Workbench
+
+    v, table = scene()
+    s = cy.state_of(v)
+    s.set_table("cells", table, "cells")
+    bench = Workbench(v)
+    qtbot.addWidget(bench)
+    bench.x_col.setCurrentText("CD3 mean")
+    bench.y_col.setCurrentText("CD8 mean")
+    layer = bench.start_image_gate()
+    # A labels layer over the objects' Y X grid, ready to paint with the segmentation brush.
+    assert layer.name == IMAGE_GATE_LAYER and layer.data.shape == (60, 80) and layer.mode == "paint"
+    assert tuple(layer.scale) == (0.5, 0.5) and bench.image_btn.text() == "Make image gate"
+    bench.image_gate_clicked()  # nothing painted yet: no gate, and it says so
+    assert not s.image_gates and "Paint over" in bench.status.text()
+    layer.data[:, :40] = 1  # the left two columns of cells
+    assert bench.make_image_gate("left") == "left"
+    bench._end_image_gate()
+    assert IMAGE_GATE_LAYER not in v.layers and bench.image_btn.text() == "Gate on image…"
+    assert s.mask("image", "left").sum() == 12
+    # Its objects are ringed on the plot in the gate's colour; Colour… changes it.
+    color = s.image_gates["left"]["color"]
+
+    def rings():
+        return [c for c in bench.plot.axes.collections if len(c.get_facecolors()) == 0]
+
+    assert len(rings()) == 1 and len(rings()[0].get_offsets()) == 12
+    assert tuple(rings()[0].get_edgecolors()[0][:3]) == pytest.approx(
+        tuple(int(color[i:i + 2], 16) / 255 for i in (1, 3, 5)))
+    bench.select_gates([("image", "left")])
+    assert bench.recolor_gate("#ff00ff") == "#ff00ff" and s.image_gates["left"]["color"] == "#ff00ff"
+    assert tuple(rings()[0].get_edgecolors()[0][:3]) == pytest.approx((1, 0, 1))
+    assert tuple(v.layers["cells selection"].colormap.map(1)[:3]) == pytest.approx((1, 0, 1))
+    bench.plot.set_point_style(outline_image_gates=False)
+    assert not rings() and bench.state.view["ring_image_gates"] is False
+    bench.plot.set_point_style(outline_image_gates=True)
+    # Saved with the workspace (the painted mask, compressed) and restored.
+    folder, notes = _workspace.save_workspace(v, tmp_path / "w")
+    assert notes == []
+    w = ViewerModel()
+    assert _workspace.load_workspace(w, folder) == []
+    restored = cy.state_of(w)
+    assert restored.mask("image", "left").sum() == 12
+    np.testing.assert_array_equal(restored.image_gates["left"]["mask"], s.image_gates["left"]["mask"])
+    # Deleting the paint layer cancels.
+    layer = bench.start_image_gate()
+    v.layers.remove(layer)
+    assert bench._image_layer is None and bench.image_btn.text() == "Gate on image…"
+
+
+def test_painted_gate_in_3d():
+    # A Z Y X mask counts objects by their Z too; without Z centroids every plane counts.
+    mask = np.zeros((4, 10, 10), bool)
+    mask[1, 2:5, 2:5] = True
+    gate = cy._painted_gate(mask, (2.0, 0.5, 0.5), (0.0, 0.0, 0.0))
+    assert gate["mask"].shape == (1, 3, 3) and gate["translate"] == [2.0, 1.0, 1.0]
+    zs, ys, xs = np.array([2.0, 4.0, 2.0]), np.array([1.5, 1.5, 4.0]), np.array([1.5, 1.5, 1.5])
+    assert cy._in_painted(gate, zs, ys, xs).tolist() == [True, False, False]
+    assert cy._in_painted(gate, None, ys, xs).tolist() == [True, True, False]
+    assert cy._image_gate_from_json(cy._image_gate_to_json(gate))["mask"].tolist() == gate["mask"].tolist()
+    assert cy._painted_gate(np.zeros((5, 5)), None, None) is None
+
+
+def test_selecting_phenotypes_shows_them_on_the_image(qtbot):
+    from ibif_napari._cyto_workbench import Workbench
+
+    v, table = scene()
+    s = cy.state_of(v)
+    s.set_table("cells", table, "cells")
+    s.add_image_gate("left", [[[0, 0], [0, 20], [30, 20], [30, 0]]])  # 12 cells
+    top = s.add_gate("top", "CD3 mean", "CD8 mean", [[0, 100], [1e4, 100], [1e4, 1e4], [0, 1e4]])  # 4
+    s.add_phenotype("Left", "`image gate: left`", color="#00ff00")
+    s.add_phenotype("Top", "`gate: top`", color="#ff0000")  # exclusive: Left took them all
+    s.add_phenotype("Bright", "`gate: top`", parent="Left", color="#0000ff")
+    bench = Workbench(v)
+    qtbot.addWidget(bench)
+    # One phenotype: its objects in its colour, as clicking a gate does.
+    bench.select_phenotypes(["Left"])
+    layer = v.layers["cells selection"]
+    assert set(np.unique(layer.data)) == {0, 1} and (layer.data > 0).sum() == (v.layers["cells"].data[
+        :, :, :40] > 0).sum()
+    assert tuple(layer.colormap.map(1)[:3]) == pytest.approx((0, 1, 0))
+    assert "Left: 12 objects" in bench.status.text()
+    # Several: each in its colour, overlaps (Bright is within Left) in white.
+    bench.select_phenotypes(["Left", "Bright"])
+    assert bench.selected_phenotypes() == ["Left", "Bright"]
+    assert not bench.pheno_edit_btn.isEnabled() and bench.pheno_delete_btn.isEnabled()
+    assert set(np.unique(layer.data)) == {0, 1, 3}
+    assert "2 phenotypes shown" in bench.status.text() and "4 in more than one" in bench.status.text()
+    # Choosing a gate clears the phenotype choice (the image shows one list at a time), and back.
+    bench.select_gates([("gate", top.id)])
+    assert bench.selected_phenotypes() == []
+    bench.select_phenotypes(["Bright"])
+    assert bench.selected_gates() == [] and bench.pheno_edit_btn.isEnabled()
+    # Refreshing the lists (any change) keeps the selection.
+    s.changed()
+    assert bench.selected_phenotypes() == ["Bright"]
+    bench.select_phenotypes(["Left", "Top"])
+    bench.delete_phenotype()
+    assert [p.name for p in s.tree] == []
+
+
+def test_point_size_custom_and_by_a_measurement(qtbot):
+    from ibif_napari._cyto_plot import CUSTOM_SIZE, SIZE_BY, PointSizeDialog, sizes_from
+    from ibif_napari._cyto_workbench import Workbench
+
+    v, table = scene()
+    table = table.rename(columns={"CD3 mean": "cells: Some_Very_Long_Acquisition_File_Name_2026 CD3 mean"})
+    s = cy.state_of(v)
+    s.set_table("cells", table, "cells")
+    bench = Workbench(v)
+    qtbot.addWidget(bench)
+    plot = bench.plot
+    # A size in pt (diameter): stored as matplotlib's area.
+    dialog = PointSizeDialog(plot, by_measurement=False)
+    qtbot.addWidget(dialog)
+    dialog.diameter.setValue(4.0)
+    dialog.apply()
+    assert plot.point_size == 16.0 and plot.size_by is None
+    assert plot._actions[("size", CUSTOM_SIZE)].isChecked()
+    assert plot.axes.collections[0].get_sizes()[0] == 16.0
+    # By a measurement: sizes follow its values, from the smallest to the largest diameter.
+    dialog = PointSizeDialog(plot, by_measurement=True)
+    qtbot.addWidget(dialog)
+    long = "cells: Some_Very_Long_Acquisition_File_Name_2026 CD3 mean"
+    dialog.feature.setCurrentIndex(dialog.feature.findData(long))
+    assert dialog.feature.currentText() != long and dialog.feature.toolTip() == long  # short label
+    dialog.smallest.setValue(2.0)
+    dialog.largest.setValue(10.0)
+    dialog.show()
+    assert dialog.width() < 520  # long names do not widen it
+    dialog.apply()
+    assert plot.size_by == long and plot._actions[("size", SIZE_BY)].isChecked()
+    sizes = plot.axes.collections[0].get_sizes()
+    assert sizes.min() == pytest.approx(4.0) and sizes.max() == pytest.approx(100.0)
+    assert "size: " in plot.axes.get_title()
+    assert bench.state.view["size_by"] == long and bench.state.view["size_range"] == [2.0, 10.0]
+    # Replotting keeps it; a preset size goes back to one size for every point.
+    bench.x_col.setCurrentText("CD8 mean")
+    assert len(set(plot.axes.collections[0].get_sizes())) == 2  # CD3 is bright or dim
+    plot._actions[("point_size", "Large")].trigger()
+    assert plot.size_by is None and plot.axes.collections[0].get_sizes()[0] == 14.0
+    assert sizes_from([np.nan, 1.0, 1.0], 2, 4).tolist() == [4.0, 9.0, 9.0]
+
+
+def test_gates_are_drawn_with_blitting(qtbot):
+    """The lasso redraws only its outline as the mouse moves, not every point."""
+    from matplotlib.backend_bases import MouseButton, MouseEvent
+    from qtpy.QtWidgets import QWidget
+
+    from ibif_napari._cyto_plot import ScatterPlot
+
+    plot = ScatterPlot()
+    qtbot.addWidget(plot)
+    plot.resize(640, 520)
+    QWidget.show(plot)  # ScatterPlot.show draws points
+    qtbot.waitExposed(plot)
+    rng = np.random.default_rng(0)
+    n = 50_000
+    plot.show(rng.normal(size=n), rng.normal(size=n), np.arange(n))
+    drawn = []
+    plot.draw_gate("lasso", drawn.append)
+    assert plot._selector.useblit
+    full = []
+    plot.canvas.mpl_connect("draw_event", lambda e: full.append(e))
+    ax = plot.axes
+
+    def event(name, x, y):
+        px, py = ax.transData.transform((x, y))
+        e = MouseEvent(name, plot.canvas, px, py, button=MouseButton.LEFT)
+        plot.canvas.callbacks.process(name, e)
+
+    event("button_press_event", -1, -1)
+    for t in np.linspace(0, 2 * np.pi, 40):
+        event("motion_notify_event", np.cos(t), np.sin(t))
+    event("button_release_event", 1, 0)
+    plot.canvas.flush_events()
+    assert len(drawn) == 1 and len(drawn[0]) > 20
+    assert len(full) <= 2  # not one full redraw per mouse move
