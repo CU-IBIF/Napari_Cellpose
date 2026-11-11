@@ -56,7 +56,15 @@ vtea-core, so VTEA and IBIF napari share them.
        **Resolution** gives more, smaller clusters).
      - **k-means** and **Gaussian mixture** make **k** clusters.
      - **k-means, best k** tries 2…k and keeps the best by BIC.
-   - The **Seed** makes a run repeatable.
+   - The **Seed** makes a run repeatable. **Reproducible map (slower)** keeps a UMAP
+     map exactly the same for a seed, but UMAP then runs on one core; unticked (the
+     default) it uses every core, several times faster, and the layout varies a
+     little. Clusters do not depend on it.
+   - Speed: the neighbour search is made once (every core) and shared by Leiden /
+     Louvain and UMAP; Leiden runs on igraph's C implementation (vtea-core
+     `implementation="igraph"`, about 14x faster than leidenalg); t-SNE uses openTSNE;
+     UMAP's numba code is compiled in the background when the workbench opens. The
+     run's time is shown and saved with its settings.
    - **Run** (in the background). Each run becomes columns of the object table:
      `<name> cluster` (1 = the largest cluster; 0 = not clustered) and the map's
      `<name> UMAP 1/2`.

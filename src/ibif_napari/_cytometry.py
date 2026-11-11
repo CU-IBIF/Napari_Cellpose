@@ -779,10 +779,18 @@ def available(method):
 
 
 def compute_analysis(matrix, embedding=None, clustering=None, scaling="zscore", seed=0,
-                     n_neighbors=15, resolution=1.0, k=8, k_max=12, perplexity=30.0):
+                     n_neighbors=15, resolution=1.0, k=8, k_max=12, perplexity=30.0, reproducible=True):
     """Run a map and/or a clustering on a matrix of objects x features (vtea-core).
-    Returns (cluster ids or None, embedding (n, 2) or None)."""
+    Returns (cluster ids or None, embedding (n, 2) or None).
+
+    Speed: the features are scaled once; the neighbour search is made once (on every
+    core) and shared by Leiden / Louvain and UMAP; Leiden runs on igraph's C
+    implementation. `reproducible=False` lets UMAP use every core (umap-learn runs on
+    one when seeded), so its layout varies a little from run to run; the clusters do
+    not depend on it. t-SNE uses openTSNE (multi-core) when it is installed. The faster
+    routes need vtea-core with `nearest_neighbors`; an older one runs as before."""
     from vtea_core import clustering as cl
+    from vtea_core.measurements.normalize import normalize_features
     from vtea_core.reduction import reduction as rd
 
     n = len(matrix)
@@ -790,25 +798,84 @@ def compute_analysis(matrix, embedding=None, clustering=None, scaling="zscore", 
         raise ValueError("too few objects to analyse")
     labels = emb = None
     nn = int(min(n_neighbors, n - 1))
+    data = normalize_features(np.asarray(matrix, float), scaling)  # once, for every step
+    fast = _fast_vtea()
+    knn = None
+    if fast and (clustering in ("leiden", "louvain") or embedding == "umap"):
+        knn = cl.nearest_neighbors(data, n_neighbors=nn)
+    shared = {"knn": knn} if knn is not None else {}
     if clustering == "leiden":
-        labels = cl.leiden(matrix, n_neighbors=nn, resolution=resolution, random_state=seed, normalize=scaling)
+        labels = cl.leiden(data, n_neighbors=nn, resolution=resolution, random_state=seed, normalize="none",
+                           **shared)
     elif clustering == "louvain":
-        labels = cl.louvain(matrix, n_neighbors=nn, resolution=resolution, random_state=seed, normalize=scaling)
+        labels = cl.louvain(data, n_neighbors=nn, resolution=resolution, random_state=seed, normalize="none",
+                            **shared)
     elif clustering == "kmeans":
-        labels = cl.kmeans(matrix, int(min(k, n)), random_state=seed, normalize=scaling)
+        labels = cl.kmeans(data, int(min(k, n)), random_state=seed, normalize="none")
     elif clustering == "gmm":
-        labels = cl.gaussian_mixture(matrix, int(min(k, n)), random_state=seed, normalize=scaling)
+        labels = cl.gaussian_mixture(data, int(min(k, n)), random_state=seed, normalize="none")
     elif clustering == "autok":
-        labels, _ = cl.auto_k_kmeans(matrix, k_min=2, k_max=int(max(2, min(k_max, n - 1))),
-                                     random_state=seed, normalize=scaling)
+        labels, _ = cl.auto_k_kmeans(data, k_min=2, k_max=int(max(2, min(k_max, n - 1))),
+                                     random_state=seed, normalize="none")
     if embedding == "umap":
-        emb = rd.umap(matrix, 2, n_neighbors=nn, random_state=seed, normalize=scaling)
+        emb = rd.umap(data, 2, n_neighbors=nn, random_state=seed if reproducible else None, normalize="none",
+                      **shared)
     elif embedding == "tsne":
-        emb = rd.tsne(matrix, 2, perplexity=float(min(perplexity, max(2.0, (n - 1) / 3))),
-                      random_state=seed, normalize=scaling)
+        options = {"method": "opentsne"} if fast and _has("openTSNE") else {}
+        emb = rd.tsne(data, 2, perplexity=float(min(perplexity, max(2.0, (n - 1) / 3))),
+                      random_state=seed, normalize="none", **options)
     elif embedding == "pca":
-        emb = rd.pca(matrix, 2 if matrix.shape[1] >= 2 else 1, normalize=scaling)
+        emb = rd.pca(data, 2 if data.shape[1] >= 2 else 1, normalize="none")
     return labels, emb
+
+
+def _fast_vtea():
+    """vtea-core with the shared neighbour search (and fast Leiden, UMAP / t-SNE options)."""
+    from vtea_core import clustering as cl
+
+    return hasattr(cl, "nearest_neighbors")
+
+
+def _has(module):
+    from importlib.util import find_spec
+
+    return find_spec(module) is not None
+
+
+_warmed = {"umap": False}
+
+
+def warm_up(background=True):
+    """Compile UMAP's numba code once per session, on a tiny made-up table, so the
+    first real map does not wait for it (about 10 s). In a background thread unless
+    `background` is False; does nothing if umap-learn is missing, already warmed, or
+    IBIF_NAPARI_NO_WARMUP is set."""
+    import os
+    import threading
+
+    if _warmed["umap"] or os.environ.get("IBIF_NAPARI_NO_WARMUP") or not _has("umap"):
+        return None
+    _warmed["umap"] = True
+
+    def work():
+        import warnings
+
+        try:
+            from vtea_core.reduction import reduction as rd
+
+            rng = np.random.default_rng(0)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                rd.umap(rng.normal(size=(300, 4)), 2, n_neighbors=10, random_state=0)
+        except Exception:  # a failed warm-up only means the first run compiles instead
+            pass
+
+    if not background:
+        work()
+        return None
+    thread = threading.Thread(target=work, name="ibif-umap-warm-up", daemon=True)
+    thread.start()
+    return thread
 
 
 def _register():

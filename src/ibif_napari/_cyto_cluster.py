@@ -10,6 +10,8 @@ name per cluster (the same name merges clusters) and make them phenotypes.
 """
 from __future__ import annotations
 
+import time
+
 import numpy as np
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
@@ -92,6 +94,12 @@ class ClusteringTab(QWidget):
         self.seed.setRange(0, 1_000_000)
         self.seed.setToolTip("Random seed: the same seed gives the same result")
         form.addRow("Seed", self.seed)
+        self.reproducible = QCheckBox("Reproducible map (slower)")
+        self.reproducible.setToolTip(
+            "UMAP: the same seed gives exactly the same map, but it then runs on one core. "
+            "Off, it uses every core (several times faster) and the layout varies a little "
+            "between runs. Clusters are not affected.")
+        form.addRow("", self.reproducible)
         self.name = QLineEdit()
         form.addRow("Name", self.name)
         self.run_btn = QPushButton("Run")
@@ -152,6 +160,7 @@ class ClusteringTab(QWidget):
         self.method.currentIndexChanged.connect(self._update_params)
         self.map.currentIndexChanged.connect(self._update_params)
         self._update_params()
+        cy.warm_up()  # compile UMAP in the background while the user picks settings
 
     # ---- refreshing ---------------------------------------------------------------------
 
@@ -209,6 +218,7 @@ class ClusteringTab(QWidget):
         self.resolution.setEnabled(method in ("leiden", "louvain"))
         self.k.setEnabled(method in ("kmeans", "gmm", "autok"))
         self.neighbors.setEnabled(method in ("leiden", "louvain") or self.map.currentData() == "umap")
+        self.reproducible.setEnabled(self.map.currentData() == "umap")
 
     # ---- running ------------------------------------------------------------------------
 
@@ -223,6 +233,7 @@ class ClusteringTab(QWidget):
             "embedding": self.map.currentData(), "clustering": self.method.currentData(),
             "method": self.method.currentText(), "resolution": self.resolution.value(),
             "k": self.k.value(), "n_neighbors": self.neighbors.value(), "seed": self.seed.value(),
+            "reproducible": self.reproducible.isChecked(),
         }
 
     def run(self, wait=False):
@@ -252,17 +263,21 @@ class ClusteringTab(QWidget):
             return None
         kwargs = dict(embedding=settings["embedding"], clustering=settings["clustering"],
                       scaling=settings["scaling"], seed=settings["seed"], n_neighbors=settings["n_neighbors"],
-                      resolution=settings["resolution"], k=settings["k"], k_max=settings["k"])
+                      resolution=settings["resolution"], k=settings["k"], k_max=settings["k"],
+                      reproducible=settings["reproducible"])
+        started = time.perf_counter()
 
         def done(result):
             labels, emb = result
+            settings["seconds"] = round(time.perf_counter() - started, 2)
             try:
                 state.add_analysis(name, settings, rows, labels, emb)
             except ValueError as e:
                 self.status.setText(str(e))
                 return
             k = len(np.unique(labels)) if labels is not None else 0
-            self.status.setText(f"{name}: {len(rows):,} objects" + (f", {k} clusters." if k else "."))
+            self.status.setText(f"{name}: {len(rows):,} objects" + (f", {k} clusters" if k else "")
+                                + f" ({settings['seconds']:.1f} s).")
             self.analysis.setCurrentText(name)
 
         if wait:

@@ -13,6 +13,11 @@ import pytest
 
 from _ssh_helpers import FAKE_SLURM, TESTS, free_port
 
+# The Cytometry workbench compiles UMAP in a background thread when it opens; tests
+# that open it should not have that thread competing with them (test_cytometry turns it
+# on where it is tested).
+os.environ.setdefault("IBIF_NAPARI_NO_WARMUP", "1")
+
 
 @pytest.fixture(scope="module")
 def sshd(tmp_path_factory):
