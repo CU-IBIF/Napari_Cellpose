@@ -25,6 +25,13 @@ import weakref
 import numpy as np
 import pandas as pd
 
+# The vtea-core this version needs (as in pyproject.toml; a test keeps them equal). pip
+# does not replace an installed vtea-core with the same version number, so an upgrade of
+# IBIF napari can leave an older one: `vtea_core_problem` notices, and gives the command.
+VTEA_CORE = "vtea-core[graph,umap,opentsne] @ git+https://github.com/winfrees/vtea-python@9d6efcbd443739724ac8a76023cfc4b26dea36e1#subdirectory=packages/vtea-core"
+VTEA_CORE_FEATURES = {"vtea_core.clustering": ["nearest_neighbors"],
+                      "vtea_core.classes": ["column_references", "rename_columns"]}
+
 GATE_PREFIX = "gate: "
 IMAGE_GATE_PREFIX = "image gate: "
 PALETTE = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2",
@@ -1030,6 +1037,25 @@ def compute_analysis(matrix, embedding=None, clustering=None, scaling="zscore", 
     return labels, emb
 
 
+def vtea_core_problem():
+    """None, or what is missing from the installed vtea-core and how to update it."""
+    import importlib
+
+    missing = []
+    for module, names in VTEA_CORE_FEATURES.items():
+        try:
+            mod = importlib.import_module(module)
+        except Exception as e:
+            return f"vtea-core cannot be imported ({e}). Install it with: pip install \"{VTEA_CORE}\""
+        missing += [f"{module}.{n}" for n in names if not hasattr(mod, n)]
+    if not missing:
+        return None
+    return ("The installed vtea-core is older than this version of IBIF napari needs (it has no "
+            + ", ".join(missing) + "), so clustering is slower and rules must use exact names. "
+            "Update it (pip keeps the old one when only its commit changed):\n"
+            f"pip install --force-reinstall --no-deps \"{VTEA_CORE}\"")
+
+
 def _fast_vtea():
     """vtea-core with the shared neighbour search (and fast Leiden, UMAP / t-SNE options)."""
     from vtea_core import clustering as cl
@@ -1046,17 +1072,45 @@ def _has(module):
 _warmed = {"umap": False}
 
 
+def import_analysis_modules(*methods):
+    """Import what clustering and maps use, in the calling (main) thread.
+
+    Two threads importing scikit-learn (or anything that imports it) at the same
+    time can fail with "cannot import name ... from partially initialized module
+    'sklearn.base' (most likely due to a circular import)": Python's import locks
+    hand one thread a half-imported module when the package imports itself in a
+    circle, as scikit-learn does. So background work (the UMAP warm-up, a clustering
+    run) must only start once its modules are imported here. `methods` are the map /
+    clustering names of a run ("umap", "tsne", "leiden", ...) whose optional
+    libraries are imported too. Cheap after the first call."""
+    import importlib
+
+    names = ["sklearn", "sklearn.base", "vtea_core.measurements.normalize", "vtea_core.clustering",
+             "vtea_core.reduction.reduction"]
+    optional = {"umap": ["umap"], "tsne": ["openTSNE"], "leiden": ["igraph", "leidenalg"],
+                "louvain": ["igraph", "networkx"]}
+    extra = [name for method in methods for name in optional.get(method, []) if _has(name)]
+    for name in names + extra:
+        try:
+            importlib.import_module(name)
+        except Exception:  # an optional library that does not import: the run says so itself
+            pass
+
+
 def warm_up(background=True):
     """Compile UMAP's numba code once per session, on a tiny made-up table, so the
-    first real map does not wait for it (about 10 s). In a background thread unless
-    `background` is False; does nothing if umap-learn is missing, already warmed, or
-    IBIF_NAPARI_NO_WARMUP is set."""
+    first real map does not wait for it (about 10 s). The imports are made here, in
+    the calling thread (see `import_analysis_modules`); only the compiling, which
+    imports nothing more, runs in a background thread unless `background` is False.
+    Does nothing if umap-learn is missing, already warmed, or IBIF_NAPARI_NO_WARMUP
+    is set."""
     import os
     import threading
 
     if _warmed["umap"] or os.environ.get("IBIF_NAPARI_NO_WARMUP") or not _has("umap"):
         return None
     _warmed["umap"] = True
+    import_analysis_modules("umap")
 
     def work():
         import warnings
