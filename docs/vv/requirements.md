@@ -15,6 +15,9 @@ Generated from `src/ibif_napari/vv/requirements.py` (`ibif-napari-vv requirement
 | VV-SEG-04 | Segmentation | Whole cells with a nuclear channel | Segmentation section, nuclear channel | validation |
 | VV-SEG-05 | Segmentation | Robust to image noise | Segmentation section | validation |
 | VV-SEG-06 | Segmentation | Segmenting a painted region | Segmentation section: Region, Draw…, Drop cells mostly outside the painted area | validation |
+| VV-SEG-07 | Segmentation | Threshold + watershed does each step as specified | Segmentation section, Threshold + watershed tab | verification |
+| VV-SEG-08 | Segmentation | Threshold + watershed finds nuclei in 2D and 3D | Segmentation section, Threshold + watershed tab (3D, and 2D per plane + stitch) | validation |
+| VV-SEG-09 | Segmentation | Touching nuclei are split by the watershed | Segmentation section, Threshold + watershed tab: Split touching objects | validation |
 | VV-SEC-01 | Secondary objects | Expand grows objects by the set distance | Secondary objects section: Expand | verification |
 | VV-SEC-02 | Secondary objects | Rings and rims have the set gap and width | Secondary objects section: Ring, Rim | verification |
 | VV-SEC-03 | Secondary objects | Whole cells grown from nuclei match the true cells | Secondary objects section: Whole cells from these seeds (Cytoplasm, Membranes), Also add cytoplasm | validation |
@@ -164,6 +167,57 @@ Generated from `src/ibif_napari/vv/requirements.py` (`ibif-napari-vv requirement
 - F1 at IoU 0.5 within 0.05 of the whole-image F1 (or better)
 
 *scenes: `nuclei_2d`; needs: segmentation*
+
+## VV-SEG-07: Threshold + watershed does each step as specified
+
+**Requirement.** The Threshold + watershed tab shall threshold at the value the chosen method gives, label connected components exactly, and split objects only within the foreground, numbering them 1..n.
+
+**Feature.** Segmentation section, Threshold + watershed tab
+
+**Method.** Test on nuclei_2d and nuclei_3d against an independent calculation with SciPy / scikit-image: the Otsu threshold of the same normalised, smoothed image; connected components of the same foreground; a manual threshold with no smoothing or clean-up against the plain image > value.
+
+**Acceptance criteria.**
+
+- threshold = Otsu of the processed image (relative error <= 1e-09)
+- Split: none gives exactly the connected components of the foreground
+- the watershed objects cover exactly the foreground, and each lies within one component
+- objects numbered 1..n, none smaller than the minimum size
+- manual threshold: objects = connected components of image > value, exactly
+
+*scenes: `nuclei_2d`, `nuclei_3d`*
+
+## VV-SEG-08: Threshold + watershed finds nuclei in 2D and 3D
+
+**Requirement.** With its defaults, the Threshold + watershed tab shall find and outline separated nuclei in 2D and in anisotropic 3D stacks, also at low signal-to-noise. (It needs no GPU or model, so it is checked on every run, whichever segmentation back-end is chosen.)
+
+**Feature.** Segmentation section, Threshold + watershed tab (3D, and 2D per plane + stitch)
+
+**Method.** Test on nuclei_2d (SNR 12), snr_4 and nuclei_3d (Z step 1 µm, pixels 0.5 µm), with the tab's defaults: smoothing 1 px, Otsu, fill holes, distance watershed, min size 15.
+
+**Acceptance criteria.**
+
+- 2D: F1 at IoU 0.5 >= 0.9, mean IoU >= 0.8
+- SNR 4: F1 at IoU 0.5 >= 0.85
+- 3D: F1 at IoU 0.5 >= 0.85, mean IoU >= 0.75
+- 3D by 2D planes + stitching: F1 at IoU 0.5 >= 0.85
+
+*scenes: `nuclei_2d`, `snr_4`, `nuclei_3d`*
+
+## VV-SEG-09: Touching nuclei are split by the watershed
+
+**Requirement.** Nuclei that touch shall be separated by the watershed rather than merged as one connected component.
+
+**Feature.** Segmentation section, Threshold + watershed tab: Split touching objects
+
+**Method.** Test on touching_2d and touching_3d (nuclei packed so that some press into each other), with the distance watershed (default) and with connected components only.
+
+**Acceptance criteria.**
+
+- with the watershed: F1 at IoU 0.5 >= 0.85 in 2D and 3D
+- the watershed's F1 is at least 0.05 higher than connected components alone
+- the watershed merges fewer nuclei than connected components
+
+*scenes: `touching_2d`, `touching_3d`*
 
 ## VV-SEC-01: Expand grows objects by the set distance
 

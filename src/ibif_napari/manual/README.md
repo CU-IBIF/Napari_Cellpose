@@ -23,7 +23,7 @@ section.
 4. [The window](#4-the-window)
 5. [Opening your images](#5-opening-your-images)
 6. [Configuration: moving through time, positions and Z](#6-configuration-moving-through-time-positions-and-z)
-7. [Segmentation with Cellpose](#7-segmentation-with-cellpose)
+7. [Segmentation: Cellpose, or threshold + watershed](#7-segmentation-cellpose-or-threshold--watershed)
 8. [Secondary objects: cells, cytoplasm, rings and rims](#8-secondary-objects-cells-cytoplasm-rings-and-rims)
 9. [Measurements](#9-measurements)
 10. [Cytometry: gating, phenotypes and clustering](#10-cytometry-gating-phenotypes-and-clustering)
@@ -59,7 +59,7 @@ flowchart LR
 | Section | What it is for | Main method |
 |---|---|---|
 | Configuration | Move through time points, stage positions and Z; turn channels on and off; 2D/3D view | — |
-| Segmentation | Find each nucleus or cell and give it a number | [Cellpose](https://www.cellpose.org) deep-learning segmentation |
+| Segmentation | Find each nucleus or cell and give it a number | [Cellpose](https://www.cellpose.org) deep-learning segmentation, or a classical threshold + watershed (no GPU needed) |
 | Secondary objects | Build whole cells, cytoplasm, rings or rims from the first objects | Distance transforms and seeded watershed |
 | Measurements | Measure every object: size, position and intensity in every channel | Per-object statistics |
 | Cytometry | Classify objects into cell types by gating or clustering | Gating, UMAP / t-SNE / PCA, Leiden / Louvain / k-means |
@@ -286,7 +286,19 @@ correct segmentations by hand.
 
 ---
 
-## 7. Segmentation with Cellpose
+## 7. Segmentation: Cellpose, or threshold + watershed
+
+The **Segmentation** section has two tabs:
+
+- **Cellpose**: deep-learning segmentation, on this computer or on a GPU server or cluster
+  (sections 7.1 to 7.5). The best choice for most cells and nuclei.
+- **Threshold + watershed**: classical segmentation on this computer's CPU, with no GPU, model
+  or server needed ([section 7.6](#76-threshold--watershed-segmentation-without-a-gpu)). Use it to
+  test a workflow when no GPU can be reached, for bright and fairly separated objects such
+  as nuclei or beads, or to compare with Cellpose.
+
+Both make a labels layer that the other sections (Secondary objects, Measurements,
+Cytometry) use in the same way.
 
 ### 7.1 What Cellpose is
 
@@ -391,6 +403,70 @@ Always look at the segmentation before measuring it:
 - Small fixes can be made by hand on the labels layer with napari's brush, eraser and fill
   tools (the 3D brush works in the 3D view). Pick an unused label number for new objects.
 - If errors are frequent, change the settings, try another model, or train a custom model.
+
+### 7.6 Threshold + watershed: segmentation without a GPU
+
+![The Threshold + watershed tab](images/16_threshold_watershed.png)
+
+*The Threshold + watershed tab, set up for a 3D nuclear stain.*
+
+This is the classical way of segmenting bright objects on a dark background. It runs in
+seconds on any computer. The steps, in the order they are applied:
+
+1. **Local contrast (CLAHE)**, optional. Contrast-limited adaptive histogram equalisation
+   (Zuiderveld 1994) evens out bright and dim regions, so that dim objects next to bright
+   ones are not lost. **clip** sets its strength (higher = more contrast, and more noise).
+2. **Smoothing (px)**: a Gaussian blur, sigma in XY pixels. In a Z stack the blur in Z
+   follows the voxel size. It stops noise breaking objects into pieces. Use about a tenth of
+   the object diameter.
+3. **Threshold**: pixels above it are object (*foreground*), the rest background.
+   - **Otsu** (Otsu 1979), **Li** (Li & Tam 1998), **Triangle** (Zack et al. 1977), **Yen**
+     (Yen et al. 1995) and **Mean** compute one value for the whole image from its histogram.
+     Otsu suits images with roughly as much object as background; Triangle and Li suit
+     sparse, small objects. **Threshold ×** scales the value: lower includes more.
+   - **Local (adaptive)** compares each pixel with the mean of its neighbourhood (**block**,
+     in pixels: 2 to 3 object diameters). Use it when the background is uneven, for example
+     vignetting or a gradient across a tile scan. **offset** -0.05 means a pixel must be 5%
+     (of the image's range) brighter than its surroundings.
+   - **Manual**: a value in the image's own units. **Preview threshold** fills it with the
+     automatic value, as a starting point.
+4. **Fill holes** fills dark holes inside objects (for example nucleoli). In a stack this
+   is done on each plane.
+5. **Split touching**: thresholding alone joins objects that touch. A **watershed**
+   (Beucher & Meyer 1993) cuts them apart:
+   - **Distance (round objects)**, the default: each object's centre (the point farthest
+     from the background) is a seed, and touching objects are cut along their narrowest
+     part. Best for round nuclei.
+   - **Intensity (bright centres)**: the brightest points are the seeds. For objects that are
+     brighter in the middle than at their edges.
+   - **None (connected components)**: every connected group of foreground pixels is one
+     object. Use it for objects that never touch.
+
+   **Diameter (px)** is the typical object diameter. Seeds closer than half of it are merged,
+   which stops one elongated object being cut in two. Leave it on *auto* (the median size
+   of the objects found) or set it if objects are split wrongly.
+6. **Min size (px)** removes objects with fewer pixels (voxels) and **Drop objects touching
+   the image border** removes cut-off objects, which would give wrong sizes.
+
+**Mode** (Z stacks): **3D** segments the stack as a volume. **2D per plane, stitched**
+segments each plane and links the objects of neighbouring planes that overlap. Use it for
+stacks with only a few planes or a large Z step. **Run on**, **Region**, **Z planes** and
+**Drop objects mostly outside the painted area** work as in the Cellpose tab
+([section 7.4](#74-segmenting-only-part-of-the-image)).
+
+**Tuning.** Click **Preview threshold**. A *foreground* layer shows which pixels are above
+the threshold at the current time point / position, and the status line gives the
+threshold and the share of foreground. Adjust smoothing and threshold until the foreground
+covers the objects and little else, then click **Run**. The result is a labels layer named
+*&lt;image&gt; threshold …*. Its settings are saved in the layer's metadata
+(`ibif_classic`), so you can report them.
+
+**Limits.** A threshold sees only brightness. It cannot separate objects that touch without a
+narrower neck between them, or cells whose stain is uneven, textured or no brighter than the
+background (membranes, cytoplasm). For those, use Cellpose or grow cells from nuclei with
+Secondary objects. In the V&V suite this tab finds every separated nucleus in 2D and 3D
+(F1 1.00), and splits touching nuclei that connected components merge (F1 0.97 against
+0.71 in 2D) ([section 15](#15-can-i-trust-the-numbers-verification-and-validation)).
 
 ---
 
@@ -856,6 +932,14 @@ and [docs/vv/requirements.md](https://github.com/CU-IBIF/Napari_Cellpose/blob/ma
 measures correctly; they cannot show that Cellpose segments *your* images well. Check that
 on your own data, as described in [section 7.5](#75-checking-and-correcting-the-result).
 
+The Threshold + watershed tab needs no model, so its requirements (VV-SEG-07 to 09) run on
+every V&V run. You can also score the whole suite's segmentation requirements with it, for
+example on a computer without Cellpose:
+
+```bash
+ibif-napari-vv all vv --backend classic
+```
+
 ---
 
 ## 16. Troubleshooting
@@ -866,6 +950,8 @@ on your own data, as described in [section 7.5](#75-checking-and-correcting-the-
 | Cellpose does not use the GPU | Check `python -c "import torch; print(torch.cuda.is_available())"`. If it prints `False`, install the CUDA build of PyTorch from [pytorch.org](https://pytorch.org/get-started/locally/), then make sure **Use GPU** is ticked. |
 | The first run is slow or seems stuck | The first run downloads the model weights (about 1.2 GB) into `~/.cellpose/models`. The panel shows the progress. If your network blocks huggingface.co, run `ibif-napari --download-models` elsewhere and copy the folder. |
 | 3D segmentation is very slow | Use a **Region** and **Z planes**, the 2D stitched mode, a GPU, or the facility server or cluster. |
+| No GPU, Cellpose not installed, or the server cannot be reached | Use the **Threshold + watershed** tab of Segmentation ([section 7.6](#76-threshold--watershed-segmentation-without-a-gpu)), which runs on any CPU. |
+| Threshold + watershed: objects merged / split / missing | Merged: check **Split touching** is *Distance*, set **Diameter**. Split: raise **Diameter** or **Smoothing**. Dim objects missing: lower **Threshold ×**, or tick **Local contrast**; uneven background: **Local (adaptive)**. |
 | Objects look squashed or stretched in 3D | The voxel size is wrong or missing; check the layer's scale. |
 | Many merged or split objects | Set **Diameter**; adjust **Flow threshold** and **Cell probability**; try another model; train a custom model. |
 | Cells leak into each other in Secondary objects | Use **Max distance**, raise **Threshold ×**, increase **Smoothing**, or switch between *Membranes* and *Cytoplasm*. |
@@ -941,6 +1027,13 @@ on your own data, as described in [section 7.5](#75-checking-and-correcting-the-
   Recognit Lett* 19:771–776 (1998). [doi:10.1016/S0167-8655(98)00057-9](https://doi.org/10.1016/S0167-8655(98)00057-9)
 - Zack GW, Rogers WE, Latt SA. Automatic measurement of sister chromatid exchange frequency.
   *J Histochem Cytochem* 25:741–753 (1977). [doi:10.1177/25.7.70454](https://doi.org/10.1177/25.7.70454)
+- Yen JC, Chang FJ, Chang S. A new criterion for automatic multilevel thresholding. *IEEE
+  Trans Image Process* 4:370–378 (1995). [doi:10.1109/83.366472](https://doi.org/10.1109/83.366472)
+- Zuiderveld K. Contrast limited adaptive histogram equalization. In: Heckbert PS (ed.),
+  *Graphics Gems IV*, Academic Press, 474–485 (1994).
+- Beucher S, Meyer F. The morphological approach to segmentation: the watershed
+  transformation. In: Dougherty ER (ed.), *Mathematical Morphology in Image Processing*,
+  Marcel Dekker, 433–481 (1993).
 
 **Cytometry and clustering**
 

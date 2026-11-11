@@ -40,6 +40,12 @@ Cellpose from a [facility GPU server](docs/facility-server.md) or a
   stitching. It runs on the current time point/position or on all of them, and writes a
   labels layer. The Cellpose model is loaded in the background at startup, so the first
   run doesn't wait for it.
+  A second tab, **Threshold + watershed**, segments on the CPU with no GPU, model or server:
+  optional local contrast (CLAHE), smoothing, an automatic (Otsu, Li, Triangle, Yen, mean),
+  local (adaptive) or manual threshold, hole filling, then touching objects split by a
+  distance or intensity watershed, or plain connected components. *Preview threshold* shows
+  the foreground before running. Use it to test a workflow without a GPU, or for bright,
+  separated objects such as nuclei.
 - **Secondary objects**: builds on a first segmentation (e.g. Cellpose nuclei).
   *Expand* grows every object by a distance without merging neighbours; *Ring* makes a
   band around each object (gap + width); *Rim* the band just inside its edge; *Whole cells

@@ -102,6 +102,17 @@ def standard_scenes(quick=False):
                   min_gap_um=3.0, seed=15, origin_um=(5.0, -3.0, 10.0),
                   notes="3 time points, intensities rise 25% per step, offset origin"),
     ]
+    # Touching nuclei (they press into each other): connected components merge them, the
+    # watershed of the Threshold + watershed tab must split them.
+    scenes += [
+        SceneSpec("touching_2d", k((256, 256), (128, 128)), (0.5, 0.5), n_objects=k(50, 12),
+                  min_gap_um=k(-3.0, -3.5), elongation=(1.0, 1.2), seed=k(33, 36),
+                  notes="2D nuclei packed so that some touch"),
+        SceneSpec("touching_3d", (k(20, 12), k(112, 64), k(112, 64)), (1.0, 0.5, 0.5), n_objects=k(16, 6),
+                  min_gap_um=-2.0, elongation=(1.0, 1.2), psf_sigma_um=(0.9, 0.4, 0.4),
+                  nucleus_radius_um=(3.0, 4.0), seed=32,
+                  notes="3D nuclei packed so that some touch (anisotropic voxels)"),
+    ]
     for snr in (20.0, 8.0, 4.0, 2.0):
         scenes.append(SceneSpec(f"snr_{snr:g}", (n2, n2), (0.5, 0.5), n_objects=k(20, 6), snr=snr,
                                 seed=21, notes=f"2D nuclei at SNR {snr:g} (robustness sweep)"))

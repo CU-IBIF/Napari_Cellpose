@@ -125,7 +125,7 @@ viewer.camera.zoom *= 1.35
 pump(1)
 
 # ---- segmentation ------------------------------------------------------------------------
-seg = panel.show_section("segmentation")
+seg = panel.show_section("segmentation").cellpose
 wait(lambda: "ready" in seg.status.text() or "Could not" in seg.status.text(), 180, "model ready")
 print("status:", seg.status.text(), flush=True)
 seg.image.setCurrentText(names[0])
@@ -159,6 +159,19 @@ viewer.layers.selection.active = region
 pump(1)
 snap("06_region")
 viewer.layers.remove(region)
+pump(0.5)
+
+# the Threshold + watershed tab (its foreground preview on the nuclear channel)
+from ibif_napari._segmentation_widget import CELLPOSE_TAB, CLASSIC_TAB  # noqa: E402
+
+seg_section = panel.pages["segmentation"]
+classic = seg_section.show_tab(CLASSIC_TAB)
+classic.image.setCurrentText(names[0])
+classic.preview()
+pump(1)
+snap("16_threshold_watershed", seg_section)
+viewer.layers.remove(viewer.layers[f"{names[0]} foreground"])
+seg_section.show_tab(CELLPOSE_TAB)
 pump(0.5)
 
 # ---- secondary objects -------------------------------------------------------------------
