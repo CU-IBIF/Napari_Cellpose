@@ -564,7 +564,9 @@ class Workbench(QWidget):
         except (ValueError, KeyError) as e:
             self.status.setText(str(e))
             return None
-        self.status.setText(f"Phenotype {self.state.tree.path(name)} added.")
+        rewrite = getattr(self.state, "last_rewrite", {})
+        read = ("; read " + ", ".join(f"{k!r} as {cy.quote(v)}" for k, v in rewrite.items())) if rewrite else ""
+        self.status.setText(f"Phenotype {self.state.tree.path(name)} added{read}.")
         return node
 
     def add_phenotype(self):
@@ -678,13 +680,29 @@ class Workbench(QWidget):
         self.plot.highlight(int(hit[0]) if len(hit) else None)
 
 
+RULE_HELP = (
+    "<b>Columns</b>: gates <code>`gate: CD3+`</code>, image gates <code>`image gate: tumour`</code>, "
+    "clusters <code>`Clustering 1 cluster`</code>, measurements <code>`cells: … CD8 mean`</code>. "
+    "Names with spaces or symbols go in <code>`backticks`</code> or quotes. A gate can be given by "
+    "its name, a measurement by its heat-map label (<i>Cell CD8 mean</i>).<br>"
+    "<b>Conditions</b>: <code>== != &lt; &lt;= &gt; &gt;=</code>, <code>in [3, 7]</code>, "
+    "<code>50 &lt;= x &lt;= 150</code>; a gate alone means \"in the gate\".<br>"
+    "<b>Combine</b>: <code>AND OR NOT XOR</code> (or <code>&amp; | ~ ^</code>), with ( ). "
+    "Example: <code>`Clustering 1 cluster` == 2 &amp; `cells: CD8 mean` &lt; 100</code>.<br>"
+    "Phenotypes at one level are exclusive: an object goes to the first that matches. "
+    "An empty rule takes the rest of the parent."
+)
+
+
 class PhenotypeDialog(QDialog):
-    """Name, parent, rule and colour of a phenotype."""
+    """Name, parent, rule and colour of a phenotype, with a live check of the rule:
+    how many objects it selects, or what is wrong with it."""
 
     def __init__(self, state, parent=None, title="Phenotype", name="", parent_name=None, rule="",
                  color="", editing=False):
         super().__init__(parent)
         self.setWindowTitle(title)
+        self.setMinimumWidth(620)
         self.state = state
         form = QFormLayout(self)
         self.name = QLineEdit(name or state.unique_name("Phenotype"))
@@ -701,27 +719,118 @@ class PhenotypeDialog(QDialog):
         form.addRow("Within", self.parent_box)
         self.rule = QLineEdit(rule)
         self.rule.setPlaceholderText("empty = every object of the parent not in an earlier phenotype")
-        self.rule.setToolTip("A rule over the object table, e.g. `gate: CD3+` AND NOT `gate: CD4+`, "
-                             "`CD8 mean` > 200, or cluster in [3, 7]. Names with spaces go in backticks.")
         form.addRow("Rule", self.rule)
-        insert = QComboBox()
-        insert.addItem("Insert a column…")
-        frame = state.frame()
-        if frame is not None:
-            for c in frame.columns:
-                insert.addItem(c)
-        insert.activated.connect(lambda i: i and (self.rule.insert(cy.quote(insert.itemText(i)) + " "),
-                                                  insert.setCurrentIndex(0)))
-        form.addRow("", insert)
+
+        self.insert = QComboBox()
+        self.insert.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.insert.setMinimumContentsLength(22)
+        self._fill_insert()
+        self.insert.activated.connect(self._insert_column)
+        form.addRow("", self.insert)
+        tools = QHBoxLayout()
+        for text in ("AND", "OR", "NOT", "==", "<", ">", "in [ ]", "( )"):
+            b = QPushButton(text)
+            b.setToolTip({"in [ ]": "in a list of values, e.g. cluster in [3, 7]",
+                          "( )": "brackets (around the selected text)"}.get(text, f"insert {text}"))
+            b.clicked.connect(lambda _=False, t=text: self._insert_operator(t))
+            tools.addWidget(b)
+        form.addRow("", tools)
+        help_label = QLabel(RULE_HELP)
+        help_label.setWordWrap(True)
+        help_label.setStyleSheet("color: gray;")
+        form.addRow("", help_label)
+        self.check = QLabel()
+        self.check.setWordWrap(True)
+        self.check.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        form.addRow("Check", self.check)
+
         self._color = color or state._next_color()
         self.color_btn = QPushButton()
         self.color_btn.clicked.connect(self._pick_color)
         self._show_color()
         form.addRow("Colour", self.color_btn)
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        form.addRow(buttons)
+        self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        form.addRow(self.buttons)
+        self.rule.textChanged.connect(self.check_rule)
+        self.parent_box.currentIndexChanged.connect(self.check_rule)
+        self.check_rule()
+
+    def _fill_insert(self):
+        """The columns a rule can use, grouped, each by its short label (the full name
+        is in the tooltip and is what gets inserted)."""
+        from ._cyto_labels import short_names
+
+        box = self.insert
+        box.addItem("Insert a column…", None)
+        groups = self.state.rule_columns() if self.state.table is not None else {}
+        short = short_names([c for cols in groups.values() for c in cols]) if groups else {}
+        for group, cols in groups.items():
+            if not cols:
+                continue
+            box.addItem(f"— {group} —", None)
+            box.model().item(box.count() - 1).setEnabled(False)
+            for c in cols:
+                label = c if group != "Measurements" else short.get(c, c)
+                box.addItem("   " + label, c)
+                box.setItemData(box.count() - 1, c, Qt.ToolTipRole)
+
+    def _insert_column(self, index):
+        column = self.insert.itemData(index)
+        if column:
+            self._insert_text(cy.quote(column))
+        self.insert.setCurrentIndex(0)
+
+    def _insert_operator(self, text):
+        if text == "in [ ]":
+            self._insert_text("in [")
+            self.rule.insert("]")
+            self.rule.cursorBackward(False)
+        elif text == "( )":
+            selected = self.rule.selectedText()
+            self.rule.insert(f"({selected})" if selected else "()")
+            if not selected:
+                self.rule.cursorBackward(False)
+        else:
+            self._insert_text(text)
+
+    def _insert_text(self, text):
+        """Insert at the cursor with a space on either side where needed."""
+        line, pos = self.rule.text(), self.rule.cursorPosition()
+        before = "" if pos == 0 or line[pos - 1] in " ([" else " "
+        after = "" if pos < len(line) and line[pos] == " " else " "
+        self.rule.insert(before + text + after)
+        self.rule.setFocus()
+
+    def check_rule(self, *_):
+        """Show how many objects the rule selects (and within the chosen parent), how
+        it will be stored when names were matched, or what is wrong; OK only when it
+        can be used."""
+        ok_button = self.buttons.button(QDialogButtonBox.Ok)
+        text = self.rule.text().strip()
+        if self.state.table is None:
+            self.check.setText("")
+            ok_button.setEnabled(True)
+            return
+        parent = self.parent_box.currentData()
+        try:
+            total, within, stored = self.state.rule_count(text, parent)
+        except ValueError as e:
+            self.check.setText(f"<span style='color:#d62728'>✗ {_html(str(e))}</span>")
+            ok_button.setEnabled(False)
+            return
+        n_all = len(self.state.table)
+        if not text:
+            message = "✓ the rest of " + (f"<b>{_html(parent)}</b>" if parent else "the objects")
+        else:
+            message = f"✓ <b>{total:,}</b> of {n_all:,} objects match"
+            if parent:
+                message += f"; <b>{within:,}</b> of them are in {_html(parent)}"
+        if stored != text:
+            message += f"<br>stored as: <code>{_html(stored)}</code>"
+        self.check.setText(f"<span style='color:#2ca02c'>{message}</span>")
+        ok_button.setEnabled(True)
 
     def _pick_color(self):
         c = QColorDialog.getColor(QColor(self._color), self)
@@ -738,6 +847,12 @@ class PhenotypeDialog(QDialog):
 
 
 # ---- small helpers ----------------------------------------------------------------------------
+
+
+def _html(text):
+    import html
+
+    return html.escape(str(text))
 
 
 def _pop_key(kind, key):

@@ -89,10 +89,17 @@ vtea-core, so VTEA and IBIF napari share them.
    - `` `CD8 mean` > 200 ``
    - `` `image gate: tumour` ``
    - `` `Clustering 1 cluster` in [3, 7] ``
+   - `` `Clustering 1 cluster` == 2 & `cells: sample Alexa647 mean` < 100 ``
 
-   Names with spaces go in backticks. **Insert a column…** writes them for you. A
-   phenotype with an empty rule is "the rest of its parent": everything in the parent
-   that an earlier sibling did not claim (e.g. *Other T*).
+   Names with spaces or symbols go in backticks or quotes. A gate can be given by its
+   name (`'CD3+'`), a measurement by its heat-map label (`'Cell Alexa647 mean'`) or by
+   words only one column has (`'CD4 mean'`); an ambiguous name lists the candidates.
+   The rule is stored with the exact names (`Cytometry.resolve_rule`). **Insert a
+   column…** lists gates, image gates, clusters and measurements; the dialog's
+   **Check** shows the number of objects as you type, or the problem. Phenotypes at
+   one level are exclusive (the first that matches wins). A phenotype with an empty
+   rule is "the rest of its parent": everything in the parent that an earlier sibling
+   did not claim (e.g. *Other T*).
 6. **Use the result.**
    - **Show phenotypes on image** (workbench: **Show on image**) colours every object by
      its phenotype, either the deepest (most specific) one or the one at a chosen level

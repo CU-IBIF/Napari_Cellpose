@@ -518,3 +518,80 @@ def test_points_menu_and_window_shape(qtbot):
     qtbot.waitExposed(bench)
     canvas = plot.canvas
     assert canvas.width() / canvas.height() == pytest.approx(ASPECT, abs=0.02)
+
+
+def _rules_state():
+    pytest.importorskip("vtea_core.classes.expression")
+    from vtea_core import classes
+
+    if not hasattr(classes, "column_references"):
+        pytest.skip("vtea-core without column_references")
+    table, kind = cell_types()
+    table = table.rename(columns={"CD3 mean": "cells: s CD3 mean", "CD8 mean": "cells: s CD8 mean",
+                                  "CD4 mean": "cells: s CD4 mean"})
+    table["nuclei: s CD8 mean"] = table["cells: s CD8 mean"] * 0.9
+    s = cy.state_of(ViewerModel())
+    s.set_table("All objects", table, "cells")
+    feats = ["cells: s CD3 mean", "cells: s CD8 mean", "cells: s CD4 mean"]
+    rows, m = s.matrix(("all", None), feats, asinh=True)
+    labels, _ = cy.compute_analysis(m, None, "kmeans", k=3, seed=1)
+    s.add_analysis("Clustering 1", {"population": ["all", None], "features": feats,
+                                    "clustering": "kmeans", "method": "k-means"}, rows, labels)
+    s.add_gate("CD3+", "cells: s CD3 mean", "cells: s CD8 mean", [[300, 0], [1e5, 0], [1e5, 1e5], [300, 1e5]])
+    return s, kind
+
+
+def test_rules_combine_clusters_measurements_and_gates():
+    s, kind = _rules_state()
+    cd8 = int(pd.Series(s.clusters("Clustering 1")).groupby(kind).agg(lambda x: x.mode()[0])[0])
+    # The rule from the request, written with the table's names: exactly the CD8 T cells.
+    s.add_phenotype("CD8 T", f"`Clustering 1 cluster` == {cd8} & `cells: s CD4 mean` < 100")
+    assert s.mask("phenotype", "CD8 T").sum() == (kind == 0).sum()
+    # Quotes, the heat-map label, a gate by its name, case: all read, stored exactly.
+    rule, read = s.resolve_rule(f"'Clustering 1 cluster' == {cd8} & 'Cell CD4 mean' < 100 & 'cd3+'")
+    assert rule == f"`Clustering 1 cluster` == {cd8} & `cells: s CD4 mean` < 100 & `gate: CD3+`"
+    assert read == {"Cell CD4 mean": "cells: s CD4 mean", "cd3+": "gate: CD3+"}
+    # Words of the name, when only one column has them all.
+    assert s.resolve_rule("'CD4 mean' > 1")[0] == "`cells: s CD4 mean` > 1"
+    # Ambiguous: not guessed, the candidates are given.
+    with pytest.raises(ValueError, match="could be any of `cells: s CD8 mean`, `nuclei: s CD8 mean`"):
+        s.resolve_rule("'intensity-CD8' < 100")
+    with pytest.raises(ValueError, match="no column 'CD99'"):
+        s.resolve_rule("'CD99' > 1")
+    with pytest.raises(ValueError, match="backticks or quotes"):
+        s.resolve_rule("Clustering 1 cluster == 2")
+    # A text value after a comparison is left as it is.
+    assert s.resolve_rule("'gate: CD3+' == 'x'")[0] == "`gate: CD3+` == 'x'"
+    # Counting for the dialog: overall and within a parent.
+    # (Top-level phenotypes are exclusive: "CD8 T", made first, would keep its cells from "T".)
+    s.remove_phenotype("CD8 T")
+    s.add_phenotype("T", "`gate: CD3+`")
+    total, within, _ = s.rule_count("'Cell CD8 mean' > 300", parent="T")
+    assert total == (kind == 0).sum() and within == (kind == 0).sum()
+    # Renaming a gate rewrites the rules through the parser, not a text replace.
+    s.add_phenotype("Not T", "NOT `gate: CD3+` AND 'gate: CD3+' != 'gate: CD3+'")
+    s.rename_gate("gate", next(iter(s.gates)).id, "T gate")
+    assert s.tree.get("T").rule == "`gate: T gate`"
+    assert s.tree.get("Not T").rule == "NOT `gate: T gate` AND `gate: T gate` != 'gate: CD3+'"
+
+
+def test_phenotype_dialog_checks_the_rule_while_typing(qtbot):
+    from ibif_napari._cyto_workbench import PhenotypeDialog
+
+    s, kind = _rules_state()
+    d = PhenotypeDialog(s, title="New phenotype")
+    qtbot.addWidget(d)
+    ok = d.buttons.button(d.buttons.Ok)
+    d.rule.setText("'intensity-CD8' < 100")
+    assert "✗" in d.check.text() and "could be any of" in d.check.text() and not ok.isEnabled()
+    d.rule.setText("'Cell CD8 mean' > 300")
+    assert f"<b>{(kind == 0).sum()}</b> of 240 objects" in d.check.text() and ok.isEnabled()
+    assert "stored as" in d.check.text()
+    d.rule.setText("")
+    assert "the rest of the objects" in d.check.text() and ok.isEnabled()
+    # The column list is grouped, and inserts the full name.
+    items = [d.insert.itemText(i).strip() for i in range(d.insert.count())]
+    assert "— Gates —" in items and "— Clusters and maps —" in items and "Cell CD8 mean" in items
+    d.insert.activated.emit(items.index("gate: CD3+"))
+    d._insert_operator("AND")
+    assert d.rule.text().strip() == "`gate: CD3+` AND"
