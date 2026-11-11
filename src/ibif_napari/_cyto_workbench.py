@@ -1,10 +1,12 @@
 """The Cytometry workbench: a separate window for gating and phenotyping.
 
 Plot any two measurements (linear, log10 or asinh), draw rectangle / polygon / lasso
-gates on it or polygons on the image, gate within a gate or within a phenotype, and
-turn gates into a hierarchy of phenotypes. Everything is linked to the napari viewer:
-populations are shown on the image, clicking a point goes to that object, and clicking
-an object in the viewer rings it on the plot. It is one window per viewer and shares
+gates on it or paint regions on the image (with the same brush, and 3D ball brush, as
+the segmentation region), gate within a gate or within a phenotype, and turn gates into
+a hierarchy of phenotypes. Everything is linked to the napari viewer: selecting gates or
+phenotypes shows their objects on the image, objects in an image gate are ringed on the
+plot, clicking a point goes to that object, and clicking an object in the viewer rings
+it on the plot. It is one window per viewer and shares
 the viewer's cytometry state with the Cytometry section.
 """
 from __future__ import annotations
@@ -93,8 +95,9 @@ class Workbench(QWidget):
         self.poly_btn.setToolTip("Click the corners; click the first corner (or press Enter) to close")
         self.lasso_btn = QPushButton("Lasso gate")
         self.image_btn = QPushButton("Gate on image…")
-        self.image_btn.setToolTip("Draw regions on the image (Shapes layer); objects whose centre is "
-                                  "inside are gated. Click again when done.")
+        self.image_btn.setToolTip("Paint over the objects on the image (the segmentation brush; in the 3D "
+                                  "view it paints balls). Objects whose centre is painted are gated. "
+                                  "Click again (Make image gate) when done.")
         for b, mode in ((self.rect_btn, "rectangle"), (self.poly_btn, "polygon"), (self.lasso_btn, "lasso")):
             b.clicked.connect(lambda _=False, m=mode: self.start_gate(m))
             tools.addWidget(b)
@@ -121,6 +124,9 @@ class Workbench(QWidget):
         gb = QHBoxLayout()
         self.gate_pheno_btn = _button("Make phenotype…", self.phenotype_from_gate, gb)
         self.gate_rename_btn = _button("Rename…", self.rename_gate, gb)
+        self.gate_color_btn = _button("Colour…", self.recolor_gate, gb)
+        self.gate_color_btn.setToolTip("Colour of the gate: its outline on the plot and its objects on the "
+                                       "image; for an image gate also the ring around its objects on the plot")
         self.gate_delete_btn = _button("Delete", self.delete_gate, gb)
         gl.addLayout(gb)
         right_layout.addWidget(gates_box, 1)
@@ -128,12 +134,16 @@ class Workbench(QWidget):
         pheno_box = QGroupBox("Phenotypes")
         pl = QVBoxLayout(pheno_box)
         self.pheno_tree = _tree(["Phenotype", "Objects", "% of parent", "Rule"])
+        self.pheno_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.pheno_tree.setToolTip("Select phenotypes to show their objects on the image; Ctrl- or "
+                                   "Shift-click to show several at once. Double-click to edit one.")
         self.pheno_tree.itemDoubleClicked.connect(lambda *_: self.edit_phenotype())
+        self.pheno_tree.itemSelectionChanged.connect(self._phenotype_selected)
         pl.addWidget(self.pheno_tree)
         pb = QHBoxLayout()
         _button("Add…", self.add_phenotype, pb)
-        _button("Edit…", self.edit_phenotype, pb)
-        _button("Delete", self.delete_phenotype, pb)
+        self.pheno_edit_btn = _button("Edit…", self.edit_phenotype, pb)
+        self.pheno_delete_btn = _button("Delete", self.delete_phenotype, pb)
         pl.addLayout(pb)
         pb2 = QHBoxLayout()
         self.level = QSpinBox()
@@ -165,6 +175,9 @@ class Workbench(QWidget):
             w.currentIndexChanged.connect(self.replot)
         self.plot.on_pick(self.go_to_row)
         self.plot.on_style = self._style_changed
+        self.plot.size_source = lambda name: self.state.column(name)
+        self.plot.size_choices = lambda: self.state.features()
+        viewer.layers.events.removed.connect(self._layer_removed)
         from ._cyto_cluster import ClusteringTab
 
         self.clustering = ClusteringTab(self)
@@ -297,8 +310,16 @@ class Workbench(QWidget):
             tree.resizeColumnToContents(c)
 
     def _fill_phenotypes(self):
+        self._filling = True  # rebuilding the list is not the user choosing phenotypes
+        try:
+            self._fill_phenotype_items()
+        finally:
+            self._filling = False
+        self._phenotype_buttons()
+
+    def _fill_phenotype_items(self):
         state, tree = self.state, self.pheno_tree
-        selected = self._selected_phenotype()
+        selected = set(self.selected_phenotypes())
         tree.clear()
         counts = state.counts() if state.table is not None else None
         broken = state.broken_phenotypes() if state.table is not None else {}
@@ -318,7 +339,7 @@ class Workbench(QWidget):
             parent = items.get(node.parent)
             (parent.addChild(item) if parent is not None else tree.addTopLevelItem(item))
             items[node.name] = item
-            if selected == node.name:
+            if node.name in selected:
                 item.setSelected(True)
         tree.expandAll()
         for c in range(4):
@@ -363,7 +384,9 @@ class Workbench(QWidget):
         return {"x": self.x_col.currentText(), "x_scale": self.x_tf.currentText(),
                 "y": self.y_col.currentText(), "y_scale": self.y_tf.currentText(),
                 "population": self.population.currentData(), "colour": self.color_by.currentText(),
-                "point_size": plot.point_size, "marker": plot.marker, "alpha": plot.alpha}
+                "point_size": plot.point_size, "marker": plot.marker, "alpha": plot.alpha,
+                "size_by": plot.size_by, "size_range": list(plot.size_range),
+                "ring_image_gates": plot.outline_image_gates}
 
     def _style_changed(self):
         if self.state.table is not None and self.x_col.currentText():
@@ -387,12 +410,13 @@ class Workbench(QWidget):
         finally:
             for box in boxes:
                 box.blockSignals(False)
-        style = {k: view[k] for k in ("point_size", "marker", "alpha") if k in view}
+        style = {k: view[k] for k in ("point_size", "marker", "alpha", "size_by", "size_range") if k in view}
+        if "ring_image_gates" in view:
+            style["outline_image_gates"] = bool(view["ring_image_gates"])
+        if style.get("size_by") is not None and style["size_by"] not in self.state.features():
+            style["size_by"] = None  # a measurement that is not in the table any more
         if style:
-            self.plot.point_size = style.get("point_size", self.plot.point_size)
-            self.plot.marker = style.get("marker", self.plot.marker)
-            self.plot.alpha = style.get("alpha", self.plot.alpha)
-            self.plot.set_point_style()  # ticks the menu (and redraws)
+            self.plot.set_point_style(**style)  # ticks the menu (and redraws)
 
     def replot(self, *_):
         state = self.state
@@ -433,7 +457,8 @@ class Workbench(QWidget):
                 gates.append((gate.vertices, gate.color, gate.name))
         self.plot.show(x[index], y[index], index, colors=colors, background=background,
                        xlabel=x_name, ylabel=y_name, gates=gates, legend=legend, values=values,
-                       cbar_label=color_by if values is not None else None)
+                       cbar_label=color_by if values is not None else None,
+                       outlines=state.image_gated())
 
     # ---- gating -----------------------------------------------------------------------------
 
@@ -468,39 +493,87 @@ class Workbench(QWidget):
         return gate
 
     def image_gate_clicked(self):
-        """First click: a Shapes layer to draw on. Second click: make the image gate."""
+        """First click: a labels layer to paint the region on, over the objects (the
+        segmentation region's brush). Second click: make the image gate from it."""
         layer = self._image_layer
         if layer is None or layer not in self.viewer.layers:
-            objects = self.state.labels_layer()
-            if objects is None:
-                self.status.setText(f"Open the objects layer {self.state.layer_name!r} first.")
-                return
-            layer = self.viewer.add_shapes(name=IMAGE_GATE_LAYER, ndim=2, scale=objects.scale[-2:],
-                                           translate=objects.translate[-2:], edge_color="yellow",
-                                           face_color=[1, 1, 0, 0.15], edge_width=2)
-            layer.mode = "add_polygon"
-            self.viewer.layers.selection.active = layer
-            self._image_layer = layer
-            self.image_btn.setText("Make image gate")
-            self.status.setText("Draw regions on the image (polygons or rectangles), then click "
-                                "Make image gate.")
+            self.start_image_gate()
             return
-        polygons = [_to_world(layer, v) for v in layer.data]
-        if not polygons:
-            self.status.setText("Draw at least one region first.")
+        if not np.asarray(layer.data).any():
+            self.status.setText(f"Paint over the objects in the {layer.name!r} layer first (or delete "
+                                "that layer to cancel).")
+            self.viewer.layers.selection.active = layer
+            layer.mode = "paint"
             return
         name, ok = QInputDialog.getText(self, "New image gate", "Name of the gate:",
                                         text=self.state.unique_name("Region"))
-        if ok and name.strip():
-            self.add_image_gate(name.strip(), polygons)
-        self.viewer.layers.remove(layer)
-        self._image_layer = None
-        self.image_btn.setText("Gate on image…")
+        if not ok or not name.strip():
+            self.status.setText("Not made: keep painting and click Make image gate again, or delete the "
+                                f"{layer.name!r} layer to cancel.")
+            return
+        if self.make_image_gate(name.strip()) is not None:
+            self._end_image_gate()
 
-    def add_image_gate(self, name, polygons):
+    def start_image_gate(self):
+        """Add the layer to paint an image gate on (also used by tests and scripts)."""
+        from ._cytometry import _spatial_ndim
+
+        objects = self.state.labels_layer()
+        if objects is None:
+            self.status.setText(f"Open the objects layer {self.state.layer_name!r} first.")
+            return None
+        n = min(_spatial_ndim(objects), 3)
+        shape = tuple(objects.data.shape[-n:])
+        layer = self.viewer.add_labels(np.zeros(shape, np.uint8), name=IMAGE_GATE_LAYER,
+                                       scale=objects.scale[-n:], translate=objects.translate[-n:],
+                                       opacity=0.4, metadata={"ibif_region": True, "ibif_cytometry": True})
+        layer.brush_size = max(10, min(shape[-2:]) // 15)
+        layer.selected_label = 1
+        layer.mode = "paint"
+        try:  # the 3D view paints balls on the image, as for the segmentation region
+            from ._draw3d import brush_for
+
+            brush_for(self.viewer)
+        except Exception:
+            pass
+        self.viewer.layers.selection.active = layer
+        self._image_layer = layer
+        self.image_btn.setText("Make image gate")
+        depth = (" A region painted in 2D counts on every Z plane; painted with the ball brush in the 3D "
+                 "view it keeps its depth." if n == 3 else "")
+        self.status.setText(f"Paint over the objects to gate in the {layer.name!r} layer (brush size and "
+                            f"eraser in the layer controls), then click Make image gate.{depth} Delete the "
+                            "layer to cancel.")
+        return layer
+
+    def make_image_gate(self, name):
+        """The image gate `name` from what is painted (also used by tests and scripts)."""
+        layer = self._image_layer
+        if layer is None or layer not in self.viewer.layers:
+            return None
+        mask = np.asarray(layer.data) != 0
+        scale, translate = np.asarray(layer.scale, float), np.asarray(layer.translate, float)
+        if mask.ndim == 3 and not (layer.metadata or {}).get("ibif_region_3d"):
+            # Painted plane by plane: what was painted on any plane counts on all of them.
+            mask, scale, translate = mask.any(axis=0), scale[-2:], translate[-2:]
+        return self.add_image_gate(name, mask=mask, scale=scale, translate=translate)
+
+    def _end_image_gate(self):
+        layer, self._image_layer = self._image_layer, None
+        self.image_btn.setText("Gate on image…")
+        if layer is not None and layer in self.viewer.layers:
+            self.viewer.layers.remove(layer)
+
+    def _layer_removed(self, event=None):
+        if self._image_layer is not None and self._image_layer not in self.viewer.layers:
+            self._image_layer = None
+            self.image_btn.setText("Gate on image…")
+            self.status.setText("Image gate cancelled.")
+
+    def add_image_gate(self, name, polygons=None, mask=None, scale=None, translate=None):
         population = self.current_population()
         try:
-            self.state.add_image_gate(name, polygons, population)
+            self.state.add_image_gate(name, polygons, population, mask=mask, scale=scale, translate=translate)
         except ValueError as e:
             self.status.setText(str(e))
             return None
@@ -540,9 +613,24 @@ class Workbench(QWidget):
         gates = self.selected_gates()
         self.gate_pheno_btn.setEnabled(len(gates) == 1)
         self.gate_rename_btn.setEnabled(len(gates) == 1)
+        self.gate_color_btn.setEnabled(len(gates) == 1)
         self.gate_delete_btn.setEnabled(bool(gates))
         if gates and not self._filling:
+            self._clear_selection(self.pheno_tree)  # the image shows one list's choice at a time
             self._map_gate(gates)
+
+    def _clear_selection(self, tree):
+        if tree.selectedItems():
+            tree.blockSignals(True)
+            tree.clearSelection()
+            tree.blockSignals(False)
+            if tree is self.pheno_tree:
+                self._phenotype_buttons()
+            else:
+                self.gate_pheno_btn.setEnabled(False)
+                self.gate_rename_btn.setEnabled(False)
+                self.gate_color_btn.setEnabled(False)
+                self.gate_delete_btn.setEnabled(False)
 
     def _map_gate(self, sel):
         """Colour the objects of one gate (kind, key) or several [(kind, key), ...] on
@@ -555,14 +643,16 @@ class Workbench(QWidget):
         except (ValueError, KeyError) as e:
             self.status.setText(f"{text} Not shown on the image: {e}".strip())
             return None
+        what = "phenotypes" if all(i[0] == "phenotype" for i in items) else "gates"
         if len(items) == 1:
             n = next(iter(counts.values()))
             self.status.setText(f"{text} Shown on the image in {layer.name} ({n:,} objects).".strip()
-                                if text else f"{n:,} objects shown on the image in {layer.name}.")
+                                if text else f"{self._gate_name(items[0])}: {n:,} objects shown on the "
+                                             f"image in {layer.name}.")
         else:
             parts = ", ".join(f"{self._gate_name(i)} {n:,}" for i, n in counts.items())
             extra = f"; {several:,} in more than one (white)" if several else ""
-            self.status.setText(f"{len(items)} gates shown on the image in {layer.name}: {parts}{extra}.")
+            self.status.setText(f"{len(items)} {what} shown on the image in {layer.name}: {parts}{extra}.")
         return layer
 
     def show_gate(self):
@@ -588,6 +678,21 @@ class Workbench(QWidget):
 
     def _gate_name(self, sel):
         return self.state.gates.get(sel[1]).name if sel[0] == "gate" else sel[1]
+
+    def recolor_gate(self, color=None):
+        """Change the colour of the selected gate (asks for it when `color` is None)."""
+        sel = self._selected_gate()
+        if not sel:
+            return None
+        if color is None:
+            current = self.state.population_color(*sel)
+            picked = QColorDialog.getColor(QColor(current), self, f"Colour of {self._gate_name(sel)}")
+            if not picked.isValid():
+                return None
+            color = picked.name()
+        self.state.set_gate_color(*sel, color)
+        self._map_gate(sel)
+        return color
 
     def _default_parent(self, sel):
         scope = self.state.scope.get(sel)
@@ -618,8 +723,54 @@ class Workbench(QWidget):
     # ---- phenotypes --------------------------------------------------------------------------
 
     def _selected_phenotype(self):
-        items = self.pheno_tree.selectedItems()
-        return items[0].data(0, Qt.UserRole) if items else None
+        """The selected phenotype when exactly one is selected (for Edit, and as the
+        parent of a new one)."""
+        names = self.selected_phenotypes()
+        return names[0] if len(names) == 1 else None
+
+    def selected_phenotypes(self):
+        """Every selected phenotype, in tree order."""
+        chosen = {id(i) for i in self.pheno_tree.selectedItems()}
+        out = []
+        it = QTreeWidgetItemIterator(self.pheno_tree)
+        while it.value():
+            if id(it.value()) in chosen:
+                out.append(it.value().data(0, Qt.UserRole))
+            it += 1
+        return out
+
+    def select_phenotypes(self, names):
+        """Select these phenotypes in the list, which shows them on the image (also used
+        by tests and scripts)."""
+        wanted = set(names)
+        self.pheno_tree.blockSignals(True)
+        it = QTreeWidgetItemIterator(self.pheno_tree)
+        while it.value():
+            it.value().setSelected(it.value().data(0, Qt.UserRole) in wanted)
+            it += 1
+        self.pheno_tree.blockSignals(False)
+        self._phenotype_selected()
+
+    def _phenotype_buttons(self):
+        names = self.selected_phenotypes()
+        self.pheno_edit_btn.setEnabled(len(names) == 1)
+        self.pheno_delete_btn.setEnabled(bool(names))
+
+    def _phenotype_selected(self):
+        """Selecting phenotypes shows their objects on the image, as selecting gates
+        does: each in its colour, objects in more than one in white."""
+        self._phenotype_buttons()
+        names = self.selected_phenotypes()
+        if not names or self._filling:
+            return
+        self._clear_selection(self.gate_tree)
+        broken = self.state.broken_phenotypes()
+        if broken:
+            self.status.setText("Not shown on the image: fix the phenotypes whose rules use missing "
+                                "columns first (" + ", ".join(sorted(broken)) + ").")
+            return
+        self.status.clear()
+        self._map_gate([("phenotype", n) for n in names])
 
     def _add_phenotype(self, name, rule, parent, color):
         try:
@@ -653,9 +804,11 @@ class Workbench(QWidget):
                 self.status.setText(str(e))
 
     def delete_phenotype(self):
-        name = self._selected_phenotype()
-        if name:
-            removed = self.state.remove_phenotype(name)
+        removed = []
+        for name in self.selected_phenotypes():
+            if name in self.state.tree:  # not already removed with its parent
+                removed += self.state.remove_phenotype(name)
+        if removed:
             self.status.setText("Removed " + ", ".join(removed) + ".")
 
     def show_phenotypes(self):
@@ -982,12 +1135,6 @@ def _population_color(state, kind, key):
     if kind == "phenotype":
         return state.tree.get(key).color or "#1f77b4"
     return "#1f77b4"
-
-
-def _to_world(layer, vertices):
-    """Shapes-layer vertices (data coordinates) in world coordinates (Y, X)."""
-    v = np.asarray(vertices, float)[:, -2:]
-    return v * np.asarray(layer.scale[-2:], float) + np.asarray(layer.translate[-2:], float)
 
 
 def _screen_size(widget=None):
