@@ -176,6 +176,7 @@ class ClusteringTab(QWidget):
         self.features.clear()
         for f in state.measured_features() if state.table is not None else []:
             item = QListWidgetItem(f)
+            item.setToolTip(f)
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             on = f in checked or (first and f.endswith(INTENSITY_STATS[:1]))
             item.setCheckState(Qt.Checked if on else Qt.Unchecked)
@@ -333,12 +334,15 @@ class ClusteringTab(QWidget):
         profiles = state.profiles(name)
         self.heatmap.show(profiles["z"], profiles["counts"])
         counts, desc = profiles["counts"], profiles["description"]
+        short_desc = _short_markers(profiles["z"])
         self.table.setRowCount(len(counts))
         for r, cluster in enumerate(counts.index):
             cells = [str(cluster), f"{int(counts.loc[cluster, 'objects']):,} ({100 * counts.loc[cluster, 'fraction']:.1f}%)",
-                     desc[cluster], ""]
+                     short_desc.get(cluster, desc[cluster]), ""]
             for c, text in enumerate(cells):
                 item = QTableWidgetItem(text)
+                if c == 2:
+                    item.setToolTip(desc[cluster])  # the full feature names
                 if c < 3:
                     item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                 if c == 0:
@@ -391,7 +395,9 @@ class ClusteringTab(QWidget):
 
 
 class Heatmap(QWidget):
-    """Clusters x features, z-score of each cluster's mean, with cluster sizes."""
+    """Clusters x features, z-score of each cluster's mean, with cluster sizes. Feature
+    names are shortened to fit (`_cyto_labels.short_names`); hovering a label shows the
+    full name."""
 
     def __init__(self):
         super().__init__()
@@ -402,16 +408,30 @@ class Heatmap(QWidget):
         self.canvas = FigureCanvasQTAgg(self.figure)
         QVBoxLayout(self).addWidget(self.canvas)
         self.layout().setContentsMargins(0, 0, 0, 0)
+        self.labels = {}  # short label -> full name, for the tooltips
+        self._ticks = []
+        self.canvas.mpl_connect("motion_notify_event", self._hover)
 
     def show(self, z, counts=None):
+        from ._cyto_labels import short_names
+
         self.figure.clf()
+        self._ticks = []
         if z is None or z.empty:
+            self.labels = {}
             self.canvas.draw_idle()
             return
         ax = self.figure.add_subplot(111)
         im = ax.imshow(z.to_numpy(float), aspect="auto", cmap="RdBu_r", vmin=-2, vmax=2,
                        interpolation="nearest")
-        ax.set_xticks(range(z.shape[1]), [str(c) for c in z.columns], rotation=45, ha="right", fontsize=7)
+        names = [str(c) for c in z.columns]
+        short = short_names(names)
+        self.labels = {short[n]: n for n in names}
+        n = len(names)
+        size = 7 if n <= 12 else 6 if n <= 24 else 5
+        ax.set_xticks(range(n), [short[c] for c in names], rotation=45 if n <= 12 else 90,
+                      ha="right" if n <= 12 else "center", fontsize=size)
+        self._ticks = list(zip(ax.get_xticklabels(), names))
         labels = [f"{c} ({int(counts.loc[c, 'objects'])})" if counts is not None else str(c) for c in z.index]
         ax.set_yticks(range(z.shape[0]), labels, fontsize=7)
         for tick, c in zip(ax.get_yticklabels(), z.index):
@@ -419,6 +439,31 @@ class Heatmap(QWidget):
         ax.set_ylabel("cluster (objects)", fontsize=8)
         self.figure.colorbar(im, ax=ax, label="z-score of mean", shrink=0.8)
         self.canvas.draw_idle()
+
+    def full_name(self, x, y):
+        """The full feature name of the label under canvas point (x, y), or None."""
+        renderer = self.canvas.get_renderer()
+        for tick, name in self._ticks:
+            if tick.get_window_extent(renderer).contains(x, y):
+                return name
+        return None
+
+    def _hover(self, event):
+        name = self.full_name(event.x, event.y) if event.x is not None else None
+        self.canvas.setToolTip(name or "")
+
+
+def _short_markers(z):
+    """{cluster: markers text} with the features' short labels (vtea-core's
+    describe_clusters on the renamed profile)."""
+    from vtea_core.clustering import describe_clusters
+
+    from ._cyto_labels import short_names
+
+    try:
+        return describe_clusters(z.rename(columns=short_names([str(c) for c in z.columns])))
+    except Exception:  # fall back to the full names
+        return {}
 
 
 def _add_methods(box, methods):

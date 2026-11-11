@@ -219,7 +219,7 @@ cyto.refresh()
 print("cyto:", cyto.status.text(), flush=True)
 pump(0.5)
 bench = cyto.open_workbench()
-bench.resize(1300, 820)
+bench.fit_to_screen((1600, 1000))  # as it opens on a 1600 x 1000 screen
 from ibif_napari import _cytometry as cy  # noqa: E402
 
 state = cy.state_of(viewer)

@@ -674,9 +674,20 @@ the gates and the phenotype hierarchy on the right.*
 - **Gate on image…** lets you draw regions on the image instead (for example a tumour
   region); an object is inside when its centre is inside a region.
 - Click a point to go to that object in the viewer.
+- **Points** (on the plot's toolbar, or right-click the plot) sets the **size**, **style**
+  (dot, square, diamond, triangle, plus, cross, pixel) and **opacity** of the points. Small,
+  semi-transparent points show where dense populations overlap; large ones suit a few hundred
+  objects.
 - As soon as a gate is drawn (on the plot or the image) its objects are coloured on their
-  segmented pixels in the image, in a layer named after them (e.g. *cells selection*). Selecting a gate in
-  the **Gates** list shows that gate instead.
+  segmented pixels in the image, in a layer named after them (e.g. *cells selection*).
+  Selecting a gate in the **Gates** list shows that gate instead. **Ctrl-click** (or
+  Shift-click) to select **several gates**: each is shown in its own colour, and objects in
+  more than one of them in white; the status line gives the counts. **Delete** removes every
+  selected gate; **Make phenotype…** and **Rename…** work on one.
+
+The workbench opens as large as fits on your screen, with a 4:3 plot and the gate and
+phenotype lists beside it at about half the plot's width. Drag the divider between them to
+change that; the plot keeps its 4:3 shape.
 
 Set gates using controls: draw the *negative* gate on cells or regions known to lack the
 marker, and use fluorescence-minus-one or secondary-only controls to decide where
@@ -694,9 +705,9 @@ phenotype it belongs **within**. Or click **Add…** and write a rule, for examp
 A phenotype with an empty rule is "the rest of its parent" (for example *Other T*). The tree
 shows each phenotype's number of objects and its percentage of the parent.
 
-**Show phenotypes on image** (in the panel or the workbench) colours every object by its
-phenotype; **Level** chooses the level of the hierarchy. **Export table…** writes every object
-with its gates, phenotype and phenotype path, as CSV or Excel.
+**Show phenotypes on image** (in the panel; **Show on image** in the workbench) colours every
+object by its phenotype; **Level** chooses the level of the hierarchy. **Export…** writes every
+object with its gates, phenotype and phenotype path, as CSV or Excel.
 
 ![Phenotypes shown on the image](images/10_phenotypes_image.png)
 
@@ -748,6 +759,12 @@ cluster) and a table of each cluster's size and markers (for example *CD3 mean+ 
 mean+*). Type a **phenotype name** next to clusters and click **Make phenotypes**; clusters
 given the same name are merged. **Plot the map** puts the map on the Gating tab, where you
 can gate on it, and **Show clusters on image** colours the objects by cluster.
+
+Long feature names are shortened on the heat map and in the markers so that they fit: the
+text every name shares (usually the file name) is dropped, the objects' layer and the
+statistic are abbreviated, and a long dye name keeps its first and last words, for example
+*cells: Sample_01 Alexa Fluor 647 mean* becomes *Cell Alexa 647 mean* and *nuclei: volume (µm³)*
+becomes *Nuc vol*. Hover over a label (or a marker cell) to see the full name.
 
 > Clustering always produces clusters, even in data with no real structure. Check that
 > clusters make biological sense: look at them on the image, compare their markers with known

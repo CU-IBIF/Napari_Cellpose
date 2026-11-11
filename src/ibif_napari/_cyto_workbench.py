@@ -31,12 +31,13 @@ from qtpy.QtWidgets import (
     QTabWidget,
     QTreeWidget,
     QTreeWidgetItem,
+    QTreeWidgetItemIterator,
     QVBoxLayout,
     QWidget,
 )
 
 from . import _cytometry as cy
-from ._cyto_plot import ScatterPlot
+from ._cyto_plot import ASPECT, ScatterPlot
 
 IMAGE_GATE_LAYER = "Cytometry image gate"
 COLOR_POPULATION, COLOR_PHENOTYPE = "Population", "Phenotype"
@@ -48,7 +49,6 @@ class Workbench(QWidget):
         self.viewer = viewer
         self.state = cy.state_of(viewer)
         self.setWindowTitle("Cytometry workbench")
-        self.resize(1150, 720)
         self._image_layer = None
         self._watched = None
         self._filling = False
@@ -78,6 +78,7 @@ class Workbench(QWidget):
         self.color_by = QComboBox()
         row.addWidget(self.color_by, 2)
         g_layout.addLayout(row)
+        self._top_row = row
 
         split = QSplitter(Qt.Horizontal)
         g_layout.addWidget(split, 1)
@@ -104,6 +105,7 @@ class Workbench(QWidget):
         self.status.setWordWrap(True)
         left_layout.addWidget(self.status)
         split.addWidget(left)
+        self._left = left
 
         right = QWidget()
         right_layout = QVBoxLayout(right)
@@ -111,6 +113,9 @@ class Workbench(QWidget):
         gates_box = QGroupBox("Gates")
         gl = QVBoxLayout(gates_box)
         self.gate_tree = _tree(["Gate", "Objects", "% of parent"])
+        self.gate_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.gate_tree.setToolTip("Select gates to show them on the image; Ctrl- or Shift-click "
+                                  "to show several at once")
         self.gate_tree.itemSelectionChanged.connect(self._gate_selected)
         gl.addWidget(self.gate_tree)
         gb = QHBoxLayout()
@@ -137,15 +142,25 @@ class Workbench(QWidget):
         self.level.setToolTip("Hierarchy level to colour by (deepest = the most specific phenotype)")
         pb2.addWidget(QLabel("Level"))
         pb2.addWidget(self.level)
-        _button("Show phenotypes on image", self.show_phenotypes, pb2)
-        _button("Export table…", self.export_table, pb2)
+        _button("Show on image", self.show_phenotypes, pb2).setToolTip(
+            "Colour every object on the image by its phenotype at this level")
+        _button("Export…", self.export_table, pb2).setToolTip(
+            "Export every object with its gates, phenotype and path (CSV or Excel)")
         pl.addLayout(pb2)
         right_layout.addWidget(pheno_box, 1)
         split.addWidget(right)
-        split.setSizes([700, 450])
+        split.setStretchFactor(0, 2)  # the side panels stay about half the plot's width
+        split.setStretchFactor(1, 1)
+        split.setChildrenCollapsible(False)
+        self.split, self.side = split, right
 
         for w in (self.population, self.x_col, self.y_col, self.color_by):
             w.currentIndexChanged.connect(self.replot)
+            # Long feature names must not widen the window: the box shows about 18
+            # characters, its list the whole name, and its tooltip the current one.
+            w.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+            w.setMinimumContentsLength(14)
+            w.currentTextChanged.connect(lambda text, box=w: box.setToolTip(text))
         for w in (self.x_tf, self.y_tf):
             w.currentIndexChanged.connect(self.replot)
         self.plot.on_pick(self.go_to_row)
@@ -155,6 +170,38 @@ class Workbench(QWidget):
         self.tabs.addTab(self.clustering, "Clustering")
         self.state.listen(self.refresh)
         self.refresh()
+        self.fit_to_screen()
+
+    def fit_to_screen(self, available=None):
+        """Size the window for a 4:3 plot with side panels about half its width: as large
+        as fits on the screen (92% x 88% of its available area), but never so small that
+        the controls are squeezed. `available` = (width, height) in pixels, default the
+        screen of the napari window. Returns (plot width, side width)."""
+        if available is None:
+            available = _screen_size(self.parentWidget())
+        max_w, max_h = int(available[0] * 0.92), int(available[1] * 0.88)
+        self.layout().activate()
+        side_min = max(self.side.minimumSizeHint().width(), 260)
+        controls_w = self.tabs.minimumSizeHint().width()  # the Show / X / Y / Colour row
+        # Height of everything in the plot's column that is not the plot: the row above
+        # it, the plot toolbar, the gate buttons and status below, the tab bar, margins.
+        # (The side tables shrink and scroll, so they do not count.)
+        line = self.status.fontMetrics().lineSpacing()
+        chrome_h = (self._top_row.sizeHint().height() + self.plot.toolbar.sizeHint().height()
+                    + self.rect_btn.sizeHint().height() + 2 * line
+                    + self.tabs.tabBar().sizeHint().height() + 48)
+        chrome_w = 36
+        plot_w = min((max_w - chrome_w) / 1.5, (max_h - chrome_h) * ASPECT)
+        plot_w = int(max(plot_w, 480))
+        side_w = max(plot_w // 2, side_min)
+        min_w = min(max(side_min + 480 + chrome_w, controls_w), max_w)
+        min_h = min(int(480 / ASPECT) + chrome_h, max_h)
+        self.setMinimumSize(min_w, min_h)
+        width = max(min(plot_w + side_w + chrome_w, max_w), min_w)
+        height = max(min(int(plot_w / ASPECT) + chrome_h, max_h), min_h)
+        self.resize(width, height)
+        self.split.setSizes([plot_w, side_w])
+        return plot_w, side_w
 
     # ---- refreshing ----------------------------------------------------------------------
 
@@ -193,7 +240,7 @@ class Workbench(QWidget):
 
     def _fill_gate_items(self):
         state, tree = self.state, self.gate_tree
-        selected = self._selected_gate()
+        selected = set(self.selected_gates())
         tree.clear()
         if state.table is None:
             return
@@ -219,7 +266,7 @@ class Workbench(QWidget):
             parent = items.get(tuple(parent_item)) if parent_item and parent_item[0] != "phenotype" else None
             (parent.addChild(item) if parent is not None else tree.addTopLevelItem(item))
             items[(kind, key)] = item
-            if selected == (kind, key):
+            if (kind, key) in selected:
                 item.setSelected(True)
         tree.expandAll()
         for c in range(3):
@@ -400,36 +447,67 @@ class Workbench(QWidget):
         return name
 
     def _selected_gate(self):
-        items = self.gate_tree.selectedItems()
-        return tuple(items[0].data(0, Qt.UserRole)) if items else None
+        """The selected gate when exactly one is selected (for Make phenotype, Rename)."""
+        gates = self.selected_gates()
+        return gates[0] if len(gates) == 1 else None
+
+    def selected_gates(self):
+        """Every selected gate, in list order."""
+        chosen = {id(i) for i in self.gate_tree.selectedItems()}
+        out = []
+        it = QTreeWidgetItemIterator(self.gate_tree)
+        while it.value():
+            if id(it.value()) in chosen:
+                out.append(tuple(it.value().data(0, Qt.UserRole)))
+            it += 1
+        return out
+
+    def select_gates(self, items):
+        """Select these gates (kind, key) in the list (also used by tests and scripts)."""
+        wanted = {tuple(i) for i in items}
+        self.gate_tree.blockSignals(True)
+        it = QTreeWidgetItemIterator(self.gate_tree)
+        while it.value():
+            it.value().setSelected(tuple(it.value().data(0, Qt.UserRole)) in wanted)
+            it += 1
+        self.gate_tree.blockSignals(False)
+        self._gate_selected()
 
     def _gate_selected(self):
-        sel = self._selected_gate()
-        for b in (self.gate_pheno_btn, self.gate_rename_btn, self.gate_delete_btn):
-            b.setEnabled(sel is not None)
-        if sel is not None and not self._filling:
-            self._map_gate(sel)
+        gates = self.selected_gates()
+        self.gate_pheno_btn.setEnabled(len(gates) == 1)
+        self.gate_rename_btn.setEnabled(len(gates) == 1)
+        self.gate_delete_btn.setEnabled(bool(gates))
+        if gates and not self._filling:
+            self._map_gate(gates)
 
     def _map_gate(self, sel):
-        """Colour the gate's objects on their segmented pixels in the image (the
-        "<objects> selection" layer), keeping the status message."""
-        text = self.status.text()
+        """Colour the objects of one gate (kind, key) or several [(kind, key), ...] on
+        their segmented pixels in the image (the "<objects> selection" layer), each gate
+        in its colour; objects in more than one selected gate are white."""
+        items = [sel] if sel and not isinstance(sel[0], (tuple, list)) else list(sel)
+        text = self.status.text() if len(items) == 1 else ""
         try:
-            layer = self.state.show_population(*sel)
+            layer, counts, several = self.state.show_populations(items)
         except (ValueError, KeyError) as e:
             self.status.setText(f"{text} Not shown on the image: {e}".strip())
             return None
-        n = int(self.state.mask(*sel).sum())
-        self.status.setText(f"{text} Shown on the image in {layer.name} ({n:,} objects).".strip()
-                            if text else f"{n:,} objects shown on the image in {layer.name}.")
+        if len(items) == 1:
+            n = next(iter(counts.values()))
+            self.status.setText(f"{text} Shown on the image in {layer.name} ({n:,} objects).".strip()
+                                if text else f"{n:,} objects shown on the image in {layer.name}.")
+        else:
+            parts = ", ".join(f"{self._gate_name(i)} {n:,}" for i, n in counts.items())
+            extra = f"; {several:,} in more than one (white)" if several else ""
+            self.status.setText(f"{len(items)} gates shown on the image in {layer.name}: {parts}{extra}.")
         return layer
 
     def show_gate(self):
-        """Show the selected gate's objects on the image (also done when it is selected)."""
-        sel = self._selected_gate()
-        if sel:
+        """Show the selected gates' objects on the image (also done when they are selected)."""
+        gates = self.selected_gates()
+        if gates:
             self.status.clear()
-            self._map_gate(sel)
+            self._map_gate(gates)
 
     def phenotype_from_gate(self, name=None, parent=None):
         sel = self._selected_gate()
@@ -464,13 +542,15 @@ class Workbench(QWidget):
                 self.status.setText(str(e))
 
     def delete_gate(self):
-        sel = self._selected_gate()
-        if sel:
+        for sel in self.selected_gates():
+            if sel[0] == "gate" and sel[1] not in self.state.gates or \
+                    sel[0] == "image" and sel[1] not in self.state.image_gates:
+                continue  # removed with its parent gate already
             self.state.remove_gate(*sel)
-            broken = self.state.broken_phenotypes()
-            if broken:
-                self.status.setText("These phenotypes used the deleted gate and need a new rule: "
-                                    + ", ".join(broken))
+        broken = self.state.broken_phenotypes()
+        if broken:
+            self.status.setText("These phenotypes used the deleted gates and need a new rule: "
+                                + ", ".join(broken))
 
     # ---- phenotypes --------------------------------------------------------------------------
 
@@ -730,6 +810,18 @@ def _to_world(layer, vertices):
     """Shapes-layer vertices (data coordinates) in world coordinates (Y, X)."""
     v = np.asarray(vertices, float)[:, -2:]
     return v * np.asarray(layer.scale[-2:], float) + np.asarray(layer.translate[-2:], float)
+
+
+def _screen_size(widget=None):
+    """(width, height) of the available area of the screen `widget` is on."""
+    from qtpy.QtWidgets import QApplication
+
+    handle = widget.windowHandle() if widget is not None else None
+    screen = (handle.screen() if handle is not None else None) or QApplication.primaryScreen()
+    if screen is None:
+        return 1400, 900
+    geometry = screen.availableGeometry()
+    return geometry.width(), geometry.height()
 
 
 _workbenches = {}
