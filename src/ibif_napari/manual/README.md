@@ -737,8 +737,13 @@ distinguish them. The three clusters match the gated populations: CD3⁻CD8⁻ (
   - **k-means, best k** tries 2…k and keeps the best by the Bayesian information criterion
     (BIC; Schwarz 1978).
 - **Seed**: the same seed gives the same result, which makes a run reproducible.
+- **Reproducible map (slower)**, for UMAP. Ticked, the same seed gives exactly the same map,
+  but UMAP then runs on a single core. Unticked (the default), it uses every core, several
+  times faster (on 50,000 objects and 4 cores, 10 s instead of 46 s), and the layout of the
+  map varies a little from run to run. The clusters do not depend on it. Tick it for a
+  figure you need to reproduce exactly.
 
-Click **Run**. The results show a heat map (the z-score of each feature's mean in each
+Click **Run**. The status line gives the time the run took. The results show a heat map (the z-score of each feature's mean in each
 cluster) and a table of each cluster's size and markers (for example *CD3 mean+ CD8
 mean+*). Type a **phenotype name** next to clusters and click **Make phenotypes**; clusters
 given the same name are merged. **Plot the map** puts the map on the Gating tab, where you
@@ -747,6 +752,14 @@ can gate on it, and **Show clusters on image** colours the objects by cluster.
 > Clustering always produces clusters, even in data with no real structure. Check that
 > clusters make biological sense: look at them on the image, compare their markers with known
 > cell types, and check that they are stable with a different **Seed** or **Resolution**.
+
+**Speed.** Leiden and Louvain search each object's neighbours once, on every core, and UMAP
+reuses that search. Leiden runs on igraph's fast implementation (about 1 s for 50,000
+objects). It maximises modularity at least as well as the older leidenalg route, which on a
+small table of very uniform populations can split one population into two clusters: lower
+**Resolution**, or give both clusters the same phenotype name. t-SNE uses openTSNE, which uses
+every core. UMAP is compiled in the background when the workbench opens, so the first map
+does not wait for it.
 
 Everything (gates, phenotypes, clustering results) is saved with the workspace. Phenotypes are
 saved as rules, so the same tree can be applied to the next sample.

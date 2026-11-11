@@ -235,8 +235,10 @@ def test_clustering_tab(qtbot):
     tab.map.setCurrentIndex(tab.map.findData("pca"))
     tab.method.setCurrentIndex(tab.method.findData("kmeans"))
     tab.k.setValue(3)
+    assert not tab.reproducible.isEnabled()  # a UMAP option
     info = tab.run(wait=True)
     assert info is not None and tab.analysis.currentText() == "Clustering 1"
+    assert "s)." in tab.status.text() and info["seconds"] >= 0 and info["reproducible"] is False
     assert tab.table.rowCount() == 3 and "+" in tab.table.item(0, 2).text()
     assert tab.name.text() == "Clustering 2"  # ready for the next run
     profiles = cy.state_of(v).profiles("Clustering 1")
@@ -253,6 +255,56 @@ def test_clustering_tab(qtbot):
     tab.map.setCurrentIndex(tab.map.findData(None))
     tab.k.setValue(2)
     assert tab.run(wait=True)["n_objects"] == 80
+
+
+def test_fast_routes_share_one_neighbour_search(monkeypatch):
+    """Leiden and UMAP together search the neighbours once; Leiden gives the same
+    clusters as the slower reference; a non-reproducible map runs (on every core);
+    an older vtea-core without the fast routes still works."""
+    pytest.importorskip("igraph")
+    pytest.importorskip("umap")
+    from sklearn.metrics import adjusted_rand_score
+    from vtea_core import clustering as cl
+
+    if not cy._fast_vtea():
+        pytest.skip("vtea-core without nearest_neighbors")
+    table, kind = cell_types()
+    m = np.arcsinh(table[["CD3 mean", "CD8 mean", "CD4 mean"]].to_numpy() / cy.ASINH_COFACTOR)
+    calls = []
+    real = cl.nearest_neighbors
+    monkeypatch.setattr(cl, "nearest_neighbors", lambda *a, **k: calls.append(1) or real(*a, **k))
+    labels, emb = cy.compute_analysis(m, "umap", "leiden", seed=0)
+    assert len(calls) == 1 and emb.shape == (len(m), 2)
+    # Every cluster is one cell type (igraph's Leiden may split a large uniform type in
+    # two at resolution 1: that partition has the higher modularity); at a lower
+    # resolution the three types come out exactly.
+    from sklearn.metrics import homogeneity_score
+
+    assert homogeneity_score(kind, labels) == pytest.approx(1.0)
+    low, _ = cy.compute_analysis(m, None, "leiden", seed=0, resolution=0.5)
+    assert adjusted_rand_score(kind, low) == pytest.approx(1.0)
+    again = cy.compute_analysis(m, "umap", None, seed=0)[1]
+    np.testing.assert_allclose(emb, again)  # reproducible: same seed, same map
+    labels2, fast = cy.compute_analysis(m, "umap", "leiden", seed=0, reproducible=False)
+    assert fast.shape == emb.shape and np.isfinite(fast).all()
+    np.testing.assert_array_equal(labels, labels2)  # clusters do not depend on the map
+    monkeypatch.setattr(cy, "_fast_vtea", lambda: False)
+    before = len(calls)
+    old, _ = cy.compute_analysis(m, None, "leiden", seed=0, resolution=0.5)
+    assert adjusted_rand_score(kind, old) == pytest.approx(1.0) and len(calls) == before
+
+
+def test_umap_warm_up(monkeypatch):
+    pytest.importorskip("umap")
+    monkeypatch.delenv("IBIF_NAPARI_NO_WARMUP", raising=False)
+    monkeypatch.setitem(cy._warmed, "umap", False)
+    thread = cy.warm_up()
+    assert thread is not None and cy.warm_up() is None  # once per session
+    thread.join(120)
+    assert not thread.is_alive()
+    monkeypatch.setenv("IBIF_NAPARI_NO_WARMUP", "1")
+    monkeypatch.setitem(cy._warmed, "umap", False)
+    assert cy.warm_up() is None and not cy._warmed["umap"]
 
 
 def test_measuring_makes_the_objects_available_in_cytometry(qtbot):
