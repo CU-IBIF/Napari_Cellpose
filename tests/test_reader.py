@@ -4,10 +4,11 @@ import pytest
 from ibif_napari._reader import layer_data, napari_get_reader
 
 
-def test_get_reader_only_accepts_nd2():
+def test_get_reader_accepts_microscope_files_and_tiff():
     assert napari_get_reader("a.nd2") is not None
     assert napari_get_reader(["a.ND2"]) is not None
-    assert napari_get_reader("a.tif") is None
+    assert napari_get_reader("a.tif") is not None and napari_get_reader("a.ome.tiff") is not None
+    assert napari_get_reader("a.png") is None
     assert napari_get_reader(["a.nd2", "b.nd2"]) is None
 
 

@@ -232,9 +232,10 @@ def _find_source(entry, folder):
     return None
 
 
-def _open_source(path, selection=None):
+def _open_source(path, selection=None, tiff_layout=None):
     """{layer name: (data, kwargs, type)} for every layer a file opens as, one per channel.
-    `selection` = (scene indices, stacked) reopens the same images of a LIF project."""
+    `selection` = (scene indices, stacked) reopens the same images of a LIF project or
+    TIFF; `tiff_layout` the dimension order a TIFF was opened with (not asked again)."""
     from napari.layers.utils.stack_utils import split_channels
 
     from ._reader import napari_get_reader
@@ -249,6 +250,12 @@ def _open_source(path, selection=None):
             return list(range(len(scenes))), False
 
         layer_data = read_lif(path, choose=choose)
+    elif suffix in (".tif", ".tiff", ".btf"):
+        from ._tiff import read_tiff
+
+        layer_data = read_tiff(path, layout=tiff_layout, selection=selection,
+                               ask=lambda info: info.layout, choose=lambda title, scenes: (
+                                   list(range(len(scenes))), False))
     elif napari_get_reader(path) is not None:
         layer_data = napari_get_reader(path)(path)
     else:
@@ -322,10 +329,11 @@ def load_workspace(viewer, path, replace=True):
                 meta = entry.get("metadata", {})
                 selection = (tuple(meta["ibif_scenes"]), bool(meta.get("ibif_stacked"))) \
                     if meta.get("ibif_scenes") is not None else None
-                key = (src, selection)
+                layout = meta.get("ibif_tiff_layout")
+                key = (src, selection, json.dumps(layout, sort_keys=True))
                 if key not in sources:
                     try:
-                        sources[key] = _open_source(src, selection)
+                        sources[key] = _open_source(src, selection, layout)
                     except Exception as e:  # unreadable: fall back to a copy below
                         sources[key] = {}
                         notes.append(f"could not open {src}: {e}")

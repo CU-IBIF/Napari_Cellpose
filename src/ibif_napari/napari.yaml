@@ -4,7 +4,10 @@ contributions:
   commands:
     - id: ibif-napari.get_reader
       python_name: ibif_napari._reader:napari_get_reader
-      title: Open Nikon ND2 / Zeiss CZI / Leica LIF
+      title: Open Nikon ND2 / Zeiss CZI / Leica LIF / TIFF
+    - id: ibif-napari.get_tiff_reader_ask
+      python_name: ibif_napari._tiff:napari_get_reader_ask
+      title: Open TIFF, choosing the dimension order
     - id: ibif-napari.panel
       python_name: ibif_napari._panel:IbifPanel
       title: IBIF napari
@@ -34,7 +37,10 @@ contributions:
       title: Open IBIF workspace
   readers:
     - command: ibif-napari.get_reader
-      filename_patterns: ["*.nd2", "*.czi", "*.lif"]
+      filename_patterns: ["*.nd2", "*.czi", "*.lif", "*.tif", "*.tiff", "*.btf"]
+      accepts_directories: false
+    - command: ibif-napari.get_tiff_reader_ask
+      filename_patterns: ["*.tif", "*.tiff", "*.btf"]
       accepts_directories: false
     - command: ibif-napari.get_workspace_reader
       filename_patterns: ["*.ibif"]

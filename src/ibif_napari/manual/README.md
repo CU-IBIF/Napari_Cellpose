@@ -188,7 +188,8 @@ Useful napari basics:
 
 ## 5. Opening your images
 
-IBIF napari reads **Nikon ND2**, **Zeiss CZI** and **Leica LIF** files directly. Drag a file onto
+IBIF napari reads **Nikon ND2**, **Zeiss CZI**, **Leica LIF** and **TIFF** files (multipage,
+ImageJ hyperstacks, OME-TIFF; see [5.1](#51-tiff-files-in-any-order-of-dimensions)) directly. Drag a file onto
 the window, use **File > Open**, or give it on the command line. Files load *lazily*: only
 the planes you look at are read, so even large time lapses open quickly.
 
@@ -217,6 +218,35 @@ When a file opens:
 
 If another installed plugin can also read CZI or LIF files, napari asks which reader to
 use; choose **IBIF napari**.
+
+### 5.1 TIFF files in any order of dimensions
+
+A TIFF is a pile of 2D planes. How those planes make up slices (Z), channels (C), time
+points (T) and positions (P) is written in the file when it was saved by ImageJ / Fiji (a
+*hyperstack*), as OME-TIFF, or by Python's tifffile, and IBIF napari then opens it
+straight away: each channel its own layer, with the channel names (e.g. the dye names an
+Olympus file carries), colours, display ranges, voxel size and time step.
+
+A plain multipage TIFF does not say how its planes are arranged. IBIF napari then asks:
+
+![Choosing the dimension order of a TIFF](images/15_tiff_dimensions.png)
+
+- **Dimension order** lists the dimensions from the **fastest** changing to the slowest, as
+  in ImageJ and Bio-Formats. *XYCZT* means the planes go channel 1, channel 2, … of the first
+  slice, then the channels of the next slice, and the time points last; *XYZCT* means all
+  slices of channel 1, then all slices of channel 2. Write it any way you like: *XY-Z-C-T*,
+  *xyzct*. X and Y need not come first: *CXYZT* is channels interleaved pixel by pixel.
+- Give the **sizes**. The one you have not typed is worked out from the others, and the
+  dialog checks that the sizes account for every value in the file (green tick).
+
+If the file's own description is wrong (a stack saved with channels and slices mixed up),
+open it with **File > Open with plugin > IBIF napari: Open TIFF, choosing the dimension
+order**: the dialog is then always shown, starting from what the file says. When napari
+asks which reader to use for a TIFF, choose **IBIF napari** (*Open Nikon ND2 / Zeiss CZI /
+Leica LIF / TIFF*) and tick *remember* to always use it.
+
+A saved workspace remembers the order a TIFF was opened with and reopens it the same way.
+Large TIFFs (over 1 GB) are read plane by plane, like the microscope formats.
 
 ---
 
