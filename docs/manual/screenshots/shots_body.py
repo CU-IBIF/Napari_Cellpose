@@ -94,6 +94,22 @@ chooser.show()
 snap("02_lif_chooser", chooser)
 chooser.close()
 
+# the dimension order of a plain multipage TIFF (24 planes: 4 Z x 3 C x 2 T)
+import tempfile  # noqa: E402
+
+import tifffile  # noqa: E402
+
+from ibif_napari import _tiff  # noqa: E402
+from ibif_napari._tiff_dialog import DimensionOrderDialog  # noqa: E402
+
+_plain = Path(tempfile.mkdtemp()) / "plain.tif"
+tifffile.imwrite(_plain, np.zeros((24, 64, 80), np.uint16), metadata=None)
+dims_dialog = DimensionOrderDialog(_tiff.inspect(_plain)[0])
+dims_dialog.show()
+dims_dialog.set_order("XY-Z-C-T", Z=4, C=3)
+snap("15_tiff_dimensions", dims_dialog)
+dims_dialog.close()
+
 # icon bar close-up
 snap("03_panel", dock)
 

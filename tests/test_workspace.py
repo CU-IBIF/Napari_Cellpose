@@ -189,3 +189,24 @@ def test_lif_image_reopens_without_asking(tmp_path):
     assert _workspace.load_workspace(w, folder) == []
     assert [l.name for l in w.layers] == ["project Red"]
     assert np.array_equal(np.asarray(w.layers["project Red"].data), np.asarray(v.layers["project Red"].data))
+
+
+def test_tiff_reopens_with_its_dimension_order(tmp_path):
+    """A plain multipage TIFF opened with a chosen order (XY-Z-C-T) reopens the same way,
+    without asking again."""
+    import tifffile
+
+    from ibif_napari._tiff import Layout, read_tiff
+
+    czyx = np.arange(2 * 3 * 8 * 8, dtype=np.uint16).reshape(2, 3, 8, 8)  # C Z Y X
+    src = tmp_path / "plain.tif"
+    tifffile.imwrite(src, czyx.reshape(6, 8, 8), metadata=None)  # planes: all Z of C1, then C2
+    v = ViewerModel()
+    for ld in read_tiff(src, layout=Layout.parse("XY-Z-C", {"X": 8, "Y": 8, "Z": 3, "C": 2})):
+        v._add_layer_from_data(*ld)
+    assert [l.data.shape for l in v.layers] == [(3, 8, 8), (3, 8, 8)]
+    folder, _ = _workspace.save_workspace(v, tmp_path / "w")
+    w = ViewerModel()
+    assert _workspace.load_workspace(w, folder) == []
+    assert [l.name for l in w.layers] == [l.name for l in v.layers]
+    assert np.array_equal(np.asarray(w.layers[1].data), czyx[1])

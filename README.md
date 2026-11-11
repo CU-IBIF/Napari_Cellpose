@@ -84,9 +84,16 @@ Cellpose from a [facility GPU server](docs/facility-server.md) or a
 Everything else is ordinary napari. Plugins install and run as usual from
 **Plugins > Install/Uninstall Plugins**, and this package is itself a normal napari
 plugin. You can open the whole panel (**IBIF napari**) or any single section from **Plugins > IBIF napari** in any napari, and
-`napari file.nd2` / `.czi` / `.lif` use our readers. If another installed plugin can
-also read CZI or LIF (e.g. napari-aicsimageio), napari asks which to use and can remember the
+`napari file.nd2` / `.czi` / `.lif` / `.tif` use our readers. If another installed plugin can
+also read the format (napari itself reads TIFF), napari asks which to use and can remember the
 choice.
+
+**TIFF in any order of dimensions.** ImageJ hyperstacks, OME-TIFF and tifffile TIFFs open
+with their channels split into layers, named and coloured, at their voxel size. A plain
+multipage TIFF asks for the dimension order, fastest first as in Bio-Formats (`XYCZT`,
+`XY-Z-C-T`, even `CXYZT` for pixel-interleaved channels), and the sizes. **Open with plugin >
+IBIF napari: Open TIFF, choosing the dimension order** always asks, for files whose metadata
+is wrong.
 
 ## Install
 

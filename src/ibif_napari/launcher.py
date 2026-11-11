@@ -20,7 +20,7 @@ PLUGIN = "ibif-napari"
 
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="ibif-napari", description=__doc__.splitlines()[0])
-    parser.add_argument("files", nargs="*", help="ND2, CZI, LIF files, .ibif workspaces (or any napari-readable files) to open")
+    parser.add_argument("files", nargs="*", help="ND2, CZI, LIF, TIFF files, .ibif workspaces (or any napari-readable files) to open")
     parser.add_argument("--model", help="Cellpose model to preload (default: the newest built-in)")
     parser.add_argument("--no-preload", action="store_true", help="don't load Cellpose at startup")
     parser.add_argument(
@@ -48,7 +48,7 @@ def main(argv=None):
     # One dock with icon buttons for the sections; it opens on Configuration.
     viewer.window.add_plugin_dock_widget(PLUGIN, "IBIF napari")
     for path in args.files:
-        ours = path.lower().rstrip("/\\").endswith((".nd2", ".czi", ".lif", ".ibif"))
+        ours = path.lower().rstrip("/\\").endswith((".nd2", ".czi", ".lif", ".tif", ".tiff", ".btf", ".ibif"))
         viewer.open(path, plugin=PLUGIN if ours else None)
     napari.run()
     return 0
