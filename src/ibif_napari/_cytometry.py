@@ -91,6 +91,7 @@ class Cytometry:
         # map coordinates) live in `derived`, one row per table row.
         self.analyses = {}
         self.derived = None
+        self.last_rewrite = {}  # names in the last rule added / edited that were matched to columns
         self._listeners = []
         self._cache = None
 
@@ -346,9 +347,8 @@ class Cytometry:
             if ("image", key) in self.scope:
                 self.scope[("image", new)] = self.scope.pop(("image", key))
         prefix = GATE_PREFIX if kind == "gate" else IMAGE_GATE_PREFIX
-        old_col, new_col = quote(prefix + old), quote(prefix + new)
         for node in self.tree:  # keep phenotype rules pointing at it
-            node.rule = node.rule.replace(old_col, new_col)
+            node.rule = _rename_in_rule(node.rule, prefix + old, prefix + new)
         self.changed()
 
     def gate_column(self, kind, key):
@@ -372,10 +372,13 @@ class Cytometry:
     # ---- phenotypes ------------------------------------------------------------------------
 
     def add_phenotype(self, name, rule="", parent=None, color=None):
+        """A phenotype from a rule over the object table (see `resolve_rule` for the
+        names it understands); the rule is stored with the table's exact names."""
         from vtea_core.classes import Phenotype
 
         if name in self.gate_names():
             raise ValueError(f"{name!r} is already a gate name")
+        rule, self.last_rewrite = self.resolve_rule(rule)
         node = self.tree.add(Phenotype(name, rule, parent, color or self._next_color()))
         try:
             self._check_rule(name)
@@ -396,6 +399,7 @@ class Cytometry:
         node = self.tree.get(name)
         old_rule = node.rule
         if rule is not None:
+            rule, self.last_rewrite = self.resolve_rule(rule)
             node.rule = rule
             try:
                 self._check_rule(name)
@@ -439,6 +443,113 @@ class Cytometry:
             missing = self.tree.missing_columns(frame).get(name)
             if missing:
                 raise ValueError("the rule uses unknown columns: " + ", ".join(sorted(missing)))
+
+    # ---- reading rules -------------------------------------------------------------------
+
+    def rule_columns(self):
+        """{group: [column, ...]} that a rule can use: gates, image gates, clusters
+        and maps, and measurements."""
+        frame = self.frame()
+        if frame is None:
+            return {}
+        cols = [str(c) for c in frame.columns]
+        derived = set(self.derived.columns) if self.derived is not None else set()
+        return {
+            "Gates": [c for c in cols if c.startswith(GATE_PREFIX)],
+            "Image gates": [c for c in cols if c.startswith(IMAGE_GATE_PREFIX)],
+            "Clusters and maps": [c for c in cols if c in derived],
+            "Measurements": [c for c in self.measured_features()],
+        }
+
+    def match_column(self, name):
+        """The table column `name` stands for: (column, None), or (None, why not).
+
+        Exact names first; then, ignoring case: a gate or image gate by its own name
+        (`CD3+` for `gate: CD3+`), the short label of the heat map (`Cell Alexa647
+        mean`), and finally the columns whose name contains every word of `name`
+        (`Alexa647 mean`). Ambiguous names are not guessed: the candidates are given."""
+        frame = self.frame()
+        cols = [str(c) for c in frame.columns]
+        if name in cols:
+            return name, None
+        low = name.strip().lower()
+        by_lower = {c.lower(): c for c in cols}
+        for candidate in (low, (GATE_PREFIX + low), (IMAGE_GATE_PREFIX + low)):
+            if candidate in by_lower:
+                return by_lower[candidate], None
+        from ._cyto_labels import short_names
+
+        named = [c for group in self.rule_columns().values() for c in group]
+        shorts = {}
+        for full, short in short_names(named).items():
+            shorts.setdefault(short.lower(), []).append(full)
+        if len(shorts.get(low, [])) == 1:
+            return shorts[low][0], None
+        words = [w for w in re.split(r"[^0-9a-z]+", low) if w and w not in _GENERIC_WORDS]
+        hits = [c for c in named if words and all(w in _squash(c) for w in words)]
+        if len(hits) == 1:
+            return hits[0], None
+        if hits:
+            hits.sort(key=lambda c: (not c.endswith(" mean"), len(c)))
+            listed = ", ".join(quote(c) for c in hits[:6]) + (" …" if len(hits) > 6 else "")
+            return None, f"{name!r} could be any of {listed}: write the one you mean"
+        import difflib
+
+        close = difflib.get_close_matches(name, cols, n=3, cutoff=0.5)
+        hint = f"; did you mean {', '.join(quote(c) for c in close)}?" if close else \
+            " (use Insert a column… to pick one)"
+        return None, f"there is no column {name!r}{hint}"
+
+    def resolve_rule(self, rule):
+        """(rule with every column written as the table's exact name, {as written:
+        column} for the names that were matched). Raises ValueError when a name
+        matches no column, or several."""
+        rule = rule or ""
+        if not rule.strip() or self.table is None:
+            return rule, {}
+        try:
+            from vtea_core.classes import ExpressionError, column_references
+        except ImportError:  # an older vtea-core: rules are used as written
+            return rule, {}
+        try:
+            refs = column_references(rule)
+        except ExpressionError as e:
+            raise ValueError(f"the rule cannot be read: {e}") from e
+        mapping, problems, quoted = {}, [], False
+        for written, start, _ in refs:
+            quoted |= rule[start] in "'\""  # stored with backticks, as every version reads
+            if written in mapping:
+                continue
+            column, why = self.match_column(written)
+            if column is None:
+                problems.append(why)
+            elif column != written:
+                mapping[written] = column
+        if problems:
+            raise ValueError("; ".join(dict.fromkeys(problems)))
+        if not mapping and not quoted:
+            return rule, {}
+        every = {name: mapping.get(name, name) for name, _, _ in refs}
+        return _rename_in_rule(rule, every), mapping
+
+    def rule_count(self, rule, parent=None):
+        """(objects the rule selects, objects of the parent phenotype it selects, the
+        rule as it will be stored): what the phenotype dialog shows while typing."""
+        from vtea_core.classes import evaluate
+
+        resolved, _ = self.resolve_rule(rule)
+        frame = self.frame()
+        if not resolved.strip():
+            mask = np.ones(len(frame), bool)
+        else:
+            try:
+                mask = evaluate(resolved, frame)
+            except Exception as e:
+                raise ValueError(str(e)) from e
+        within = mask
+        if parent and parent in self.tree and not self.broken_phenotypes():
+            within = mask & self.tree.members(parent, frame, exclusive=True)
+        return int(mask.sum()), int(within.sum()), resolved
 
     def broken_phenotypes(self):
         frame = self.frame()
@@ -712,6 +823,30 @@ class Cytometry:
                 notes.append(f"cytometry: the measurement table {self.source!r} was not found")
         self.changed()
         return notes
+
+
+_GENERIC_WORDS = {"intensity", "int", "channel", "ch", "value", "of", "the", "in"}
+
+
+def _squash(text):
+    """Lower case, letters and digits only: 'cells: Alexa Fluor-647 mean' -> 'cellsalexafluor647mean'."""
+    return re.sub(r"[^0-9a-z]+", "", text.lower())
+
+
+def _rename_in_rule(rule, old_or_mapping, new=None):
+    """The rule with column names replaced (vtea-core's parser finds them, so a value
+    that looks like a name is not touched); a plain text replace on an older vtea-core."""
+    mapping = old_or_mapping if isinstance(old_or_mapping, dict) else {old_or_mapping: new}
+    try:
+        from vtea_core.classes import rename_columns
+    except ImportError:
+        for old, new_name in mapping.items():
+            rule = rule.replace(quote(old), quote(new_name))
+        return rule
+    try:
+        return rename_columns(rule, mapping)
+    except Exception:
+        return rule
 
 
 def _spatial_ndim(layer):

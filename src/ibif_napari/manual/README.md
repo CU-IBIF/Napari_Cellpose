@@ -695,15 +695,43 @@ marker, and use fluorescence-minus-one or secondary-only controls to decide wher
 
 ### 10.3 Phenotypes
 
+A **phenotype** is a named kind of object (a cell type), defined by a **rule** over the
+object table. A rule can use anything in the table: plot gates, image gates, cluster
+numbers and every measurement, and combine them freely.
+
 Select a gate and click **Make phenotype…** to turn it into a phenotype, choosing the
 phenotype it belongs **within**. Or click **Add…** and write a rule, for example:
 
-- `` `gate: CD3+` AND NOT `gate: CD4+` ``
-- `` `CD8 mean` > 200 ``
-- `` `image gate: tumour` ``
+- `` `gate: CD3+` AND NOT `gate: CD4+` ``: a plot gate and not another
+- `` `image gate: tumour` AND `gate: CD8+` ``: CD8+ cells inside a region drawn on the image
+- `` `Clustering 1 cluster` == 2 & `cells: sample Alexa647 mean` < 100 ``: cluster 2, but dim
+  for Alexa 647
+- `` `Clustering 1 cluster` in [3, 7] ``: clusters 3 and 7 together
+- `` 50 <= `cells: sample CD8 mean` <= 150 ``: a range
 
-A phenotype with an empty rule is "the rest of its parent" (for example *Other T*). The tree
-shows each phenotype's number of objects and its percentage of the parent.
+How to write a rule:
+
+- **Columns.** Write a column's name in `` `backticks` `` or in quotes when it has spaces or
+  symbols (`'cells: sample CD8 mean'` works too). You do not have to type the full name: a gate
+  can be given by its own name (`'CD3+'` for `` `gate: CD3+` ``), and a measurement by its
+  heat-map label (`'Cell Alexa647 mean'`) or by words that only one column contains
+  (`'CD4 mean'`). When several columns fit, as `'Alexa647'` does for its mean, median, cells and
+  nuclei columns, the dialog lists them so you can pick. The rule is stored with the exact
+  names.
+- **Conditions**: `==`, `!=`, `<`, `<=`, `>`, `>=`, `in [3, 7]`, and ranges `50 <= x <= 150`. A gate
+  on its own means "in the gate".
+- **Combining**: `AND`, `OR`, `NOT`, `XOR` (or `&`, `|`, `~`, `^`), with brackets.
+- **Insert a column…** lists what a rule can use, grouped into gates, image gates, clusters
+  and measurements; the buttons below it insert the operators.
+- **Check** shows, as you type, how many objects the rule selects (and how many of them are in
+  the parent), the rule as it will be stored, or what is wrong. **OK** works once the rule
+  can be read.
+
+Phenotypes at the same level are **exclusive**: an object goes to the first phenotype (from
+the top) whose rule it matches, so the order you add them in matters. A phenotype with an
+empty rule is "the rest of its parent" (for example *Other T*). The tree shows each
+phenotype's number of objects and its percentage of the parent, and notes objects that a
+rule matched but an earlier sibling had already claimed.
 
 **Show phenotypes on image** (in the panel; **Show on image** in the workbench) colours every
 object by its phenotype; **Level** chooses the level of the hierarchy. **Export…** writes every
