@@ -684,3 +684,62 @@ def test_reopening_a_workspace_restores_the_map_gates_and_the_plot(qtbot, tmp_pa
     qtbot.addWidget(bench2)
     assert bench2.x_col.currentText() == "CD8 mean" and bench2.y_tf.currentText() == "asinh"
     assert (bench2.plot.point_size, bench2.plot.marker, bench2.plot.alpha) == (14.0, "D", 0.4)
+
+
+def test_the_warm_up_thread_starts_only_after_its_imports(tmp_path):
+    """Opening the workbench started the UMAP warm-up thread, which imported
+    umap / scikit-learn while the Clustering tab imported scikit-learn in the main
+    thread: on Windows this failed with "cannot import name 'clone' from partially
+    initialized module 'sklearn.base'". Now every import is made in the calling
+    thread before the thread starts. Checked in a fresh interpreter, where nothing is
+    imported yet."""
+    pytest.importorskip("umap")
+    import subprocess
+    import sys
+
+    script = tmp_path / "check.py"
+    script.write_text(
+        "import os, sys, threading\n"
+        "os.environ.pop('IBIF_NAPARI_NO_WARMUP', None)\n"
+        "seen = {}\n"
+        "real = threading.Thread.start\n"
+        "def start(self):\n"
+        "    if self.name == 'ibif-umap-warm-up':\n"
+        "        seen['modules'] = set(sys.modules)\n"
+        "    return real(self)\n"
+        "threading.Thread.start = start\n"
+        "from ibif_napari import _cytometry as cy\n"
+        "assert 'sklearn' not in sys.modules, 'imported too early to test'\n"
+        "thread = cy.warm_up()\n"
+        "need = {'sklearn', 'sklearn.base', 'umap', 'vtea_core.clustering', 'vtea_core.reduction.reduction'}\n"
+        "print(sorted(need - seen['modules']))\n"
+        "thread.join(120)\n")
+    env = {k: v for k, v in __import__("os").environ.items() if k != "IBIF_NAPARI_NO_WARMUP"}
+    out = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, env=env, timeout=300)
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert out.stdout.strip().splitlines()[-1] == "[]"
+
+
+def test_the_vtea_core_pin_is_one_and_an_old_install_is_reported(qtbot, monkeypatch):
+    """pip keeps an installed vtea-core with the same version number when only the
+    pinned commit changes, so the panel says when the installed one is too old."""
+    import re
+    from pathlib import Path
+
+    from ibif_napari._cytometry_widget import CytometryWidget
+
+    root = Path(__file__).resolve().parents[1]
+    for path in ("pyproject.toml", ".github/workflows/ci.yml", ".github/workflows/vv.yml"):
+        pins = re.findall(r"vtea-core\[[^\]]*\] @ git\+[^\s\"]+", (root / path).read_text())
+        assert pins and set(pins) == {cy.VTEA_CORE}, path
+    assert cy.vtea_core_problem() is None
+    from vtea_core import classes
+
+    monkeypatch.delattr(classes, "column_references")
+    problem = cy.vtea_core_problem()
+    assert "vtea_core.classes.column_references" in problem and cy.VTEA_CORE in problem
+    assert "--force-reinstall --no-deps" in problem
+    v, _ = scene()
+    w = CytometryWidget(v)
+    qtbot.addWidget(w)
+    assert not w.vtea_warning.isHidden() and "older than" in w.vtea_warning.text()

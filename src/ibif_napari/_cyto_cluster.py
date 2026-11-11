@@ -286,6 +286,10 @@ class ClusteringTab(QWidget):
             return state.analyses.get(name)
         from napari.qt.threading import thread_worker
 
+        # Import here, not in the worker thread: two threads importing scikit-learn at
+        # once can fail (see cy.import_analysis_modules).
+        cy.import_analysis_modules(settings["embedding"], settings["clustering"])
+
         @thread_worker(ignore_errors=True)
         def work():
             return cy.compute_analysis(matrix, **kwargs)

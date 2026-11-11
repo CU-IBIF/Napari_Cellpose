@@ -6,6 +6,7 @@ objects are analysed, summarises the phenotype hierarchy, and shows it on the im
 """
 from __future__ import annotations
 
+from qtpy.QtCore import Qt
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
     QComboBox,
@@ -76,6 +77,13 @@ class CytometryWidget(QWidget):
         self.status = QLabel()
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
+        problem = cy.vtea_core_problem()
+        self.vtea_warning = QLabel(problem or "")
+        self.vtea_warning.setWordWrap(True)
+        self.vtea_warning.setTextInteractionFlags(Qt.TextSelectableByMouse)  # to copy the command
+        self.vtea_warning.setStyleSheet("color: #d62728;")
+        self.vtea_warning.setVisible(bool(problem))
+        layout.addWidget(self.vtea_warning)
         coming = QLabel(COMING)
         coming.setWordWrap(True)
         coming.setStyleSheet("color: gray;")
