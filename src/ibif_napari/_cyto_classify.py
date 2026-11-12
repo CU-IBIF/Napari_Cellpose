@@ -8,11 +8,8 @@ phenotype rules are), choose the objects, and Run. Each object gets "<name> clas
 confidence of at least 0.8), colour the plot or the image by class, and **Make
 phenotypes** from the predicted classes.
 
-**Train a model** (a compact dialog; the full Training workbench comes later): labels
-from the phenotypes, features from the measurements, a validation split by object or
-by time point / position, train (in the background, stoppable), read the balanced
-accuracy and confusion matrix, and save the model with its card to the library.
-Fine-tuning starts from a saved model.
+**Train a model…** opens the Training workbench (`_cyto_training`): build a training
+set, train or fine-tune a model, check it, and save it with its card to the library.
 
 Models are vtea-core `classification` model folders: plain arrays and JSON, never a
 pickle, so models shared through a library folder are safe to open. The first family
@@ -26,9 +23,7 @@ from pathlib import Path
 import numpy as np
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
-    QCheckBox,
     QComboBox,
-    QDialog,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -36,11 +31,7 @@ from qtpy.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
-    QListWidget,
-    QListWidgetItem,
     QPushButton,
-    QScrollArea,
-    QSpinBox,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -109,7 +100,8 @@ class ClassificationTab(QWidget):
         self.browse_btn.setToolTip("Use a model folder from elsewhere (e.g. a shared facility folder)")
         self.browse_btn.clicked.connect(lambda _=False: self.browse())
         self.train_btn = QPushButton("Train a model…")
-        self.train_btn.setToolTip("Train a model on objects labelled by their phenotypes")
+        self.train_btn.setToolTip("Open the Training workbench: label examples, train a model, check it, "
+                                  "save it to the library")
         self.train_btn.clicked.connect(lambda _=False: self.train_dialog())
         row.addWidget(self.browse_btn)
         row.addWidget(self.train_btn)
@@ -381,251 +373,10 @@ class ClassificationTab(QWidget):
                                                       f"{', '.join(broken)}." if broken else ""))
 
     def train_dialog(self):
-        dialog = TrainDialog(self.state, self)
-        dialog.exec()
-        if dialog.saved:
-            self.use_model(dialog.saved)
-        return dialog
+        """Open the Training workbench (a window of its own)."""
+        from ._cyto_training import open_training
 
-
-class TrainDialog(QDialog):
-    """Train a generic ANN on objects labelled by their phenotypes, check it on held-out
-    objects, and save it with its card to the model library."""
-
-    def __init__(self, state, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Train a classification model")
-        self.state = state
-        self.model = None
-        self.metrics = None
-        self.saved = None
-        self._worker = None
-        self._stop = False
-        form = QFormLayout(self)
-        self.labels = _combo(20)
-        self.labels.setToolTip("Each labelled object's class: its phenotype (deepest, or at a level). "
-                               "Objects with no phenotype are not used.")
-        for label, key in state.class_choices():
-            if key.startswith("phenotype"):
-                self.labels.addItem(label, key)
-        self.labels.currentIndexChanged.connect(self._count)
-        form.addRow("Labels", self.labels)
-        self.counts = QLabel()
-        self.counts.setWordWrap(True)
-        form.addRow("", self.counts)
-        self.features = QListWidget()
-        self.features.setMinimumHeight(76)
-        for f in state.measured_features():
-            item = QListWidgetItem(f)
-            item.setToolTip(f)
-            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-            item.setCheckState(Qt.Checked if f.endswith(" mean") else Qt.Unchecked)
-            self.features.addItem(item)
-        form.addRow("Features", self.features)
-        quick = QHBoxLayout()
-        for text, how in (("Intensities", "intensity"), ("All", "all"), ("None", "none")):
-            b = QPushButton(text)
-            b.clicked.connect(lambda _=False, h=how: self.check_features(h))
-            quick.addWidget(b)
-        form.addRow("", quick)
-        self.asinh = QCheckBox("asinh(x/150) first (for intensities)")
-        self.asinh.setChecked(True)
-        form.addRow("", self.asinh)
-        self.hidden = QLineEdit("64, 32")
-        self.hidden.setToolTip("Neurons in each hidden layer, e.g. 64, 32")
-        form.addRow("Hidden layers", self.hidden)
-        self.split = QComboBox()
-        groups = self._groups()
-        for text, how in SPLITS.items():
-            self.split.addItem(text, how)
-        if groups is None or len(set(groups)) < 2:
-            self.split.model().item(1).setEnabled(False)
-        self.split.setToolTip("Hold out objects to check the model on. By time point / position keeps "
-                              "each image wholly on one side, the honest test for new images.")
-        form.addRow("Validation", self.split)
-        self.fraction = QDoubleSpinBox()
-        self.fraction.setRange(0.05, 0.5)
-        self.fraction.setSingleStep(0.05)
-        self.fraction.setValue(0.2)
-        form.addRow("Held out", self.fraction)
-        self.start_from = _combo(18)
-        self.start_from.addItem("(new model)", None)
-        from vtea_core.classification import list_models, read_card
-
-        for folder in list_models(cy.model_library()):
-            try:
-                if read_card(folder).family == "ann":
-                    self.start_from.addItem(f"fine-tune {folder.name}", str(folder))
-            except ValueError:
-                continue
-        self.start_from.setToolTip("Train from scratch, or fine-tune a saved model (same classes and features)")
-        form.addRow("Start from", self.start_from)
-        self.seed = QSpinBox()
-        self.seed.setRange(0, 1_000_000)
-        form.addRow("Seed", self.seed)
-        row = QHBoxLayout()
-        self.train_btn = QPushButton("Train")
-        self.train_btn.clicked.connect(lambda _=False: self.train())
-        self.stop_btn = QPushButton("Stop")
-        self.stop_btn.setEnabled(False)
-        self.stop_btn.clicked.connect(lambda _=False: setattr(self, "_stop", True))
-        row.addWidget(self.train_btn)
-        row.addWidget(self.stop_btn)
-        form.addRow(row)
-        self.result = QLabel()
-        self.result.setWordWrap(True)
-        self.result.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.result.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        scroll = QScrollArea()  # the confusion matrix grows with the classes
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(self.result)
-        scroll.setMinimumHeight(140)
-        form.addRow(scroll)
-        self.model_name = QLineEdit()
-        self.model_name.setToolTip("The model's folder name in the library")
-        form.addRow("Model name", self.model_name)
-        self.notes = QLineEdit()
-        self.notes.setPlaceholderText("what it is for, the tissue, the stain… (saved on its card)")
-        form.addRow("Notes", self.notes)
-        row = QHBoxLayout()
-        self.save_btn = QPushButton("Save to library")
-        self.save_btn.setEnabled(False)
-        self.save_btn.clicked.connect(lambda _=False: self.save())
-        close = QPushButton("Close")
-        close.clicked.connect(self.reject)
-        row.addWidget(self.save_btn)
-        row.addWidget(close)
-        form.addRow(row)
-        self.setMinimumWidth(460)
-        self._count()
-
-    def _groups(self):
-        table = self.state.table
-        keys = [k for k in ("T", "P") if k in table.columns]
-        if not keys:
-            return None
-        return table[keys].astype(str).agg("/".join, axis=1).to_numpy()
-
-    def _labels(self):
-        key = self.labels.currentData()
-        return self.state.classes(key) if key else np.array([None] * len(self.state.table), dtype=object)
-
-    def _count(self, *_):
-        import pandas as pd
-
-        labels = pd.Series(self._labels(), dtype=object).dropna()
-        counts = labels.value_counts()
-        if counts.empty:
-            self.counts.setText("No labelled objects: make phenotypes first.")
-        else:
-            self.counts.setText(", ".join(f"{k} {v:,}" for k, v in counts.items()))
-        if not self.model_name.text():
-            self.model_name.setText(f"{self.state.layer_name or 'objects'} ANN")
-        self.train_btn.setEnabled(len(counts) >= 2)
-
-    def check_features(self, how, names=()):
-        for i in range(self.features.count()):
-            item = self.features.item(i)
-            on = {"all": True, "none": False, "intensity": item.text().endswith(" mean"),
-                  "names": item.text() in names}[how]
-            item.setCheckState(Qt.Checked if on else Qt.Unchecked)
-
-    def checked_features(self):
-        return [self.features.item(i).text() for i in range(self.features.count())
-                if self.features.item(i).checkState() == Qt.Checked]
-
-    def train(self, wait=False):
-        """Train (in the background unless `wait`); returns the metrics when waiting."""
-        from vtea_core.classification import ANNClassifier, evaluate, load_model, predictions, split
-        from vtea_core.classification.training import labelled
-
-        features = self.checked_features()
-        labels = self._labels()
-        if not features:
-            self.result.setText("Tick at least one feature.")
-            return None
-        try:
-            hidden = tuple(int(v) for v in self.hidden.text().replace(";", ",").split(",") if v.strip())
-            if not hidden or min(hidden) < 1:
-                raise ValueError
-        except ValueError:
-            self.result.setText("Hidden layers: whole numbers separated by commas, e.g. 64, 32.")
-            return None
-        rows = np.flatnonzero(labelled(labels))
-        groups = self._groups()[rows] if self.split.currentData() == "group" else None
-        try:
-            train, val = split(labels[rows], groups, validation=self.fraction.value(),
-                               random_state=self.seed.value())
-            start = load_model(self.start_from.currentData()) if self.start_from.currentData() else None
-            data = object_data(self.state, features, rows)
-        except ValueError as e:
-            self.result.setText(str(e))
-            return None
-        model = ANNClassifier(features, hidden=hidden, transform="asinh" if self.asinh.isChecked() else "none",
-                              random_state=self.seed.value())
-        y = labels[rows]
-        self._stop = False
-
-        def job(progress=None):
-            history = model.fit(data.subset(train), y[train], start_from=start,
-                                validation=(data.subset(val), y[val]),
-                                on_epoch=progress, stop=lambda: self._stop)
-            predicted = predictions(model, data.subset(val))["class"]
-            return history, evaluate(y[val], predicted, model.classes)
-
-        def done(result):
-            history, metrics = result
-            self.model, self.metrics = model, metrics
-            colors = {}
-            for node in self.state.tree:
-                if node.name in model.classes and node.color:
-                    colors[node.name] = node.color
-            model.card.colors = colors
-            model.card.validation = {**metrics, "split": self.split.currentData(),
-                                     "held_out": self.fraction.value()}
-            model.card.training.update(labels=self.labels.currentText(), source=self.state.source,
-                                       objects_layer=self.state.layer_name)
-            self.result.setText(_metrics_html(metrics, history))
-            self.save_btn.setEnabled(True)
-            self.train_btn.setEnabled(True)
-            self.stop_btn.setEnabled(False)
-
-        if wait:
-            done(job())
-            return self.metrics
-        from napari.qt.threading import thread_worker
-
-        @thread_worker(ignore_errors=True)
-        def work():
-            return job(lambda epoch, info: None)
-
-        worker = work()
-        worker.returned.connect(done)
-        worker.errored.connect(lambda e: (self.result.setText(f"Failed: {e}"), self.train_btn.setEnabled(True),
-                                          self.stop_btn.setEnabled(False)))
-        self._worker = worker
-        self.train_btn.setEnabled(False)
-        self.stop_btn.setEnabled(True)
-        self.result.setText(f"Training on {len(train):,} objects, checking on {len(val):,}…")
-        worker.start()
-        return worker
-
-    def save(self, name=None):
-        """Save the trained model to the library; returns its folder."""
-        if self.model is None:
-            return None
-        name = (name or self.model_name.text()).strip() or "model"
-        folder = cy.model_library() / _safe(name)
-        if folder.exists():
-            k = 2
-            while (cy.model_library() / f"{_safe(name)} {k}").exists():
-                k += 1
-            folder = cy.model_library() / f"{_safe(name)} {k}"
-        self.model.card.notes = self.notes.text().strip()
-        self.saved = str(self.model.save(folder))
-        self.result.setText(self.result.text() + f"<br>Saved as <b>{_html(folder.name)}</b>.")
-        self.save_btn.setEnabled(False)
-        return self.saved
+        return open_training(self.bench)
 
 
 def _metrics_html(metrics, history):
@@ -664,4 +415,4 @@ def _qcolor(hex_color):
     return QColor(hex_color)
 
 
-__all__ = ["ClassificationTab", "TrainDialog", "model_input_columns", "object_data"]
+__all__ = ["ClassificationTab", "model_input_columns", "object_data"]

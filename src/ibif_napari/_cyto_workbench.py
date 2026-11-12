@@ -53,6 +53,7 @@ class Workbench(QWidget):
         self.setWindowTitle("Cytometry workbench")
         self._image_layer = None
         self._watched = None
+        self.object_selected = []  # callbacks(row) when an object is selected in the viewer
         self._filling = False
         outer = QVBoxLayout(self)
         self.tabs = QTabWidget()
@@ -185,12 +186,12 @@ class Workbench(QWidget):
 
         self.clustering = ClusteringTab(self)
         self.tabs.addTab(self.clustering, "Clustering")
+        self.classification = ClassificationTab(self)
+        self.tabs.addTab(self.classification, "Classification")
         self.spatial = SpatialTab(self)
         self.tabs.addTab(self.spatial, "Spatial")
         self.neighbourhoods = NeighbourhoodTab(self)
         self.tabs.addTab(self.neighbourhoods, "Neighbourhoods")
-        self.classification = ClassificationTab(self)
-        self.tabs.addTab(self.classification, "Classification")
         self.state.listen(self.refresh)
         self.refresh()
         self.fit_to_screen()
@@ -900,9 +901,18 @@ class Workbench(QWidget):
             layer.events.selected_label.connect(self._label_selected)
 
     def _label_selected(self, event=None):
+        row = self.selected_row()
+        self.plot.highlight(row)
+        if row is not None:
+            for callback in list(self.object_selected):
+                callback(row)
+
+    def selected_row(self):
+        """The table row of the object selected in the objects layer (its selected
+        label at the time point / position shown), or None."""
         table, layer = self.state.table, self._watched
         if table is None or layer is None:
-            return
+            return None
         rows = table["label"].to_numpy() == layer.selected_label
         dims = self.viewer.dims
         axes = (layer.metadata or {}).get("ibif_axes") or ""
@@ -912,7 +922,7 @@ class Workbench(QWidget):
                 step = round((dims.point[offset + k] - layer.translate[k]) / layer.scale[k])
                 rows &= table[name].to_numpy() == step
         hit = np.flatnonzero(rows)
-        self.plot.highlight(int(hit[0]) if len(hit) else None)
+        return int(hit[0]) if len(hit) else None
 
 
 RULE_HELP = (

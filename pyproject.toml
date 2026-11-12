@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ibif-napari"
-version = "0.29.0"
+version = "0.30.0"
 description = "napari with Nikon ND2, Zeiss CZI and Leica LIF support, a dimension panel, 3D Cellpose (local, facility GPU server or GPU cluster) and a filament tracer built in"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -40,7 +40,7 @@ dependencies = [
     # Cytometry: VTEA's headless analysis library (gates, phenotype trees, clustering,
     # neighbourhoods), with UMAP and Leiden/Louvain. Not on PyPI yet, so installed from its
     # repository at a fixed commit.
-    "vtea-core[graph,umap,opentsne] @ git+https://github.com/winfrees/vtea-python@772e5cf410c33f4277cd191b08c79477253b6fd3#subdirectory=packages/vtea-core",
+    "vtea-core[graph,umap,opentsne] @ git+https://github.com/winfrees/vtea-python@e660ae5b40d3447cb4ce9dda370ae5c348e1ea84#subdirectory=packages/vtea-core",
 ]
 
 [project.optional-dependencies]

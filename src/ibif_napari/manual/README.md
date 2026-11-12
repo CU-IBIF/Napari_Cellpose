@@ -873,12 +873,23 @@ predicts them for every object, in this image or the next one.
 
 1. Make phenotypes for some objects (by gating, clustering or rules): these are the
    examples.
-2. Click **Train a model…**. Choose the **Labels** (the phenotypes, or one level of the
-   hierarchy) and the **Features** (the mean intensity of each channel by default). Keep
-   **Validation** *By time point / position* when you have several images: the model is
-   then checked on images it never saw. Click **Train**. The balanced accuracy and the
-   confusion matrix show how well it does on the held-out objects (rows: the true type,
-   columns: the predicted one). Name it, add notes, and **Save to library**.
+2. Click **Train a model…** to open the **Training workbench**.
+   - **Training set**: choose **From** *Phenotypes* and click **Add labels**: every object
+     with a phenotype becomes an example of it. Add more by gate (all its objects as the
+     **Active class**), or tick **Label by clicking** and pick objects in the viewer (the
+     objects layer's colour picker) or click points on the Gating plot. **Import…** reads
+     a CSV of `label` (and `T` / `P`) and `class`.
+   - **Examples** shows each labelled object's thumbnail with its outline in its class's
+     colour. Check them: a wrong example teaches the model a wrong type. Select and
+     **Remove label** or **Move to active class**.
+   - **Settings**: tick the **Features** (the mean intensity of each channel by default).
+     Keep **Validation** *By time point / position* when you have several images: the
+     model is then checked on images it never saw. Click **Train**.
+   - **Results**: the curves show the training and held-out loss falling and the balanced
+     accuracy rising; training stops when the held-out loss stops improving. The
+     confusion matrix shows which types it confuses (rows: the true type, columns: the
+     predicted one). Under **Examples**, *Wrong on held-out objects* shows the mistakes.
+   - Name the model, add notes, and **Save to library**.
 3. Choose the **Model** and click **Classify**. Each object gets a predicted class, a
    **confidence** (0–1) and a probability for each class, as table columns. Low
    confidence marks objects that look like no class it knows, or like two.
@@ -886,8 +897,9 @@ predicts them for every object, in this image or the next one.
    **Confidence ≥** to keep only sure objects), **Colour the plot by class**, or **Show
    classes on image**.
 
-**Start from** fine-tunes a saved model on a few new examples, e.g. for a new
-microscope, instead of training from scratch. Models are saved in your model library
+**Start from** (in the Training workbench) fine-tunes a saved model on a few new
+examples, e.g. for a new microscope, instead of training from scratch; examples of a new
+class add it to the model. Models are saved in your model library
 (`.ibif-napari/models` in your home folder); a facility can share models by putting
 them in a common folder and using **Browse…**.
 

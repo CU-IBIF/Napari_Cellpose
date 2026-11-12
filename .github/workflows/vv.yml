@@ -39,7 +39,7 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0 libfontconfig1 libdbus-1-3
       # CPU-only PyTorch (the default Linux wheel bundles CUDA, several GB).
       - run: pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-      - run: pip install cellpose "napari[pyqt6]" nd2 bioio-czi bioio-lif pylibCZIrw skan paramiko matplotlib "vtea-core[graph,umap,opentsne] @ git+https://github.com/winfrees/vtea-python@772e5cf410c33f4277cd191b08c79477253b6fd3#subdirectory=packages/vtea-core" && pip install -e . --no-deps
+      - run: pip install cellpose "napari[pyqt6]" nd2 bioio-czi bioio-lif pylibCZIrw skan paramiko matplotlib "vtea-core[graph,umap,opentsne] @ git+https://github.com/winfrees/vtea-python@e660ae5b40d3447cb4ce9dda370ae5c348e1ea84#subdirectory=packages/vtea-core" && pip install -e . --no-deps
       - uses: actions/cache@v4
         with:
           path: ~/.cellpose/models
