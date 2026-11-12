@@ -1031,3 +1031,106 @@ def test_spatial_tabs_need_classes(qtbot):
     qtbot.addWidget(bench)
     assert not bench.spatial.run_btn.isEnabled() and "Make phenotypes" in bench.spatial.status.text()
     assert bench.spatial.run(wait=True) is None
+
+
+def _truth_state(n=600):
+    """cell_types() with its true types as phenotypes (from a 'truth' column)."""
+    table, kind = cell_types(n=n)
+    table["truth"] = kind
+    s = cy.state_of(ViewerModel())
+    s.set_table("cells", table, "cells")
+    for code, name, color in ((0, "CD8 T", "#d62728"), (1, "CD4 T", "#1f77b4"), (2, "Other", "#7f7f7f")):
+        s.add_phenotype(name, f"truth == {code}", color=color)
+    return s, np.array(["CD8 T", "CD4 T", "Other"], dtype=object)[kind]
+
+
+def test_classification_tab_trains_classifies_and_makes_phenotypes(qtbot, tmp_path, monkeypatch):
+    from ibif_napari._cyto_classify import TrainDialog
+    from ibif_napari._cyto_workbench import Workbench
+
+    monkeypatch.setenv("IBIF_NAPARI_MODELS", str(tmp_path / "models"))
+    s, truth = _truth_state()
+    bench = Workbench(s.viewer)
+    qtbot.addWidget(bench)
+    tab = bench.classification
+    assert tab.model.count() == 0 and not tab.run_btn.isEnabled() and "Train a model" in tab.card.text()
+    # Train on the phenotypes, check on held-out objects, save to the library.
+    dialog = TrainDialog(s, tab)
+    qtbot.addWidget(dialog)
+    assert dialog.labels.currentData() == "phenotype" and "CD8 T 200" in dialog.counts.text()
+    dialog.check_features("names", ["CD3 mean", "CD8 mean", "CD4 mean"])
+    metrics = dialog.train(wait=True)
+    assert metrics["balanced_accuracy"] > 0.95 and metrics["n"] == 120  # 20% held out
+    dialog.show()
+    assert dialog.height() <= 720  # fits a 1366 x 768 screen
+    assert dialog.model.card.colors["CD8 T"] == "#d62728"
+    dialog.notes.setText("synthetic T cells")
+    folder = dialog.save("T cell types")
+    assert (tmp_path / "models" / "T cell types" / "card.json").exists() and folder.endswith("T cell types")
+    # Apply it from the library.
+    tab.refresh()
+    assert tab.model.currentText() == "T cell types" and tab.run_btn.isEnabled()
+    assert "3 classes" in tab.card.text() and "synthetic T cells" in tab.card.text()
+    info = tab.run()
+    assert info["kind"] == "classification" and info["classes"] == ["CD4 T", "CD8 T", "Other"]
+    predicted = np.array(info["classes"], dtype=object)[s.column("Classes 1 class").astype(int) - 1]
+    assert (predicted == truth).mean() > 0.95
+    assert np.nanmin(s.column("Classes 1 confidence")) > 0 and "Classes 1 p CD8 T" in s.features()
+    counts = dict((c, n) for c, n, _ in s.classification_counts("Classes 1"))
+    assert sum(counts.values()) == 600
+    # Phenotypes from the classes: rename them; only confident objects.
+    assert tab.table.rowCount() == 3 and tab.table.item(0, 3).text() == ""  # "CD4 T" exists already
+    for r in range(3):
+        tab.table.item(r, 3).setText(f"{tab.table.item(r, 0).text()} (ANN)")
+    tab.min_conf.setValue(0.5)
+    made = tab.make_phenotypes()
+    assert [p.name for p in made] == ["CD4 T (ANN)", "CD8 T (ANN)", "Other (ANN)"]
+    assert "Classes 1 confidence` >= 0.5" in s.tree.get("CD8 T (ANN)").rule
+    # Colour the plot by class: the classes' names and colours in the legend.
+    tab.colour_plot()
+    legend = [t.get_text() for t in bench.plot.axes.get_legend().get_texts()]
+    assert legend == ["CD4 T", "CD8 T", "Other"]
+    # The classes can be what spatial analysis classes objects by.
+    assert ("Classes 1 classes", "Classes 1 class") in s.class_choices()
+    assert set(s.classes("Classes 1 class")) == {"CD4 T", "CD8 T", "Other"}
+    # A model whose features the table lacks says so and cannot run.
+    s2 = cy.state_of(ViewerModel())
+    table, _ = cell_types(n=30)
+    s2.set_table("other", table.drop(columns=["CD8 mean"]), "cells")
+    bench2 = Workbench(s2.viewer)
+    qtbot.addWidget(bench2)
+    bench2.classification.refresh()
+    assert "no column for: CD8 mean" in bench2.classification.card.text()
+    assert not bench2.classification.run_btn.isEnabled()
+    tab.delete()
+    assert not s.analyses_of("classification")
+
+
+def test_classification_is_saved_and_shown_on_the_image(qtbot, tmp_path, monkeypatch):
+    from ibif_napari._cyto_classify import TrainDialog
+    from ibif_napari._cyto_workbench import Workbench
+
+    monkeypatch.setenv("IBIF_NAPARI_MODELS", str(tmp_path / "models"))
+    v, s = _typed_scene()
+    bench = Workbench(v)
+    qtbot.addWidget(bench)
+    dialog = TrainDialog(s, bench.classification)
+    qtbot.addWidget(dialog)
+    dialog.check_features("names", ["CD3 mean", "CD8 mean"])
+    dialog.split.setCurrentIndex(1)  # by time point: one frame trains, the other checks
+    dialog.fraction.setValue(0.5)
+    metrics = dialog.train(wait=True)
+    assert metrics["n"] == 12 and metrics["balanced_accuracy"] == 1.0
+    bench.classification.use_model(dialog.save())
+    info = bench.classification.run()
+    assert info["n_objects"] == 24
+    layer = bench.classification.show_on_image()
+    assert layer.name == "cells Classes 1" and set(np.unique(layer.data)) == {0, 1, 2}
+    folder, notes = _workspace.save_workspace(v, tmp_path / "w")
+    assert notes == []
+    w = ViewerModel()
+    assert _workspace.load_workspace(w, folder) == []
+    restored = cy.state_of(w)
+    assert restored.analysis_kind("Classes 1") == "classification"
+    np.testing.assert_array_equal(restored.column("Classes 1 class"), s.column("Classes 1 class"))
+    assert restored.class_names("Classes 1 class") == {1: "Other", 2: "T"}

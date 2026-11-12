@@ -180,6 +180,7 @@ class Workbench(QWidget):
         viewer.layers.events.removed.connect(self._layer_removed)
         from ._cyto_cluster import ClusteringTab
 
+        from ._cyto_classify import ClassificationTab
         from ._cyto_spatial import NeighbourhoodTab, SpatialTab
 
         self.clustering = ClusteringTab(self)
@@ -188,6 +189,8 @@ class Workbench(QWidget):
         self.tabs.addTab(self.spatial, "Spatial")
         self.neighbourhoods = NeighbourhoodTab(self)
         self.tabs.addTab(self.neighbourhoods, "Neighbourhoods")
+        self.classification = ClassificationTab(self)
+        self.tabs.addTab(self.classification, "Classification")
         self.state.listen(self.refresh)
         self.refresh()
         self.fit_to_screen()
@@ -249,7 +252,7 @@ class Workbench(QWidget):
             self._view_version = state.view_version
             self.apply_view(state.view)  # e.g. restored from a workspace
         self.replot()
-        for tab in ("clustering", "spatial", "neighbourhoods"):
+        for tab in ("clustering", "spatial", "neighbourhoods", "classification"):
             if hasattr(self, tab):
                 getattr(self, tab).refresh()
         if state.table is None:
@@ -452,9 +455,17 @@ class Workbench(QWidget):
             if _categorical(color_by, values):
                 ids = values.astype(np.int64)
                 colors = np.array([_category_color(i) for i in ids], dtype=object)
-                what = "type" if color_by.endswith(" neighbourhood") else "cluster"
-                legend = [(f"{what} {i}" if i > 0 else f"no {what}", _category_color(i))
-                          for i in np.unique(ids)][:20]
+                names = state.class_names(color_by)
+                if names:  # a classification: its class names and colours
+                    info = next(i for i in state.analyses.values() if i["columns"].get("class") == color_by)
+                    palette = {k: info["colors"][c] for k, c in names.items()}
+                    colors = np.array([palette.get(int(i), "#bdbdbd") for i in ids], dtype=object)
+                    legend = [(names.get(int(i), "not classified"), palette.get(int(i), "#bdbdbd"))
+                              for i in np.unique(ids)][:20]
+                else:
+                    what = "type" if color_by.endswith(" neighbourhood") else "cluster"
+                    legend = [(f"{what} {i}" if i > 0 else f"no {what}", _category_color(i))
+                              for i in np.unique(ids)][:20]
                 values = None
         gates = []
         for gate in state.gates:  # gates drawn on these axes, directly within the shown population
@@ -1094,7 +1105,7 @@ def _pop_parse(value):
 
 def _categorical(name, values):
     """Cluster ids are coloured as categories, not on a colour scale."""
-    return name.endswith((" cluster", " neighbourhood")) and len(values) > 0
+    return name.endswith((" cluster", " neighbourhood", " class")) and len(values) > 0
 
 
 def _category_color(i):
