@@ -866,6 +866,31 @@ T*), to gate, colour by and use in rules.
 
 **Colour the plot by type** and **Show types on image** show where the types are.
 
+### 10.7 Classification: learning cell types from examples
+
+The **Classification** tab learns cell types from objects you have already typed, and
+predicts them for every object, in this image or the next one.
+
+1. Make phenotypes for some objects (by gating, clustering or rules): these are the
+   examples.
+2. Click **Train a model…**. Choose the **Labels** (the phenotypes, or one level of the
+   hierarchy) and the **Features** (the mean intensity of each channel by default). Keep
+   **Validation** *By time point / position* when you have several images: the model is
+   then checked on images it never saw. Click **Train**. The balanced accuracy and the
+   confusion matrix show how well it does on the held-out objects (rows: the true type,
+   columns: the predicted one). Name it, add notes, and **Save to library**.
+3. Choose the **Model** and click **Classify**. Each object gets a predicted class, a
+   **confidence** (0–1) and a probability for each class, as table columns. Low
+   confidence marks objects that look like no class it knows, or like two.
+4. **Make phenotypes** from the classes (type new names to rename or merge them; set
+   **Confidence ≥** to keep only sure objects), **Colour the plot by class**, or **Show
+   classes on image**.
+
+**Start from** fine-tunes a saved model on a few new examples, e.g. for a new
+microscope, instead of training from scratch. Models are saved in your model library
+(`.ibif-napari/models` in your home folder); a facility can share models by putting
+them in a common folder and using **Browse…**.
+
 ## 11. Filament tracing
 
 The **Filament tracing** section traces neurons, microtubules, vessels and other branched

@@ -333,15 +333,23 @@ Training GPU models goes through the routes IBIF napari already has for Cellpose
 
 | # | Milestone | Done when |
 | --- | --- | --- |
-| 5.0 | **Common ground** in vtea-core: `ObjectClassifier` protocol, model folders and cards, `training.py` (splits by object / image / region, class weights, metrics, confusion matrix). | Unit tests: a toy classifier round-trips through save / load; image-level split never shares an image between train and validation. |
-| 5.1 | **Generic ANN** in vtea-core, and the **Classification tab** in IBIF napari (apply a model; class, confidence and per-class probability columns; make phenotypes; show on image). | On the cell-types test table, an ANN trained on half the objects predicts the other half with balanced accuracy > 0.95; the tab runs it and makes phenotypes. |
+| 5.0 ✅ | **Common ground** in vtea-core: `ObjectClassifier` protocol, model folders and cards, `training.py` (splits by object / image / region, class weights, metrics, confusion matrix). | Unit tests: a toy classifier round-trips through save / load; image-level split never shares an image between train and validation. |
+| 5.1 ✅ | **Generic ANN** in vtea-core, and the **Classification tab** in IBIF napari (apply a model; class, confidence and per-class probability columns; make phenotypes; show on image). | On the cell-types test table, an ANN trained on half the objects predicts the other half with balanced accuracy > 0.95; the tab runs it and makes phenotypes. |
 | 5.2 | **Training workbench** window: labels from phenotypes, gates and clicked objects; example gallery; split and class balance; train with live curves; confusion matrix; save to the library; fine-tune from a saved model. | A model trained in the workbench appears in the Classification tab; fine-tuning on a new class adds it. Window fits 1366×768. |
 | 5.3 | **NephNet3D** port from [awoloshuk/NephNet](https://github.com/awoloshuk/NephNet) and its extension [ntalukde/NephNet](https://github.com/ntalukde/NephNet): network with the original parameter names; both preprocessing variants; reading VTEA's per-class crop exports; 7 × 32 × 32 crops resampled to the model's voxel size; its augmentation and training recipe; loading the original weights; fine-tuning of `fc6` / `fc7`. | Parity: on the original kidney data and split, balanced accuracy within the agreed tolerance of the published 80.26%. Fine-tuning on a small new set improves on training from scratch. |
 | 5.4 | **STELLAR** port on current PyTorch / PyG, graph from `neighbor_graph`, reference-to-target annotation and novel types in the Training workbench. | On the public CODEX data, agreement with the reference implementation's annotations; runs in 3D on a synthetic volume. License confirmed. |
 | 5.5 | **Remote training and prediction**: `train` / `classify` jobs on the facility server (with per-user limits) and on Slurm clusters; progress, cancel, fetch. | A NephNet3D fine-tune runs on the facility server from the workbench and returns a model folder. |
 | 5.6 | **Active learning** and review: least-confident objects proposed for labelling; confidence thresholds as gates; model comparison on the same validation set. | Labelling the proposed objects improves balanced accuracy faster than labelling random ones, on a test set. |
 
-5.0 and 5.1 can start straight away; 5.3 can be built and tested on synthetic crops
+**Status**: 5.0 and 5.1 are done (vtea-core `classification.models`, `.training`,
+`.ann`; IBIF napari's Classification tab). The ANN is built on scikit-learn's MLP (no
+torch needed) and predicts with a NumPy forward pass from saved arrays; models are never
+pickled. The tab also has a compact **Train a model…** dialog (labels from phenotypes,
+validation by object or by time point / position, confusion matrix, save, fine-tune),
+so models can be made before the Training workbench (5.2) exists. Fine-tuning an ANN
+keeps its classes and features; adding classes needs a new model.
+
+5.0 and 5.1 could start straight away; 5.3 can be built and tested on synthetic crops
 straight away, and needs the original weights and data for parity; 5.4 needs the
 license check.
 

@@ -30,10 +30,11 @@ import pandas as pd
 # The vtea-core this version needs (as in pyproject.toml; a test keeps them equal). pip
 # does not replace an installed vtea-core with the same version number, so an upgrade of
 # IBIF napari can leave an older one: `vtea_core_problem` notices, and gives the command.
-VTEA_CORE = "vtea-core[graph,umap,opentsne] @ git+https://github.com/winfrees/vtea-python@3ee4225ba7c435eb98eff63dcc4f30b6376dfa52#subdirectory=packages/vtea-core"
+VTEA_CORE = "vtea-core[graph,umap,opentsne] @ git+https://github.com/winfrees/vtea-python@772e5cf410c33f4277cd191b08c79477253b6fd3#subdirectory=packages/vtea-core"
 VTEA_CORE_FEATURES = {"vtea_core.clustering": ["nearest_neighbors"],
                       "vtea_core.classes": ["column_references", "rename_columns"],
-                      "vtea_core.spatial": ["surface_distance", "neighbor_enrichment"]}
+                      "vtea_core.spatial": ["surface_distance", "neighbor_enrichment"],
+                      "vtea_core.classification": ["ANNClassifier", "load_model", "predictions"]}
 
 GATE_PREFIX = "gate: "
 IMAGE_GATE_PREFIX = "image gate: "
@@ -865,6 +866,8 @@ class Cytometry:
         for name in self.analyses_of("clustering"):
             if self.analyses[name]["columns"].get("cluster"):
                 out.append((f"{name} clusters", self.analyses[name]["columns"]["cluster"]))
+        for name in self.analyses_of("classification"):
+            out.append((f"{name} classes", self.analyses[name]["columns"]["class"]))
         return out
 
     def classes(self, key):
@@ -875,7 +878,86 @@ class Cytometry:
             return np.array([None if v is None or v != v or v == "unlabelled" else str(v) for v in values],
                             dtype=object)
         ids = self.column(key).astype(np.int64)
+        names = self.class_names(key)
+        if names:
+            return np.array([names.get(int(i)) for i in ids], dtype=object)
         return np.array([f"cluster {i}" if i > 0 else None for i in ids], dtype=object)
+
+    def class_names(self, column):
+        """{code: class name} when `column` is a classification's class column, else {}."""
+        for info in self.analyses.values():
+            if info.get("kind") == "classification" and info["columns"].get("class") == column:
+                return {k + 1: name for k, name in enumerate(info["classes"])}
+        return {}
+
+    # ---- supervised classification -----------------------------------------------------------
+
+    def add_classification(self, name, settings, rows, result, classes, colors=None):
+        """Store a model's predictions for table rows `rows` (a vtea-core `predictions`
+        frame): "<name> class" (1..k in the model's class order, 0 = not classified),
+        "<name> confidence" and "<name> p <class>"."""
+        self._check_analysis_name(name)
+        n = len(self.table)
+        rows = np.asarray(rows, dtype=np.int64)
+        code = {c: k + 1 for k, c in enumerate(classes)}
+        values = np.zeros(n, np.int64)
+        values[rows] = [code.get(c, 0) for c in result["class"]]
+        confidence = np.full(n, np.nan)
+        confidence[rows] = result["confidence"].to_numpy(float)
+        class_col, conf_col = f"{name} class", f"{name} confidence"
+        columns = {class_col: values, conf_col: confidence}
+        probabilities = []
+        for c in classes:
+            col = f"{name} p {c}"
+            p = np.full(n, np.nan)
+            p[rows] = result[f"p {c}"].to_numpy(float)
+            columns[col] = p
+            probabilities.append(col)
+        colors = {c: (colors or {}).get(c) or PALETTE[k % len(PALETTE)] for k, c in enumerate(classes)}
+        self._store(name, {**settings, "kind": "classification", "classes": list(classes), "colors": colors},
+                    {"class": class_col, "confidence": conf_col, "features": [conf_col],
+                     "probabilities": probabilities}, columns, len(rows))
+        return self.analyses[name]
+
+    def classification_counts(self, name):
+        """[(class, objects, mean confidence)] of a classification."""
+        info = self.analyses[name]
+        codes = self.column(info["columns"]["class"]).astype(np.int64)
+        conf = self.column(info["columns"]["confidence"])
+        out = []
+        for k, c in enumerate(info["classes"], start=1):
+            hit = codes == k
+            out.append((c, int(hit.sum()), float(np.nanmean(conf[hit])) if hit.any() else float("nan")))
+        return out
+
+    def phenotypes_from_classification(self, name, names=None, parent=None, min_confidence=None):
+        """Phenotypes from predicted classes: `names` maps class -> phenotype name (default:
+        the class names; the same name merges classes; empty skips a class). With
+        `min_confidence`, only objects predicted at least that sure."""
+        info = self.analyses[name]
+        column = quote(info["columns"]["class"])
+        names = names or {c: c for c in info["classes"]}
+        groups = {}
+        for k, c in enumerate(info["classes"], start=1):
+            pheno = (names.get(c) or "").strip()
+            if pheno:
+                groups.setdefault(pheno, []).append(k)
+        clash = [p for p in groups if p in self.tree or p in self.gate_names()]
+        if clash:
+            raise ValueError("these names are already used: " + ", ".join(clash))
+        sure = f" AND {quote(info['columns']['confidence'])} >= {min_confidence:g}" if min_confidence else ""
+        made = []
+        for pheno, ids in groups.items():
+            rule = f"{column} == {ids[0]}" if len(ids) == 1 else f"{column} in [{', '.join(map(str, ids))}]"
+            color = info.get("colors", {}).get(next(c for k, c in enumerate(info["classes"], 1) if k in ids))
+            made.append(self.add_phenotype(pheno, rule + sure, parent, color))
+        return made
+
+    def show_classification(self, name):
+        info = self.analyses[name]
+        codes = self.column(info["columns"]["class"]).astype(np.int64)
+        colors = {k: info["colors"][c] for k, c in enumerate(info["classes"], start=1)}
+        return self.paint(codes, f"{self.layer_name} {name}", colors)
 
     def unit(self):
         cols = self.centroid_columns()
@@ -1093,7 +1175,7 @@ class Cytometry:
         merged = self.table[keys].merge(saved, on=keys, how="left")
         self.derived = merged.drop(columns=keys)
         for info in self.analyses.values():
-            for key in ("cluster", "type"):
+            for key in ("cluster", "type", "class"):
                 col = info.get("columns", {}).get(key)
                 if col in self.derived.columns:
                     self.derived[col] = self.derived[col].fillna(0).astype(np.int64)
@@ -1134,6 +1216,17 @@ class Cytometry:
         return notes
 
 
+def model_library():
+    """The folder of saved classification models: $IBIF_NAPARI_MODELS, else
+    ~/.ibif-napari/models (created when first used)."""
+    import os
+    from pathlib import Path
+
+    path = Path(os.environ.get("IBIF_NAPARI_MODELS") or Path.home() / ".ibif-napari" / "models")
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 SEPARATE = 1e7  # how far apart time points / positions are put for distances (world units)
 NO_CLASS = "(none)"
 
@@ -1149,7 +1242,8 @@ def _split(frame):
 def _analysis_columns(info):
     """Every derived column an analysis made."""
     cols = info.get("columns", {})
-    return [c for c in [cols.get("cluster"), cols.get("type"), *cols.get("map", []), *cols.get("features", [])] if c]
+    return [c for c in [cols.get("cluster"), cols.get("type"), cols.get("class"), *cols.get("map", []),
+                        *cols.get("features", []), *cols.get("probabilities", [])] if c]
 
 
 _GENERIC_WORDS = {"intensity", "int", "channel", "ch", "value", "of", "the", "in"}

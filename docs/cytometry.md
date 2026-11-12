@@ -126,7 +126,29 @@ vtea-core, so VTEA and IBIF napari share them.
      among the objects (**Permutations**), giving z-scores.
    - **Colour the plot by type**, **Show types on image**. Engine: vtea-core
      `neighborhoods` and `spatial.enrichment`.
-7. **Make phenotypes.** Selecting phenotypes in the list shows their objects on the
+7. **Classify objects with a trained model** (the **Classification** tab):
+   - **Train a model…**: labels from the phenotypes (deepest, or a level), features
+     from the measurements (intensities by default), hidden layers, and a
+     **Validation** split: by object, or **by time point / position** so that each
+     image is wholly on one side (the honest test for new images). **Train** runs in
+     the background and can be stopped; the balanced accuracy and confusion matrix on
+     the held-out objects are shown. **Save to library** writes the model with its
+     card (classes, colours, features, training data, validation, notes). **Start
+     from** fine-tunes a saved model on new labels (same classes and features).
+   - **Model**: a model from the library (`~/.ibif-napari/models`, or the folder in
+     `IBIF_NAPARI_MODELS`), or **Browse…** for a folder. Its card is shown, and its
+     features are matched to the table's columns by name; missing ones are listed.
+   - **Classify** gives each object `<name> class`, `<name> confidence` and
+     `<name> p <class>`: plot, gate (e.g. confidence ≥ 0.8), **Colour the plot by
+     class**, **Show classes on image**, and **Make phenotypes** (rename or merge
+     classes, within a parent, only above a confidence). The classes can also be what
+     the Spatial and Neighbourhoods tabs class objects by.
+   - The first model family is a generic ANN (a multilayer perceptron over the
+     measurements, CPU only). Models are folders of JSON and plain arrays, never
+     pickles, so a shared library is safe to open. Engine: vtea-core
+     `classification`. NephNet3D and STELLAR follow (see
+     [classification-plan.md](classification-plan.md)).
+8. **Make phenotypes.** Selecting phenotypes in the list shows their objects on the
    image, as selecting gates does: Ctrl- or Shift-click several, each is shown in its
    colour and objects in more than one in white. Select a gate and click **Make phenotype…**, choosing the
    phenotype it belongs **within**. Or click **Add…** to write a rule yourself, for
@@ -146,7 +168,7 @@ vtea-core, so VTEA and IBIF napari share them.
    one level are exclusive (the first that matches wins). A phenotype with an empty
    rule is "the rest of its parent": everything in the parent that an earlier sibling
    did not claim (e.g. *Other T*).
-8. **Use the result.**
+9. **Use the result.**
    - **Show phenotypes on image** (workbench: **Show on image**) colours every object by
      its phenotype, either the deepest (most specific) one or the one at a chosen level
      of the hierarchy.
@@ -176,7 +198,7 @@ crowding the section.
 | 2 ✅ | **Dimensionality reduction and clustering** to find object types: feature choice and scaling (z-score, asinh), PCA / UMAP / t-SNE, k-means / Gaussian mixture / Leiden. A cluster × marker heat map to name clusters. Label clusters as phenotypes. Re-cluster within a phenotype, so you can work iteratively from coarse to fine. | vtea-core `reduction`, `clustering`, `clustering.profiles` (new) |
 | 3 ✅ | **Spatial features per object**, once some identities are known. Distance to the nearest object of each phenotype, by centroid or by **surface** (exact distance between masks, in µm, 3D included). Number and fraction of each phenotype within a radius. Contacts (touching masks). These features can be gated and clustered like any measurement, to split types further (e.g. CD8 T cells touching tumour cells). | vtea-core `spatial` (new) |
 | 4 ✅ | **Neighbourhood analysis.** Cellular neighbourhoods: composition of each cell's *k* nearest neighbours or of the cells within a radius, clustered into neighbourhood types (the CODEX / Schürch–Nolan approach). Cell-type × neighbourhood enrichment, and pairwise neighbourhood enrichment with permutation z-scores. Neighbourhood maps on the image. Neighbourhood features reflected back onto cells for gating. | vtea-core `neighborhoods` (extended) |
-| 5 | **Supervised object classification**: a Classification tab (apply a model; class and confidence per object; make phenotypes) and a Training workbench (labels from phenotypes, gates or clicked objects; train or fine-tune; validate; model library). First models: a generic ANN on measurements, **NephNet3D** on 3D nuclear crops (Woloshuk et al. 2021), and **STELLAR** reference-based annotation (Brbić et al. 2022). Training locally, on the facility GPU server or a cluster. See [classification-plan.md](classification-plan.md). | vtea-core `classification` (extended) |
+| 5 (in progress: 5.0, 5.1 done) | **Supervised object classification**: a Classification tab (apply a model; class and confidence per object; make phenotypes) and a Training workbench (labels from phenotypes, gates or clicked objects; train or fine-tune; validate; model library). First models: a generic ANN on measurements, **NephNet3D** on 3D nuclear crops (Woloshuk et al. 2021), and **STELLAR** reference-based annotation (Brbić et al. 2022). Training locally, on the facility GPU server or a cluster. See [classification-plan.md](classification-plan.md). | vtea-core `classification` (extended) |
 
 ### Notes on the methods
 
