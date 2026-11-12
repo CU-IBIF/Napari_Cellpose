@@ -129,7 +129,7 @@ replace it when only the commit changes. If the Cytometry section says vtea-core
 than needed, run the command it shows, which is:
 
 ```bash
-pip install --force-reinstall --no-deps "vtea-core[graph,umap,opentsne] @ git+https://github.com/winfrees/vtea-python@9d6efcbd443739724ac8a76023cfc4b26dea36e1#subdirectory=packages/vtea-core"
+pip install --force-reinstall --no-deps "vtea-core[graph,umap,opentsne] @ git+https://github.com/winfrees/vtea-python@3ee4225ba7c435eb98eff63dcc4f30b6376dfa52#subdirectory=packages/vtea-core"
 ``` If a file type
 reports a missing package (e.g. `No module named 'bioio_czi'`), install the package the
 message names, e.g. `pip install bioio-czi bioio-lif`.

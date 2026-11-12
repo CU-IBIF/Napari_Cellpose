@@ -30,9 +30,10 @@ import pandas as pd
 # The vtea-core this version needs (as in pyproject.toml; a test keeps them equal). pip
 # does not replace an installed vtea-core with the same version number, so an upgrade of
 # IBIF napari can leave an older one: `vtea_core_problem` notices, and gives the command.
-VTEA_CORE = "vtea-core[graph,umap,opentsne] @ git+https://github.com/winfrees/vtea-python@9d6efcbd443739724ac8a76023cfc4b26dea36e1#subdirectory=packages/vtea-core"
+VTEA_CORE = "vtea-core[graph,umap,opentsne] @ git+https://github.com/winfrees/vtea-python@3ee4225ba7c435eb98eff63dcc4f30b6376dfa52#subdirectory=packages/vtea-core"
 VTEA_CORE_FEATURES = {"vtea_core.clustering": ["nearest_neighbors"],
-                      "vtea_core.classes": ["column_references", "rename_columns"]}
+                      "vtea_core.classes": ["column_references", "rename_columns"],
+                      "vtea_core.spatial": ["surface_distance", "neighbor_enrichment"]}
 
 GATE_PREFIX = "gate: "
 IMAGE_GATE_PREFIX = "image gate: "
@@ -149,9 +150,12 @@ class Cytometry:
 
     def measured_features(self):
         """Numeric measurement columns that describe the objects (what clustering is run
-        on): size and intensities, not where the objects are."""
+        on): size and intensities, and the spatial / neighbourhood features computed
+        from them; not where the objects are, cluster ids or map coordinates."""
         derived = set(self.derived.columns) if self.derived is not None else set()
-        return [c for c in self.features() if c not in derived and " centroid " not in f" {c}"]
+        spatial = [c for info in self.analyses.values() for c in info.get("columns", {}).get("features", [])
+                   if c in derived]
+        return [c for c in self.features() if c not in derived and " centroid " not in f" {c}"] + spatial
 
     def prefix(self):
         """The column prefix of the objects layer's own measurements in a joined table
@@ -525,7 +529,7 @@ class Cytometry:
         return {
             "Gates": [c for c in cols if c.startswith(GATE_PREFIX)],
             "Image gates": [c for c in cols if c.startswith(IMAGE_GATE_PREFIX)],
-            "Clusters and maps": [c for c in cols if c in derived],
+            "Clusters, maps and spatial": [c for c in cols if c in derived],
             "Measurements": [c for c in self.measured_features()],
         }
 
@@ -759,13 +763,23 @@ class Cytometry:
         rows = np.flatnonzero(ok)
         return rows, values[rows]
 
-    def add_analysis(self, name, settings, rows, labels=None, embedding=None):
-        """Store a clustering / map run on table rows `rows`: cluster ids (1..k, by size;
-        0 = not clustered) in "<name> cluster", map coordinates in "<name> <map> 1/2"."""
+    def analysis_kind(self, name):
+        """"clustering", "spatial" or "neighbourhoods"."""
+        return self.analyses[name].get("kind", "clustering")
+
+    def analyses_of(self, kind):
+        return [n for n in self.analyses if self.analysis_kind(n) == kind]
+
+    def _check_analysis_name(self, name):
         if name in self.analyses:
             raise ValueError(f"there is already an analysis called {name!r}")
         if name in self.gate_names() or name in self.tree:
             raise ValueError(f"{name!r} is already a gate or phenotype name")
+
+    def add_analysis(self, name, settings, rows, labels=None, embedding=None):
+        """Store a clustering / map run on table rows `rows`: cluster ids (1..k, by size;
+        0 = not clustered) in "<name> cluster", map coordinates in "<name> <map> 1/2"."""
+        self._check_analysis_name(name)
         n = len(self.table)
         derived = self.derived if self.derived is not None else pd.DataFrame(index=self.table.index)
         columns = {}
@@ -794,7 +808,7 @@ class Cytometry:
         """Delete a clustering / map result. Returns the gates that were drawn on its
         map (they select nothing until a result of the same name is made again)."""
         info = self.analyses.pop(name)
-        cols = [info["columns"].get("cluster")] + list(info["columns"].get("map", []))
+        cols = _analysis_columns(info)
         orphaned = self.gates_using([c for c in cols if c])
         self.derived = self.derived.drop(columns=[c for c in cols if c and c in self.derived.columns])
         if self.derived.shape[1] == 0:
@@ -837,6 +851,215 @@ class Cytometry:
             made.append(self.add_phenotype(pheno, rule, parent))
         return made
 
+    # ---- spatial features and neighbourhoods -------------------------------------------------
+
+    def class_choices(self):
+        """[(label, key)] of what objects can be classed by for spatial analysis: the
+        phenotypes (deepest, or at a level) and every clustering's clusters."""
+        out = []
+        if len(self.tree):
+            out.append(("Phenotypes (deepest)", "phenotype"))
+            depth = max(self.tree.depth(n.name) for n in self.tree)
+            out += [(f"Phenotypes, level {k}", f"phenotype level {k}") for k in range(1, depth + 1)] \
+                if depth > 1 else []
+        for name in self.analyses_of("clustering"):
+            if self.analyses[name]["columns"].get("cluster"):
+                out.append((f"{name} clusters", self.analyses[name]["columns"]["cluster"]))
+        return out
+
+    def classes(self, key):
+        """Each object's class (None = none) for a `class_choices` key: phenotype names,
+        or "cluster <i>"."""
+        if key.startswith("phenotype"):
+            values = self.assignment()[key].to_numpy(dtype=object)
+            return np.array([None if v is None or v != v or v == "unlabelled" else str(v) for v in values],
+                            dtype=object)
+        ids = self.column(key).astype(np.int64)
+        return np.array([f"cluster {i}" if i > 0 else None for i in ids], dtype=object)
+
+    def unit(self):
+        cols = self.centroid_columns()
+        return "µm" if any("(µm)" in c for c in cols.values()) else "px"
+
+    def positions(self):
+        """Object centroids (world units; Z, Y, X as measured), each time point /
+        position moved far from the others so that no distance crosses between them."""
+        cols = self.centroid_columns()
+        if "Y" not in cols:
+            raise ValueError("the table has no centroids (measure the objects again)")
+        points = np.column_stack([self.table[cols[a]].to_numpy(float) for a in "ZYX" if a in cols])
+        keys = [k for k in ("T", "P") if k in self.table.columns]
+        if keys:
+            block = self.table.groupby(keys, sort=False).ngroup().to_numpy()
+            points = points.copy()
+            points[:, 0] += block * SEPARATE
+        return points
+
+    def label_blocks(self):
+        """[(table rows, label image, voxel size or None)] for each time point /
+        position of the objects layer (what surface distances and contacts read)."""
+        layer = self.labels_layer()
+        if layer is None:
+            raise ValueError(f"the objects layer {self.layer_name!r} is not open")
+        data = layer.data
+        n = min(_spatial_ndim(layer), 3)
+        lead = data.ndim - n
+        table = self.table
+        keys = [k for k in table.columns if _is_key(k) and k != "label"][:lead]
+        scale = tuple(float(v) for v in layer.scale[-n:])
+        out = []
+        for pos in (list(np.ndindex(*data.shape[:lead])) if lead else [()]):
+            rows = np.ones(len(table), bool)
+            for k, p in zip(keys, pos):
+                rows &= table[k].to_numpy() == p
+            if rows.any():
+                out.append((np.flatnonzero(rows), np.asarray(data[pos]), scale if self.unit() == "µm" else None))
+        return out
+
+    def spatial_job(self, settings):
+        """A function (safe to run in a background thread) that computes the spatial
+        features `settings` asks for, returning a DataFrame with one row per object.
+
+        settings: "classes" (a `class_choices` key), "targets" (class names, default all),
+        "measures" (any of "nearest", "within", "surface", "contacts"), "radius"."""
+        from vtea_core.data import Spacing
+        from vtea_core.spatial import contacts, nearest_distance, neighbors_within, surface_distance
+
+        classes = self.classes(settings["classes"])
+        targets = settings.get("targets") or None
+        measures = set(settings["measures"])
+        if not measures:
+            raise ValueError("choose at least one feature to measure")
+        points = self.positions() if measures & {"nearest", "within"} else None
+        blocks = self.label_blocks() if measures & {"surface", "contacts"} else []
+        labels = self.table["label"].to_numpy(np.int64)
+        n = len(self.table)
+        radius = float(settings.get("radius") or 0)
+
+        def job():
+            parts = []
+            if "nearest" in measures:
+                parts.append(nearest_distance(points, classes, targets=targets))
+            if "within" in measures:
+                parts.append(neighbors_within(points, classes, radius, targets=targets))
+            for measure, fn in (("surface", surface_distance), ("contacts", contacts)):
+                if measure not in measures:
+                    continue
+                pieces = []
+                for rows, image, scale in blocks:
+                    kwargs = {"targets": targets or sorted({c for c in classes if c is not None})}
+                    if measure == "surface":
+                        kwargs["spacing"] = Spacing(scale) if scale else None
+                    part = fn(image, labels[rows], classes[rows], **kwargs)
+                    part.index = rows
+                    pieces.append(part)
+                parts.append(pd.concat(pieces).reindex(range(n)) if pieces else pd.DataFrame(index=range(n)))
+            return pd.concat([p.reset_index(drop=True) for p in parts], axis=1)
+
+        return job
+
+    def add_spatial(self, name, settings, frame):
+        """Store spatial features (a `spatial_job` result) as "<name> <feature>" columns;
+        distances get their unit."""
+        self._check_analysis_name(name)
+        unit = self.unit()
+        columns = {}
+        for col in frame.columns:
+            label = f"{name} {col}" + (f" ({unit})" if "distance" in col else "")
+            columns[label] = frame[col].to_numpy(float)
+        self._store(name, {**settings, "kind": "spatial", "unit": unit}, {"features": list(columns)}, columns,
+                    int(len(frame)))
+        return self.analyses[name]
+
+    def neighbourhood_job(self, settings):
+        """A function (safe in a background thread) that builds each object's
+        neighbourhood (itself and the objects within `radius`, or its `k` nearest),
+        measures its class composition, sorts the neighbourhoods into `n_types` types
+        (k-means on the composition; vtea-core `neighborhoods`) and computes the
+        enrichment statistics (vtea-core `spatial.enrichment`). Returns a dict."""
+        from vtea_core.neighborhoods import (
+            NEIGHBORHOOD_TYPE,
+            build_neighborhoods,
+            classify_neighborhoods,
+            composition_columns,
+            neighborhood_features,
+        )
+        from vtea_core.spatial import neighbor_enrichment, type_enrichment
+
+        classes = self.classes(settings["classes"])
+        points = self.positions()
+        method = settings.get("method", "radius")
+        radius, k = float(settings.get("radius") or 0), int(settings.get("k") or 10)
+        n_types, seed = int(settings.get("n_types") or 6), int(settings.get("seed") or 0)
+        perms = int(settings.get("permutations", 200))
+
+        def job():
+            named = np.array([c if c is not None else NO_CLASS for c in classes], dtype=object)
+            data = pd.DataFrame({"object_id": np.arange(1, len(points) + 1),
+                                 **{f"centroid-{i}": points[:, i] for i in range(points.shape[1])},
+                                 "class": named})
+            hoods = build_neighborhoods(data, method="nearest" if method == "nearest" else "radius",
+                                        radius=radius if radius > 0 else 1.0, k=k)
+            table = neighborhood_features(hoods, data, class_column="class")
+            fractions = composition_columns(table)
+            typed = classify_neighborhoods(table, method="kmeans", n_clusters=n_types, features=",".join(fractions),
+                                           random_state=seed)
+            order = typed["neighborhood_id"].to_numpy(np.int64) - 1  # centred: one per object
+            types = np.zeros(len(points), np.int64)
+            types[order] = _by_size(typed[NEIGHBORHOOD_TYPE].to_numpy())
+            composition = {}
+            for col in fractions:
+                value = col[len("Class_"):-len("_ClassFraction")]
+                values = np.full(len(points), np.nan)
+                values[order] = typed[col].to_numpy(float) / 100.0
+                composition[value] = values
+            profile = pd.DataFrame(composition).groupby(types).mean()
+            sizes = pd.Series(types).value_counts().sort_index()
+            graph = {"k": k} if method == "nearest" else {"radius": radius}
+            pairs = neighbor_enrichment(points, classes, n_permutations=perms, random_state=seed, **graph)
+            by_type = type_enrichment(classes, types)
+            return {"types": types, "composition": composition, "profile": profile, "sizes": sizes,
+                    "pairs": pairs, "by_type": by_type}
+
+        return job
+
+    def add_neighbourhoods(self, name, settings, result):
+        """Store a `neighbourhood_job` result: each object's neighbourhood type in
+        "<name> neighbourhood" (1 = the most common type), the composition of its
+        neighbourhood in "<name> fraction <class>", and the tables the results show."""
+        self._check_analysis_name(name)
+        type_col = f"{name} neighbourhood"
+        columns = {type_col: result["types"]}
+        features = []
+        for value, values in result["composition"].items():
+            col = f"{name} fraction {value}"
+            columns[col] = values
+            features.append(col)
+        tables = {"profile": _split(result["profile"]), "sizes": _split(result["sizes"].to_frame("objects")),
+                  "pairs": _split(result["pairs"]), "by_type": _split(result["by_type"])}
+        self._store(name, {**settings, "kind": "neighbourhoods", "tables": tables},
+                    {"type": type_col, "features": features}, columns, len(result["types"]))
+        return self.analyses[name]
+
+    def analysis_table(self, name, which):
+        """A table saved with a neighbourhood result ("profile", "sizes", "pairs",
+        "by_type") as a DataFrame."""
+        data = self.analyses[name]["tables"][which]
+        return pd.DataFrame(data["data"], index=data["index"], columns=data["columns"])
+
+    def _store(self, name, info, columns_info, columns, n_objects):
+        derived = self.derived if self.derived is not None else pd.DataFrame(index=self.table.index)
+        for col, values in columns.items():
+            derived[col] = np.asarray(values)
+        self.derived = derived
+        self.analyses[name] = {**info, "columns": columns_info, "n_objects": int(n_objects)}
+        self.changed()
+
+    def show_neighbourhoods(self, name):
+        types = self.derived[self.analyses[name]["columns"]["type"]].to_numpy(np.int64)
+        colors = {int(c): PALETTE[(int(c) - 1) % len(PALETTE)] for c in np.unique(types) if c > 0}
+        return self.paint(types, f"{self.layer_name} {name}", colors)
+
     def show_clusters(self, name):
         labels = self.clusters(name)
         colors = {int(c): PALETTE[(int(c) - 1) % len(PALETTE)] for c in np.unique(labels) if c > 0}
@@ -870,9 +1093,10 @@ class Cytometry:
         merged = self.table[keys].merge(saved, on=keys, how="left")
         self.derived = merged.drop(columns=keys)
         for info in self.analyses.values():
-            col = info.get("columns", {}).get("cluster")
-            if col in self.derived.columns:
-                self.derived[col] = self.derived[col].fillna(0).astype(np.int64)
+            for key in ("cluster", "type"):
+                col = info.get("columns", {}).get(key)
+                if col in self.derived.columns:
+                    self.derived[col] = self.derived[col].fillna(0).astype(np.int64)
 
     def load_dict(self, data, tables, derived_path=None):
         """Restore a saved analysis. `derived_path`: the saved clustering / map columns,
@@ -908,6 +1132,24 @@ class Cytometry:
                          + ", ".join(names))
         self.changed()
         return notes
+
+
+SEPARATE = 1e7  # how far apart time points / positions are put for distances (world units)
+NO_CLASS = "(none)"
+
+
+def _split(frame):
+    """A DataFrame as JSON-safe lists (saved with the workspace)."""
+    data = frame.to_dict("split")
+    clean = lambda v: v.item() if hasattr(v, "item") else (None if isinstance(v, float) and v != v else v)  # noqa: E731
+    return {"index": [clean(v) for v in data["index"]], "columns": [clean(v) for v in data["columns"]],
+            "data": [[clean(v) for v in row] for row in data["data"]]}
+
+
+def _analysis_columns(info):
+    """Every derived column an analysis made."""
+    cols = info.get("columns", {})
+    return [c for c in [cols.get("cluster"), cols.get("type"), *cols.get("map", []), *cols.get("features", [])] if c]
 
 
 _GENERIC_WORDS = {"intensity", "int", "channel", "ch", "value", "of", "the", "in"}

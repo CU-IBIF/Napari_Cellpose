@@ -823,6 +823,49 @@ saved as rules, so the same tree can be applied to the next sample.
 
 ---
 
+### 10.5 Spatial features: what is around each object
+
+Once objects have identities (phenotypes, or clusters), the workbench's **Spatial** tab
+describes each object by its surroundings. Choose the **Classes** (phenotypes, at the deepest
+level or a chosen one, or a clustering's clusters), tick the classes to measure **Towards**,
+and what to measure:
+
+- **Distance to the nearest (centres)**: to the nearest *other* object of each class, from
+  centre to centre.
+- **Distance to the nearest (mask to mask)**: the exact distance between the segmented
+  masks, in µm and in 3D. Touching objects are one voxel apart. Slower than centres on large
+  images.
+- **Objects within the radius**: how many objects of each class are within the **Radius**,
+  and what fraction of all the neighbours they are.
+- **Contacts**: how many objects of each class touch the object.
+
+Click **Run**. The results are new columns of the object table, for example
+*Spatial 1 distance to Tumour (µm)*. Plot them on the Gating tab, gate on them, use them in
+phenotype rules (`` `Spatial 1 contacts Tumour` > 0 AND `gate: CD8+` ``: CD8+ cells touching
+tumour cells) or cluster on them. **Colour the plot by it** colours the Gating tab's points by
+the selected feature.
+
+### 10.6 Neighbourhoods
+
+The **Neighbourhoods** tab finds kinds of tissue neighbourhood: places with the same mix of
+cell types (Schürch et al. 2020). Each object's neighbourhood is itself and the objects within
+a **Radius** (or its **k** nearest). Its composition (the fraction of each class) is measured,
+and k-means sorts the neighbourhoods into **Types**. Each object gets its neighbourhood's
+type and composition as columns (*Neighbourhoods 1 neighbourhood*, *Neighbourhoods 1 fraction
+T*), to gate, colour by and use in rules.
+
+**Show** draws one of three heat maps:
+
+- **Composition of each type**: the mean fraction of each class in each type.
+- **Cell types in each type**: log2 of observed over expected objects; red means the class is
+  enriched in that type.
+- **Neighbours of each class**: whether class B is among class A's neighbours more often than
+  chance. The neighbourhoods are kept and the classes shuffled among the objects
+  (**Permutations** times); the z-score says how far the real count is from the shuffled
+  ones (above about 2: more than chance; below about −2: avoided).
+
+**Colour the plot by type** and **Show types on image** show where the types are.
+
 ## 11. Filament tracing
 
 The **Filament tracing** section traces neurons, microtubules, vessels and other branched
@@ -1120,6 +1163,9 @@ ibif-napari-vv all vv --backend classic
   communities. *Sci Rep* 9:5233 (2019). [doi:10.1038/s41598-019-41695-z](https://doi.org/10.1038/s41598-019-41695-z)
 - Blondel VD, Guillaume JL, Lambiotte R, Lefebvre E. Fast unfolding of communities in large
   networks. *J Stat Mech* P10008 (2008). [doi:10.1088/1742-5468/2008/10/P10008](https://doi.org/10.1088/1742-5468/2008/10/P10008)
+- Schürch CM, Bhate SS, Barlow GL, et al. Coordinated cellular neighborhoods orchestrate
+  antitumoral immunity at the colorectal cancer invasive front. *Cell* 182:1341–1359 (2020).
+  [doi:10.1016/j.cell.2020.07.005](https://doi.org/10.1016/j.cell.2020.07.005)
 - Levine JH, Simonds EF, Bendall SC, et al. Data-driven phenotypic dissection of AML reveals
   progenitor-like cells that correlate with prognosis. *Cell* 162:184–197 (2015).
   [doi:10.1016/j.cell.2015.05.047](https://doi.org/10.1016/j.cell.2015.05.047)

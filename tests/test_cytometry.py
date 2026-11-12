@@ -8,6 +8,7 @@ pytest.importorskip("napari")
 pytest.importorskip("vtea_core")
 
 from napari.components import ViewerModel  # noqa: E402
+from qtpy.QtCore import Qt  # noqa: E402
 
 from ibif_napari import _cytometry as cy  # noqa: E402
 from ibif_napari import _measure, _workspace  # noqa: E402
@@ -591,7 +592,7 @@ def test_phenotype_dialog_checks_the_rule_while_typing(qtbot):
     assert "the rest of the objects" in d.check.text() and ok.isEnabled()
     # The column list is grouped, and inserts the full name.
     items = [d.insert.itemText(i).strip() for i in range(d.insert.count())]
-    assert "— Gates —" in items and "— Clusters and maps —" in items and "Cell CD8 mean" in items
+    assert "— Gates —" in items and "— Clusters, maps and spatial —" in items and "Cell CD8 mean" in items
     d.insert.activated.emit(items.index("gate: CD3+"))
     d._insert_operator("AND")
     assert d.rule.text().strip() == "`gate: CD3+` AND"
@@ -925,3 +926,108 @@ def test_gates_are_drawn_with_blitting(qtbot):
     plot.canvas.flush_events()
     assert len(drawn) == 1 and len(drawn[0]) > 20
     assert len(full) <= 2  # not one full redraw per mouse move
+
+
+def _typed_scene():
+    """scene() with two phenotypes: T (the left two columns of cells) and Other."""
+    v, table = scene()
+    s = cy.state_of(v)
+    s.set_table("cells", table, "cells")
+    s.add_phenotype("T", "`CD3 mean` > 100", color="#ff0000")
+    s.add_phenotype("Other", "", color="#0000ff")
+    return v, s
+
+
+def test_spatial_tab_measures_distances_neighbours_and_contacts(qtbot, tmp_path):
+    from ibif_napari._cyto_workbench import Workbench
+
+    v, s = _typed_scene()
+    bench = Workbench(v)
+    qtbot.addWidget(bench)
+    tab = bench.spatial
+    assert tab.classes.currentData() == "phenotype" and tab.checked_targets() == ["Other", "T"]
+    for box in tab.measures.values():
+        box.setChecked(True)
+    tab.radius.setValue(15.0)
+    info = tab.run(wait=True)
+    assert info is not None and info["kind"] == "spatial" and s.analyses_of("spatial") == ["Spatial 1"]
+    cols = info["columns"]["features"]
+    assert "Spatial 1 distance to T (µm)" in cols and "Spatial 1 surface distance to Other (µm)" in cols
+    t = s.mask("phenotype", "T")
+    col = s.table["cells: centroid X (µm)"] if "cells: centroid X (µm)" in s.table else \
+        s.table[s.centroid_columns()["X"]]
+    x = col.to_numpy()
+    d_t = s.column("Spatial 1 distance to T (µm)")
+    # Cells are 20 px (10 µm) apart: every T cell has another T cell 10 µm away; the
+    # Other column next to the T cells is 10 µm from one, the far column 20 µm.
+    assert (d_t[t] == 10).all() and set(d_t[~t]) == {10.0, 20.0}
+    assert d_t[x == x.max()].min() == 20
+    # Masks 12 px wide with 8 px gaps: 9 voxel steps of 0.5 µm between nearest voxels.
+    assert (s.column("Spatial 1 surface distance to T (µm)")[t] == 4.5).all()
+    assert (s.column("Spatial 1 contacts") == 0).all()
+    # Within 15 µm: side and diagonal neighbours, never across the two time points.
+    n_all = s.column("Spatial 1 n T within 15") + s.column("Spatial 1 n Other within 15")
+    assert n_all.max() == 8 and n_all.min() == 3
+    # The features are like any other: listed for clustering, in rules, colour the plot.
+    assert "Spatial 1 distance to T (µm)" in s.measured_features()
+    assert s.rule_count("`Spatial 1 distance to T (µm)` > 15")[0] == 6  # the far column, 2 time points
+    tab.columns.setCurrentRow(0)
+    tab.colour_plot()
+    assert bench.color_by.currentText() == tab.columns.item(0).data(Qt.UserRole)
+    assert bench.tabs.currentIndex() == 0
+    assert bench.clustering.analysis.count() == 0  # the Clustering tab lists only its own results
+    folder, notes = _workspace.save_workspace(v, tmp_path / "w")
+    assert notes == []
+    w = ViewerModel()
+    assert _workspace.load_workspace(w, folder) == []
+    restored = cy.state_of(w)
+    np.testing.assert_allclose(restored.column("Spatial 1 distance to T (µm)"), d_t)
+    tab.delete()
+    assert not s.analyses and s.derived is None
+
+
+def test_neighbourhood_tab_types_and_enrichment(qtbot):
+    from ibif_napari._cyto_spatial import VIEWS
+    from ibif_napari._cyto_workbench import Workbench
+
+    v, s = _typed_scene()
+    bench = Workbench(v)
+    qtbot.addWidget(bench)
+    tab = bench.neighbourhoods
+    tab.radius.setValue(15.0)
+    tab.n_types.setValue(2)
+    tab.permutations.setValue(100)
+    info = tab.run(wait=True)
+    assert info is not None and info["kind"] == "neighbourhoods"
+    types = s.column("Neighbourhoods 1 neighbourhood")
+    assert set(types) == {1, 2}
+    # The T side and the Other side of the image are the two types.
+    t = s.mask("phenotype", "T")
+    left_type = np.bincount(types[t].astype(int)).argmax()
+    assert (types[t] == left_type).mean() > 0.6 and (types[~t] != left_type).mean() > 0.6
+    frac = s.column("Neighbourhoods 1 fraction T")
+    assert frac[t].mean() > frac[~t].mean()
+    profile = s.analysis_table("Neighbourhoods 1", "profile")
+    assert set(profile.columns) == {"T", "Other"} and len(profile) == 2
+    pairs = s.analysis_table("Neighbourhoods 1", "pairs").set_index(["class", "neighbor"])
+    assert pairs.loc[("T", "T"), "z"] > 0 > pairs.loc[("T", "Other"), "z"]
+    for k in range(len(VIEWS)):  # every view draws
+        tab.view.setCurrentIndex(k)
+        assert tab.heatmap.figure.axes
+    tab.colour_plot()
+    assert bench.color_by.currentText() == "Neighbourhoods 1 neighbourhood"
+    assert any(text.get_text().startswith("type ") for text in bench.plot.axes.get_legend().get_texts())
+    layer = tab.show_on_image()
+    assert layer.name == "cells Neighbourhoods 1" and set(np.unique(layer.data)) == {0, 1, 2}
+    assert s.rule_count("`Neighbourhoods 1 neighbourhood` == 1")[0] == int((types == 1).sum())
+
+
+def test_spatial_tabs_need_classes(qtbot):
+    from ibif_napari._cyto_workbench import Workbench
+
+    v, table = scene()
+    cy.state_of(v).set_table("cells", table, "cells")
+    bench = Workbench(v)
+    qtbot.addWidget(bench)
+    assert not bench.spatial.run_btn.isEnabled() and "Make phenotypes" in bench.spatial.status.text()
+    assert bench.spatial.run(wait=True) is None

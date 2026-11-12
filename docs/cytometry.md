@@ -96,7 +96,37 @@ vtea-core, so VTEA and IBIF napari share them.
      is merged.
    - **Plot the map** shows the map on the Gating tab, coloured by cluster, where you
      can gate on it. **Show clusters on image** colours the objects by cluster.
-5. **Make phenotypes.** Selecting phenotypes in the list shows their objects on the
+5. **Describe objects by their surroundings** (the workbench's **Spatial** tab), once
+   some objects have identities:
+   - **Classes**: the phenotypes (deepest, or at a level of the hierarchy) or the
+     clusters of a clustering. **Towards** picks the classes to measure towards.
+   - **Distance to the nearest (centres)**: to the nearest *other* object of each
+     class, centroid to centroid.
+   - **Distance to the nearest (mask to mask)**: the exact distance between the
+     masks, voxel to voxel, in µm and in 3D (anisotropic voxels included); touching
+     objects are one voxel apart. Slower than centres on large images.
+   - **Objects within the radius**: how many objects of each class are within the
+     radius, and what fraction of all the neighbours they are.
+   - **Contacts**: how many objects of each class touch the mask.
+   - Each result becomes columns of the object table (`Spatial 1 distance to Tumour
+     (µm)`, `Spatial 1 n CD8 T within 30`, ...). Plot them, gate on them, write rules
+     with them (`` `Spatial 1 contacts Tumour` > 0 AND `gate: CD8+` ``) or cluster on
+     them, like any measurement. Distances never cross between time points or
+     positions. Engine: vtea-core `spatial`.
+6. **Find neighbourhood types** (the **Neighbourhoods** tab):
+   - Each object's neighbourhood is itself and the objects within a **radius**, or
+     its **k** nearest. Its composition is the fraction of each class in it.
+   - **Types**: k-means on the compositions sorts neighbourhoods into types (the
+     CODEX / Schürch–Nolan cellular neighbourhoods). Each object gets its
+     neighbourhood's type (`Neighbourhoods 1 neighbourhood`, 1 = the most common)
+     and its composition (`Neighbourhoods 1 fraction T`), as table columns.
+   - **Show**: the composition of each type; which classes are enriched in each
+     type (log2 observed / expected); and which classes are neighbours of which
+     more than chance: the neighbour graph is kept and the classes are permuted
+     among the objects (**Permutations**), giving z-scores.
+   - **Colour the plot by type**, **Show types on image**. Engine: vtea-core
+     `neighborhoods` and `spatial.enrichment`.
+7. **Make phenotypes.** Selecting phenotypes in the list shows their objects on the
    image, as selecting gates does: Ctrl- or Shift-click several, each is shown in its
    colour and objects in more than one in white. Select a gate and click **Make phenotype…**, choosing the
    phenotype it belongs **within**. Or click **Add…** to write a rule yourself, for
@@ -116,7 +146,7 @@ vtea-core, so VTEA and IBIF napari share them.
    one level are exclusive (the first that matches wins). A phenotype with an empty
    rule is "the rest of its parent": everything in the parent that an earlier sibling
    did not claim (e.g. *Other T*).
-6. **Use the result.**
+8. **Use the result.**
    - **Show phenotypes on image** (workbench: **Show on image**) colours every object by
      its phenotype, either the deepest (most specific) one or the one at a chosen level
      of the hierarchy.
@@ -135,7 +165,8 @@ as lists of objects, so the same tree can type the next acquisition.
 ## Roadmap
 
 The section is being built in stages. **Phase 1** (gating, subgating, image gates and
-the phenotype hierarchy) and **Phase 2** (maps and clustering) are done. The later phases use the same object table and the
+the phenotype hierarchy), **Phase 2** (maps and clustering), **Phase 3** (spatial
+features) and **Phase 4** (neighbourhoods) are done. The later phases use the same object table and the
 same phenotype tree. The larger tools get their own tabs in the workbench rather than
 crowding the section.
 
@@ -143,8 +174,8 @@ crowding the section.
 |---|---|---|
 | 1 ✅ | Plot and image gates, subgates, gates within phenotypes, phenotype hierarchy, show on image, export, workspace | vtea-core `gates`, `classes.hierarchy` (new) |
 | 2 ✅ | **Dimensionality reduction and clustering** to find object types: feature choice and scaling (z-score, asinh), PCA / UMAP / t-SNE, k-means / Gaussian mixture / Leiden. A cluster × marker heat map to name clusters. Label clusters as phenotypes. Re-cluster within a phenotype, so you can work iteratively from coarse to fine. | vtea-core `reduction`, `clustering`, `clustering.profiles` (new) |
-| 3 | **Spatial features per object**, once some identities are known. Distance to the nearest object of each phenotype, by centroid or by **surface** (exact distance between masks, in µm, 3D included). Number and fraction of each phenotype within a radius. Contacts (touching masks). These features can be gated and clustered like any measurement, to split types further (e.g. CD8 T cells touching tumour cells). | vtea-core (new `spatial` module) |
-| 4 | **Neighbourhood analysis.** Cellular neighbourhoods: composition of each cell's *k* nearest neighbours or of the cells within a radius, clustered into neighbourhood types (the CODEX / Schürch–Nolan approach). Cell-type × neighbourhood enrichment, and pairwise neighbourhood enrichment with permutation z-scores. Neighbourhood maps on the image. Neighbourhood features reflected back onto cells for gating. | vtea-core `neighborhoods` (extended) |
+| 3 ✅ | **Spatial features per object**, once some identities are known. Distance to the nearest object of each phenotype, by centroid or by **surface** (exact distance between masks, in µm, 3D included). Number and fraction of each phenotype within a radius. Contacts (touching masks). These features can be gated and clustered like any measurement, to split types further (e.g. CD8 T cells touching tumour cells). | vtea-core `spatial` (new) |
+| 4 ✅ | **Neighbourhood analysis.** Cellular neighbourhoods: composition of each cell's *k* nearest neighbours or of the cells within a radius, clustered into neighbourhood types (the CODEX / Schürch–Nolan approach). Cell-type × neighbourhood enrichment, and pairwise neighbourhood enrichment with permutation z-scores. Neighbourhood maps on the image. Neighbourhood features reflected back onto cells for gating. | vtea-core `neighborhoods` (extended) |
 | 5 | **Reference-based annotation with STELLAR**, in a separate integrated window. STELLAR ([snap-stanford/stellar](https://github.com/snap-stanford/stellar); Brbić et al., Nature Methods 2022) is a graph neural network over a cell graph. It transfers labels from an annotated dataset and finds new cell types. Optional install (PyTorch Geometric), run locally or on the facility GPU server / cluster. | vtea-core plug-in |
 
 ### Notes on the methods
