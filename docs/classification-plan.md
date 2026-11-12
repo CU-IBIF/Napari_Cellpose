@@ -152,18 +152,26 @@ ascending limb, distal convoluted tubule, collecting duct, CD45+ immune cells, n
 cells, CD31+ glomerular and CD31+ interstitial endothelium; to confirm against the
 paper). One recorded training run used 64,689 labelled nuclei.
 
-**Network** (`model/model.py`, class `NephNet3D`, called `threeDmodel` in the configs):
+**Network** (`model/model.py`, class `NephNet3D`, called `threeDmodel` in the configs).
+The published 3D architecture (the paper's figure) is the code's network with
+`num_feature` f = **76**: 1 × 32 × 32 × 7 → 76 × 32 × 32 × 7 → 152 × 16 × 16 × 3 →
+304 × 8 × 8 × 1 → 608 × 4 × 4 × 1 → 9,728 → 608 → classes (the figure writes
+channels × Y × X × Z). In C × Z × Y × X:
 
-| Block | Layers | Output (for `num_feature` = f) |
-| --- | --- | --- |
-| 1 | [Conv3d 3×3×3, pad 1 → BatchNorm3d → LeakyReLU] × 2 → MaxPool (2, 2, 2) | f × 3 × 16 × 16 |
-| 2 | same, 2f channels → MaxPool (2, 2, 2) | 2f × 1 × 8 × 8 |
-| 3 | same, 4f channels → MaxPool (1, 2, 2) in effect (see below) | 4f × 1 × 4 × 4 |
-| 4 | Conv3d 1×3×3 → BatchNorm3d → LeakyReLU | 8f × 1 × 4 × 4 |
-| head | flatten → Linear 128f→8f → LeakyReLU → BatchNorm1d → Dropout 0.5 → Linear 8f→4f → LeakyReLU → BatchNorm1d → Dropout 0.5 → Linear 4f→classes | classes |
+| Block | Layers | Convolutions give (f = 76) | After pooling |
+| --- | --- | --- | --- |
+| 1 | [Conv3d 3×3×3, pad 1 → BatchNorm3d → LeakyReLU] × 2 → MaxPool (2, 2, 2) | 76 × 7 × 32 × 32 | 76 × 3 × 16 × 16 |
+| 2 | same, 2f channels → MaxPool (2, 2, 2) | 152 × 3 × 16 × 16 | 152 × 1 × 8 × 8 |
+| 3 | same, 4f channels → MaxPool (1, 2, 2) (see below) | 304 × 1 × 8 × 8 | 304 × 1 × 4 × 4 |
+| 4 | Conv3d 1×3×3, pad (0, 1, 1) → BatchNorm3d → LeakyReLU | 608 × 1 × 4 × 4 | |
+| head | flatten (9,728) → Linear → 608 → LeakyReLU → BatchNorm1d → Dropout 0.5 → Linear → 304 → LeakyReLU → BatchNorm1d → Dropout 0.5 → Linear → classes | | |
 
-Kaiming-normal initialisation of convolution and linear weights. With f = 16 the
-network has 560,985 parameters (recorded run).
+Kaiming-normal initialisation of convolution and linear weights. With f = 76 and 9
+classes the network has **12,610,005 parameters** (the same count gives the 560,985
+recorded for a run with f = 16). The figure shows one hidden linear layer (608)
+before the classes; the code, and the transfer-learning notebook that retrains `fc6`
+and `fc7`, have two (608, then 304). The weights' parameter names will show which the
+published model had; the port follows the code unless they say otherwise.
 
 **Training** (`configs/config_hdf5.json`): SGD with Nesterov momentum 0.8, learning
 rate 0.016, weight decay 0.006, batch 256; ReduceLROnPlateau (patience 8, factor 0.29)
@@ -201,9 +209,9 @@ values), and the port implements both.
 
 **Things in the repositories the port has to settle:**
 
-- **Network width.** The configs build the model with `num_feature` = 76; the recorded
-  run's summary shows 16. Which width the published model used decides which weights
-  load (to confirm with the authors).
+- **Network width.** Settled: the published model is f = 76, as in the configs and the
+  paper's figure (a recorded development run used 16). The port defaults to 76.
+- **Hidden linear layers.** One (the figure) or two (the code); settled by the weights.
 - **Depth of the third pooling.** The code pools depth by 2 in all three blocks, which
   cannot take a 7-slice input to the 1 × 4 × 4 the first linear layer expects on
   current PyTorch; the recorded run shows the depth staying at 1 through the third
@@ -218,7 +226,7 @@ values), and the port implements both.
 
 **Port plan** (`vtea_core.classification.nephnet`):
 
-- `NephNet3D(n_classes, width=16|76)` as above, with the original parameter names, so
+- `NephNet3D(n_classes, width=76)` as above, with the original parameter names, so
   an original checkpoint's `state_dict` loads unchanged.
 - **Crops**: extend `extract_crops` (cubes today) to a per-axis size (7, 32, 32), with
   **resampling to the model's voxel size** (recorded on its card) so a model trained at
@@ -233,13 +241,18 @@ values), and the port implements both.
   but `fc6` / `fc7` by default, with an option to also unfreeze block 4, or to fit a
   logistic regression on the penultimate features (as the extension's
   `log_classifier.py`).
+- **Before the weights are found**, everything is built and tested on synthetic crops:
+  shapes and parameter count against the table above, a `state_dict` with the
+  original parameter names loading unchanged, training and fine-tuning on a small
+  synthetic set.
 - **Parity**: with the original weights, predictions on the original test crops
   match the original code's; with the original data, retraining reaches the published
   balanced accuracy within the agreed tolerance. Only then is it offered as
   "NephNet3D" rather than as a "3D CNN".
-- Compute: training on a GPU (facility server or cluster); with 5.6 × 10⁵ parameters
-  and 7 × 32 × 32 inputs, prediction is fast enough on a CPU for tens of thousands of
-  nuclei.
+- Compute: training on a GPU (facility server or cluster): 12.6 million parameters,
+  most of them (5.9 million) in the first linear layer. Prediction on 7 × 32 × 32 crops
+  is still practical on a CPU for tens of thousands of nuclei; a GPU for whole
+  specimens.
 
 ### 3.3 STELLAR (milestone 5.4)
 
@@ -336,8 +349,10 @@ license check.
 
 - **NephNet3D assets**: are the trained weights (`model_best.pth` of the published run,
   and any trained with the extension) and the labelled kidney crops (the HDF5 datasets
-  or VTEA's CSV exports) available, which network width (16 or 76) and which
-  preprocessing (/ 255, or mean and standard deviation) each set of weights used, what voxel size were the crops taken at, and what
+  or VTEA's CSV exports) available, which
+  preprocessing (/ 255, or mean and standard deviation) each set of weights used
+  (the width is settled: 76), whether the published model has one hidden linear layer
+  or two, what voxel size were the crops taken at, and what
   tolerance on the published balanced accuracy counts as parity?
 - **Shared models**: should the facility server host a shared model library (e.g. a
   reviewed kidney NephNet3D), and who approves models into it?
