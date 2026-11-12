@@ -75,7 +75,7 @@ vtea_core.classification
 ├── training.py       (new)     splits (by object / image / region), class weights,
 │                               training loop, early stopping, metrics, confusion matrix
 ├── ann.py            (new)     generic ANN (MLP) over measurement features
-├── nephnet.py        (new)     NephNet3D, ported from the Java implementation
+├── nephnet.py        (new)     NephNet3D, ported from awoloshuk/NephNet
 └── stellar.py        (new)     STELLAR on current PyTorch / PyTorch Geometric
 
 ibif_napari
@@ -128,33 +128,88 @@ is present, for GPU and fine-tuning.
 NephNet3D (Woloshuk et al., *Cytometry A* 2021) classifies kidney cell types in situ
 from 3D nuclear (DAPI) image volumes alone, trained on nuclei labelled with VTEA; it
 reported 80.26% balanced accuracy and outperformed classical machine learning and
-shape-based classifiers.
+shape-based classifiers. The reference implementation is
+[awoloshuk/NephNet](https://github.com/awoloshuk/NephNet) (PyTorch; README states the
+MIT license, compatible with vtea-core's GPL-2.0 provided the notice is kept; last
+commit June 2020). What it does, read from its code, configs and recorded notebook
+runs:
 
-- **Port, not reinvent.** The reference is the Java implementation in VTEA
-  (`vtea.deeplearning`, NephNet3D) and the paper. vtea-core's existing `Cell3DClassifier`
-  is explicitly *not* NephNet3D's layer layout, so `nephnet.py` will reproduce the
-  published network: its layers, crop size, channels, normalisation and training
-  recipe. **These are to be taken from the Java source and the paper; they are not
-  restated here** (the paper could not be read while writing this plan).
-- Input: `extract_crops` (exists) gives fixed-size crops centred on each object, in
-  table order, z-scored per crop, optionally masked to the object. Two additions:
-  **resampling to the model's voxel size** (a model trained at one Z step must see the
-  same physical size at another), and **augmentation** (flips, 90° rotations in XY,
-  small intensity changes) for training.
-- Weights: Java checkpoints (JavaCPP / PyTorch bindings) cannot be loaded directly,
-  as with the VAEs. Options, in order of preference: (1) export the original weights
-  from the Java / original training run to a PyTorch state dict; (2) retrain on the
-  original labelled kidney nuclei if the dataset is available; (3) train from scratch
-  on new labels.
-- **Parity check**: on the original data and split, the port must reach the published
-  balanced accuracy within a stated tolerance before it is offered as "NephNet3D"
-  rather than "3D CNN".
-- **Fine-tuning** for new tissue or a new microscope: start from the kidney weights,
-  freeze the convolutional layers, retrain the classifier head (and optionally
-  unfreeze the last block) on a few hundred labelled nuclei. This is the main way
-  NephNet3D will be used outside its training tissue.
-- Compute: GPU for training (facility server or cluster); prediction is feasible on a
-  CPU for thousands of nuclei, GPU for whole-slide volumes.
+**Input.** One channel (DAPI), a crop of **7 × 32 × 32** voxels (Z × Y × X) around each
+nucleus, exported from VTEA to HDF5 (`train_data`, `train_labels`, `test_data`,
+`test_labels`, `test_ids`). Intensities are divided by 255 (`RangeNormalize`: the
+crops are 8-bit), not z-scored. A dataset-wide mean / standard deviation
+normalisation exists in the code but is commented out.
+
+**Classes** (9): `s1`, `s23`, `tal`, `dct`, `cd`, `cd45`, `nestin`, `31glom`,
+`31interstitum`, as named in the code (read as: proximal tubule S1 and S2/3, thick
+ascending limb, distal convoluted tubule, collecting duct, CD45+ immune cells, nestin+
+cells, CD31+ glomerular and CD31+ interstitial endothelium; to confirm against the
+paper). One recorded training run used 64,689 labelled nuclei.
+
+**Network** (`model/model.py`, class `NephNet3D`, called `threeDmodel` in the configs):
+
+| Block | Layers | Output (for `num_feature` = f) |
+| --- | --- | --- |
+| 1 | [Conv3d 3×3×3, pad 1 → BatchNorm3d → LeakyReLU] × 2 → MaxPool (2, 2, 2) | f × 3 × 16 × 16 |
+| 2 | same, 2f channels → MaxPool (2, 2, 2) | 2f × 1 × 8 × 8 |
+| 3 | same, 4f channels → MaxPool (1, 2, 2) in effect (see below) | 4f × 1 × 4 × 4 |
+| 4 | Conv3d 1×3×3 → BatchNorm3d → LeakyReLU | 8f × 1 × 4 × 4 |
+| head | flatten → Linear 128f→8f → LeakyReLU → BatchNorm1d → Dropout 0.5 → Linear 8f→4f → LeakyReLU → BatchNorm1d → Dropout 0.5 → Linear 4f→classes | classes |
+
+Kaiming-normal initialisation of convolution and linear weights. With f = 16 the
+network has 560,985 parameters (recorded run).
+
+**Training** (`configs/config_hdf5.json`): SGD with Nesterov momentum 0.8, learning
+rate 0.016, weight decay 0.006, batch 256; ReduceLROnPlateau (patience 8, factor 0.29)
+on validation loss; up to 500 epochs, keeping the best validation loss; 15% of the
+training set held out for validation; cross-entropy weighted by class
+(weight = largest class count / class count). Augmentation: random flips along all
+three axes, a random 90° rotation in XY, a random rotation of up to ±25° in XY, a
+5-voxel translation (probability 0.2) and a random contrast change (factor 0.8,
+probability 0.2).
+
+**Transfer learning** (`notebooks/Transfer learning.ipynb`,
+`configs/config_Train44Test33_transfer.json`): load the trained weights, freeze every
+layer except the last two linear layers (`fc6`, `fc7`), and train those for 20 epochs
+(SGD, learning rate 0.02, batch 128) on a small part of the new dataset. The notebook
+tried 1%, 2.5%, 5%, 7.5%, 10%, 15% and 20% of a held-out specimen. This is the recipe
+the Training workbench offers as **Fine-tune NephNet3D**.
+
+**Things in the repository the port has to settle:**
+
+- **Network width.** The configs build the model with `num_feature` = 76; the recorded
+  run's summary shows 16. Which width the published model used decides which weights
+  load (to confirm with the authors).
+- **Depth of the third pooling.** The code pools depth by 2 in all three blocks, which
+  cannot take a 7-slice input to the 1 × 4 × 4 the first linear layer expects on
+  current PyTorch; the recorded run shows the depth staying at 1 through the third
+  pooling. The port pools the third block in Y and X only, which reproduces the
+  recorded shapes and the parameter count, and is checked by loading the original
+  weights.
+- **The committed class does not run as is** (`NephNet3D.__init__` calls
+  `super(threeDmodel, self)`, the class's old name); the saved weights' parameter names
+  (`conv_layer1` … `fc7`) are what the port must keep so that they load.
+- **Weights and data** are not in the repository (they were saved to local paths).
+
+**Port plan** (`vtea_core.classification.nephnet`):
+
+- `NephNet3D(n_classes, width=16|76)` as above, with the original parameter names, so
+  an original checkpoint's `state_dict` loads unchanged.
+- **Crops**: extend `extract_crops` (cubes today) to a per-axis size (7, 32, 32), with
+  **resampling to the model's voxel size** (recorded on its card) so a model trained at
+  one Z step sees the same physical size at another; and the model's own intensity
+  scaling (/255 of an 8-bit conversion for the original model; z-score for new
+  models). The 8-bit conversion VTEA used for the export is to be matched exactly.
+- **Augmentation** as listed, applied to the crops during training only.
+- **Training** with the recipe above as the default; fine-tuning freezes everything
+  but `fc6` / `fc7` by default, with an option to also unfreeze block 4.
+- **Parity**: with the original weights, predictions on the original test crops
+  match the original code's; with the original data, retraining reaches the published
+  balanced accuracy within the agreed tolerance. Only then is it offered as
+  "NephNet3D" rather than as a "3D CNN".
+- Compute: training on a GPU (facility server or cluster); with 5.6 × 10⁵ parameters
+  and 7 × 32 × 32 inputs, prediction is fast enough on a CPU for tens of thousands of
+  nuclei.
 
 ### 3.3 STELLAR (milestone 5.4)
 
@@ -238,19 +293,21 @@ Training GPU models goes through the routes IBIF napari already has for Cellpose
 | 5.0 | **Common ground** in vtea-core: `ObjectClassifier` protocol, model folders and cards, `training.py` (splits by object / image / region, class weights, metrics, confusion matrix). | Unit tests: a toy classifier round-trips through save / load; image-level split never shares an image between train and validation. |
 | 5.1 | **Generic ANN** in vtea-core, and the **Classification tab** in IBIF napari (apply a model; class, confidence and per-class probability columns; make phenotypes; show on image). | On the cell-types test table, an ANN trained on half the objects predicts the other half with balanced accuracy > 0.95; the tab runs it and makes phenotypes. |
 | 5.2 | **Training workbench** window: labels from phenotypes, gates and clicked objects; example gallery; split and class balance; train with live curves; confusion matrix; save to the library; fine-tune from a saved model. | A model trained in the workbench appears in the Classification tab; fine-tuning on a new class adds it. Window fits 1366×768. |
-| 5.3 | **NephNet3D** port: architecture and preprocessing from the Java implementation and the paper; crop resampling to the model's voxel size; augmentation; weight export or retraining; fine-tuning (frozen convolutions). | Parity: on the original kidney data and split, balanced accuracy within the agreed tolerance of the published 80.26%. Fine-tuning on a small new set improves on training from scratch. |
+| 5.3 | **NephNet3D** port from [awoloshuk/NephNet](https://github.com/awoloshuk/NephNet): network with the original parameter names; 7 × 32 × 32 crops resampled to the model's voxel size; its augmentation and training recipe; loading the original weights; fine-tuning of `fc6` / `fc7`. | Parity: on the original kidney data and split, balanced accuracy within the agreed tolerance of the published 80.26%. Fine-tuning on a small new set improves on training from scratch. |
 | 5.4 | **STELLAR** port on current PyTorch / PyG, graph from `neighbor_graph`, reference-to-target annotation and novel types in the Training workbench. | On the public CODEX data, agreement with the reference implementation's annotations; runs in 3D on a synthetic volume. License confirmed. |
 | 5.5 | **Remote training and prediction**: `train` / `classify` jobs on the facility server (with per-user limits) and on Slurm clusters; progress, cancel, fetch. | A NephNet3D fine-tune runs on the facility server from the workbench and returns a model folder. |
 | 5.6 | **Active learning** and review: least-confident objects proposed for labelling; confidence thresholds as gates; model comparison on the same validation set. | Labelling the proposed objects improves balanced accuracy faster than labelling random ones, on a test set. |
 
-5.0 and 5.1 can start straight away; 5.3 needs the Java source / original weights and
-data; 5.4 needs the license check.
+5.0 and 5.1 can start straight away; 5.3 can be built and tested on synthetic crops
+straight away, and needs the original weights and data for parity; 5.4 needs the
+license check.
 
 ## 7. Open questions
 
-- **NephNet3D assets**: are the original weights (Java / training run) and the labelled
-  kidney nuclei available to export or retrain from, and what tolerance on the
-  published balanced accuracy counts as parity?
+- **NephNet3D assets**: are the trained weights (`model_best.pth` of the published run)
+  and the labelled kidney crops (the HDF5 datasets) available, which network width
+  (16 or 76) is the published model, what voxel size were the crops taken at, and what
+  tolerance on the published balanced accuracy counts as parity?
 - **Shared models**: should the facility server host a shared model library (e.g. a
   reviewed kidney NephNet3D), and who approves models into it?
 - **Quotas**: which limits apply on the facility server (training hours per user,
@@ -262,7 +319,8 @@ data; 5.4 needs the license check.
 
 - Woloshuk A, Khochare S, Almulhim AF, et al. In situ classification of cell types in
   human kidney tissue using 3D nuclear staining. *Cytometry A* 99(7):707–721 (2021).
-  [doi:10.1002/cyto.a.24274](https://doi.org/10.1002/cyto.a.24274)
+  [doi:10.1002/cyto.a.24274](https://doi.org/10.1002/cyto.a.24274); code
+  [awoloshuk/NephNet](https://github.com/awoloshuk/NephNet).
 - Brbić M, Cao K, Hickey JW, et al. Annotation of spatially resolved single-cell data
   with STELLAR. *Nature Methods* 19:1411–1418 (2022).
   [doi:10.1038/s41592-022-01651-8](https://doi.org/10.1038/s41592-022-01651-8);
