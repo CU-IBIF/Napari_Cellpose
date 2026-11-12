@@ -131,12 +131,18 @@ reported 80.26% balanced accuracy and outperformed classical machine learning an
 shape-based classifiers. The reference implementation is
 [awoloshuk/NephNet](https://github.com/awoloshuk/NephNet) (PyTorch; README states the
 MIT license, compatible with vtea-core's GPL-2.0 provided the notice is kept; last
-commit June 2020). What it does, read from its code, configs and recorded notebook
-runs:
+commit June 2020), extended in
+[ntalukde/NephNet](https://github.com/ntalukde/NephNet) (2021; "an extension of NephNet
+code originally created by Andre Woloshuk"). What they do, read from their code,
+configs and recorded notebook runs (the extension's differences are listed after the
+original's recipe):
 
 **Input.** One channel (DAPI), a crop of **7 × 32 × 32** voxels (Z × Y × X) around each
-nucleus, exported from VTEA to HDF5 (`train_data`, `train_labels`, `test_data`,
-`test_labels`, `test_ids`). Intensities are divided by 255 (`RangeNormalize`: the
+nucleus. VTEA exports one CSV per class (per row: the class, the object id, then the
+7,168 voxel values as signed bytes), which `utils/toHDF5.py` (in the extension) turns
+into an HDF5 file (`train_data`, `train_labels`, `test_data`, `test_labels`,
+`test_ids`), converting the bytes to unsigned and holding out a fraction of each
+class's objects for testing. Intensities are divided by 255 (`RangeNormalize`: the
 crops are 8-bit), not z-scored. A dataset-wide mean / standard deviation
 normalisation exists in the code but is commented out.
 
@@ -175,7 +181,25 @@ layer except the last two linear layers (`fc6`, `fc7`), and train those for 20 e
 tried 1%, 2.5%, 5%, 7.5%, 10%, 15% and 20% of a held-out specimen. This is the recipe
 the Training workbench offers as **Fine-tune NephNet3D**.
 
-**Things in the repository the port has to settle:**
+**The extension (ntalukde/NephNet)** keeps the network and training loop and changes:
+
+- the model class is `threeDmodel` again (so the file runs) and block 3 pools with
+  `mp_d=1`, i.e. in Y and X only, confirming the shapes of the recorded run;
+- intensities are normalised by a dataset mean and standard deviation (given per
+  dataset; an IMPRS DAPI volume set is noted at 141.42 / 18.85) instead of / 255;
+- stronger augmentation: shot noise (probability 0.3), occasional downsampling
+  (0.2), rotation up to ±35° in XY, translation up to 8 voxels (0.3), contrast (0.3);
+- `log_classifier.py`: keep the trained network, drop its last layer, and fit a
+  class-balanced logistic regression on the penultimate features (a cheap
+  alternative to retraining `fc7` when adapting to new data);
+- class weights can merge sub-classes for the reported classes (e.g. S1 with S2/3,
+  several CD45 sub-classes), commented out.
+
+So **which preprocessing a set of weights expects depends on which version trained
+them**: the model card records it (/ 255, or mean and standard deviation and their
+values), and the port implements both.
+
+**Things in the repositories the port has to settle:**
 
 - **Network width.** The configs build the model with `num_feature` = 76; the recorded
   run's summary shows 16. Which width the published model used decides which weights
@@ -186,9 +210,10 @@ the Training workbench offers as **Fine-tune NephNet3D**.
   pooling. The port pools the third block in Y and X only, which reproduces the
   recorded shapes and the parameter count, and is checked by loading the original
   weights.
-- **The committed class does not run as is** (`NephNet3D.__init__` calls
-  `super(threeDmodel, self)`, the class's old name); the saved weights' parameter names
-  (`conv_layer1` … `fc7`) are what the port must keep so that they load.
+- **The original's committed class does not run as is** (`NephNet3D.__init__` calls
+  `super(threeDmodel, self)`, the class's old name; the extension fixed it); the saved
+  weights' parameter names (`conv_layer1` … `fc7`) are what the port must keep so that
+  they load.
 - **Weights and data** are not in the repository (they were saved to local paths).
 
 **Port plan** (`vtea_core.classification.nephnet`):
@@ -200,9 +225,14 @@ the Training workbench offers as **Fine-tune NephNet3D**.
   one Z step sees the same physical size at another; and the model's own intensity
   scaling (/255 of an 8-bit conversion for the original model; z-score for new
   models). The 8-bit conversion VTEA used for the export is to be matched exactly.
-- **Augmentation** as listed, applied to the crops during training only.
+- **Crops from a VTEA export**: read the per-class CSV / HDF5 format above, so existing
+  VTEA training sets can be used without re-exporting.
+- **Augmentation** as listed (the original's set by default, the extension's as the
+  "strong" option), applied to the crops during training only.
 - **Training** with the recipe above as the default; fine-tuning freezes everything
-  but `fc6` / `fc7` by default, with an option to also unfreeze block 4.
+  but `fc6` / `fc7` by default, with an option to also unfreeze block 4, or to fit a
+  logistic regression on the penultimate features (as the extension's
+  `log_classifier.py`).
 - **Parity**: with the original weights, predictions on the original test crops
   match the original code's; with the original data, retraining reaches the published
   balanced accuracy within the agreed tolerance. Only then is it offered as
@@ -293,7 +323,7 @@ Training GPU models goes through the routes IBIF napari already has for Cellpose
 | 5.0 | **Common ground** in vtea-core: `ObjectClassifier` protocol, model folders and cards, `training.py` (splits by object / image / region, class weights, metrics, confusion matrix). | Unit tests: a toy classifier round-trips through save / load; image-level split never shares an image between train and validation. |
 | 5.1 | **Generic ANN** in vtea-core, and the **Classification tab** in IBIF napari (apply a model; class, confidence and per-class probability columns; make phenotypes; show on image). | On the cell-types test table, an ANN trained on half the objects predicts the other half with balanced accuracy > 0.95; the tab runs it and makes phenotypes. |
 | 5.2 | **Training workbench** window: labels from phenotypes, gates and clicked objects; example gallery; split and class balance; train with live curves; confusion matrix; save to the library; fine-tune from a saved model. | A model trained in the workbench appears in the Classification tab; fine-tuning on a new class adds it. Window fits 1366×768. |
-| 5.3 | **NephNet3D** port from [awoloshuk/NephNet](https://github.com/awoloshuk/NephNet): network with the original parameter names; 7 × 32 × 32 crops resampled to the model's voxel size; its augmentation and training recipe; loading the original weights; fine-tuning of `fc6` / `fc7`. | Parity: on the original kidney data and split, balanced accuracy within the agreed tolerance of the published 80.26%. Fine-tuning on a small new set improves on training from scratch. |
+| 5.3 | **NephNet3D** port from [awoloshuk/NephNet](https://github.com/awoloshuk/NephNet) and its extension [ntalukde/NephNet](https://github.com/ntalukde/NephNet): network with the original parameter names; both preprocessing variants; reading VTEA's per-class crop exports; 7 × 32 × 32 crops resampled to the model's voxel size; its augmentation and training recipe; loading the original weights; fine-tuning of `fc6` / `fc7`. | Parity: on the original kidney data and split, balanced accuracy within the agreed tolerance of the published 80.26%. Fine-tuning on a small new set improves on training from scratch. |
 | 5.4 | **STELLAR** port on current PyTorch / PyG, graph from `neighbor_graph`, reference-to-target annotation and novel types in the Training workbench. | On the public CODEX data, agreement with the reference implementation's annotations; runs in 3D on a synthetic volume. License confirmed. |
 | 5.5 | **Remote training and prediction**: `train` / `classify` jobs on the facility server (with per-user limits) and on Slurm clusters; progress, cancel, fetch. | A NephNet3D fine-tune runs on the facility server from the workbench and returns a model folder. |
 | 5.6 | **Active learning** and review: least-confident objects proposed for labelling; confidence thresholds as gates; model comparison on the same validation set. | Labelling the proposed objects improves balanced accuracy faster than labelling random ones, on a test set. |
@@ -304,9 +334,10 @@ license check.
 
 ## 7. Open questions
 
-- **NephNet3D assets**: are the trained weights (`model_best.pth` of the published run)
-  and the labelled kidney crops (the HDF5 datasets) available, which network width
-  (16 or 76) is the published model, what voxel size were the crops taken at, and what
+- **NephNet3D assets**: are the trained weights (`model_best.pth` of the published run,
+  and any trained with the extension) and the labelled kidney crops (the HDF5 datasets
+  or VTEA's CSV exports) available, which network width (16 or 76) and which
+  preprocessing (/ 255, or mean and standard deviation) each set of weights used, what voxel size were the crops taken at, and what
   tolerance on the published balanced accuracy counts as parity?
 - **Shared models**: should the facility server host a shared model library (e.g. a
   reviewed kidney NephNet3D), and who approves models into it?
@@ -320,7 +351,8 @@ license check.
 - Woloshuk A, Khochare S, Almulhim AF, et al. In situ classification of cell types in
   human kidney tissue using 3D nuclear staining. *Cytometry A* 99(7):707–721 (2021).
   [doi:10.1002/cyto.a.24274](https://doi.org/10.1002/cyto.a.24274); code
-  [awoloshuk/NephNet](https://github.com/awoloshuk/NephNet).
+  [awoloshuk/NephNet](https://github.com/awoloshuk/NephNet), extended in
+  [ntalukde/NephNet](https://github.com/ntalukde/NephNet).
 - Brbić M, Cao K, Hickey JW, et al. Annotation of spatially resolved single-cell data
   with STELLAR. *Nature Methods* 19:1411–1418 (2022).
   [doi:10.1038/s41592-022-01651-8](https://doi.org/10.1038/s41592-022-01651-8);
