@@ -191,11 +191,12 @@ class ClusteringTab(QWidget):
         current = self.analysis.currentText()
         self.analysis.blockSignals(True)
         self.analysis.clear()
-        self.analysis.addItems(list(state.analyses))
-        if current in state.analyses:
+        mine = state.analyses_of("clustering")
+        self.analysis.addItems(mine)
+        if current in mine:
             self.analysis.setCurrentText(current)
-        elif state.analyses:
-            self.analysis.setCurrentIndex(len(state.analyses) - 1)
+        elif mine:
+            self.analysis.setCurrentIndex(len(mine) - 1)
         self.analysis.blockSignals(False)
         if not self.name.text() or self.name.text() in state.analyses:
             self.name.setText(state.unique_analysis_name())
@@ -315,7 +316,7 @@ class ClusteringTab(QWidget):
     def show_analysis(self, name):
         state = self.state
         self.table.setRowCount(0)
-        has = bool(name) and name in state.analyses
+        has = bool(name) and name in state.analyses and state.analysis_kind(name) == "clustering"
         for b in (self.plot_btn, self.image_btn, self.delete_btn, self.make_btn):
             b.setEnabled(has)
         if not has:
@@ -421,7 +422,11 @@ class Heatmap(QWidget):
         self._ticks = []
         self.canvas.mpl_connect("motion_notify_event", self._hover)
 
-    def show(self, z, counts=None):
+    def show(self, z, counts=None, row_label="cluster (objects)", value_label="z-score of mean",
+             limits=(-2, 2), cmap="RdBu_r", color_rows=True, annotate=False):
+        """Rows x columns of `z` as a heat map: `limits` of the colour scale (None: the
+        data's), rows coloured by their cluster / type number when `color_rows`, and
+        the value written in each cell when `annotate`."""
         from ._cyto_labels import short_names
 
         self.figure.clf()
@@ -431,8 +436,17 @@ class Heatmap(QWidget):
             self.canvas.draw_idle()
             return
         ax = self.figure.add_subplot(111)
-        im = ax.imshow(z.to_numpy(float), aspect="auto", cmap="RdBu_r", vmin=-2, vmax=2,
-                       interpolation="nearest")
+        values = z.to_numpy(float)
+        lo, hi = limits if limits is not None else (np.nanmin(values), np.nanmax(values))
+        im = ax.imshow(values, aspect="auto", cmap=cmap, vmin=lo, vmax=hi, interpolation="nearest")
+        if annotate and values.size <= 400:
+            for (r, c), v in np.ndenumerate(values):
+                if np.isfinite(v):
+                    t = (v - lo) / (hi - lo) if hi > lo else 0.5
+                    # Diverging maps are dark at both ends, viridis only at the low end.
+                    dark = abs(t - 0.5) > 0.35 if cmap == "RdBu_r" else t < 0.6
+                    ax.text(c, r, f"{v:.1f}", ha="center", va="center", fontsize=6,
+                            color="white" if dark else "black")
         names = [str(c) for c in z.columns]
         short = short_names(names)
         self.labels = {short[n]: n for n in names}
@@ -443,10 +457,11 @@ class Heatmap(QWidget):
         self._ticks = list(zip(ax.get_xticklabels(), names))
         labels = [f"{c} ({int(counts.loc[c, 'objects'])})" if counts is not None else str(c) for c in z.index]
         ax.set_yticks(range(z.shape[0]), labels, fontsize=7)
-        for tick, c in zip(ax.get_yticklabels(), z.index):
-            tick.set_color(cy.PALETTE[(int(c) - 1) % len(cy.PALETTE)])
-        ax.set_ylabel("cluster (objects)", fontsize=8)
-        self.figure.colorbar(im, ax=ax, label="z-score of mean", shrink=0.8)
+        if color_rows:
+            for tick, c in zip(ax.get_yticklabels(), z.index):
+                tick.set_color(cy.PALETTE[(int(c) - 1) % len(cy.PALETTE)])
+        ax.set_ylabel(row_label, fontsize=8)
+        self.figure.colorbar(im, ax=ax, label=value_label, shrink=0.8)
         self.canvas.draw_idle()
 
     def full_name(self, x, y):

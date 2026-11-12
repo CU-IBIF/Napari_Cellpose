@@ -180,8 +180,14 @@ class Workbench(QWidget):
         viewer.layers.events.removed.connect(self._layer_removed)
         from ._cyto_cluster import ClusteringTab
 
+        from ._cyto_spatial import NeighbourhoodTab, SpatialTab
+
         self.clustering = ClusteringTab(self)
         self.tabs.addTab(self.clustering, "Clustering")
+        self.spatial = SpatialTab(self)
+        self.tabs.addTab(self.spatial, "Spatial")
+        self.neighbourhoods = NeighbourhoodTab(self)
+        self.tabs.addTab(self.neighbourhoods, "Neighbourhoods")
         self.state.listen(self.refresh)
         self.refresh()
         self.fit_to_screen()
@@ -243,8 +249,9 @@ class Workbench(QWidget):
             self._view_version = state.view_version
             self.apply_view(state.view)  # e.g. restored from a workspace
         self.replot()
-        if hasattr(self, "clustering"):
-            self.clustering.refresh()
+        for tab in ("clustering", "spatial", "neighbourhoods"):
+            if hasattr(self, tab):
+                getattr(self, tab).refresh()
         if state.table is None:
             self.status.setText("Choose the objects to analyse in the Cytometry section (Measure them first).")
         else:
@@ -445,7 +452,8 @@ class Workbench(QWidget):
             if _categorical(color_by, values):
                 ids = values.astype(np.int64)
                 colors = np.array([_category_color(i) for i in ids], dtype=object)
-                legend = [(f"cluster {i}" if i > 0 else "not clustered", _category_color(i))
+                what = "type" if color_by.endswith(" neighbourhood") else "cluster"
+                legend = [(f"{what} {i}" if i > 0 else f"no {what}", _category_color(i))
                           for i in np.unique(ids)][:20]
                 values = None
         gates = []
@@ -898,7 +906,9 @@ class Workbench(QWidget):
 
 RULE_HELP = (
     "<b>Columns</b>: gates <code>`gate: CD3+`</code>, image gates <code>`image gate: tumour`</code>, "
-    "clusters <code>`Clustering 1 cluster`</code>, measurements <code>`cells: … CD8 mean`</code>. "
+    "clusters <code>`Clustering 1 cluster`</code>, measurements <code>`cells: … CD8 mean`</code>, "
+    "spatial <code>`Spatial 1 distance to Tumour (µm)`</code>, "
+    "neighbourhoods <code>`Neighbourhoods 1 neighbourhood`</code>. "
     "Names with spaces or symbols go in <code>`backticks`</code> or quotes. A gate can be given by "
     "its name, a measurement by its heat-map label (<i>Cell CD8 mean</i>).<br>"
     "<b>Conditions</b>: <code>== != &lt; &lt;= &gt; &gt;=</code>, <code>in [3, 7]</code>, "
@@ -1084,7 +1094,7 @@ def _pop_parse(value):
 
 def _categorical(name, values):
     """Cluster ids are coloured as categories, not on a colour scale."""
-    return name.endswith(" cluster") and len(values) > 0
+    return name.endswith((" cluster", " neighbourhood")) and len(values) > 0
 
 
 def _category_color(i):
