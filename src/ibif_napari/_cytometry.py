@@ -30,11 +30,12 @@ import pandas as pd
 # The vtea-core this version needs (as in pyproject.toml; a test keeps them equal). pip
 # does not replace an installed vtea-core with the same version number, so an upgrade of
 # IBIF napari can leave an older one: `vtea_core_problem` notices, and gives the command.
-VTEA_CORE = "vtea-core[graph,umap,opentsne] @ git+https://github.com/winfrees/vtea-python@772e5cf410c33f4277cd191b08c79477253b6fd3#subdirectory=packages/vtea-core"
+VTEA_CORE = "vtea-core[graph,umap,opentsne] @ git+https://github.com/winfrees/vtea-python@68e1acdc51b2a6601e66dd44ef24f7c137457854#subdirectory=packages/vtea-core"
 VTEA_CORE_FEATURES = {"vtea_core.clustering": ["nearest_neighbors"],
                       "vtea_core.classes": ["column_references", "rename_columns"],
                       "vtea_core.spatial": ["surface_distance", "neighbor_enrichment"],
-                      "vtea_core.classification": ["ANNClassifier", "load_model", "predictions"]}
+                      "vtea_core.classification": ["ANNClassifier", "load_model", "predictions"],
+                      "vtea_core.trajectory": ["slingshot", "association", "composition_along"]}
 
 GATE_PREFIX = "gate: "
 IMAGE_GATE_PREFIX = "image gate: "
@@ -765,7 +766,7 @@ class Cytometry:
         return rows, values[rows]
 
     def analysis_kind(self, name):
-        """"clustering", "spatial" or "neighbourhoods"."""
+        """"clustering", "spatial", "neighbourhoods", "classification" or "trajectory"."""
         return self.analyses[name].get("kind", "clustering")
 
     def analyses_of(self, kind):
@@ -854,9 +855,11 @@ class Cytometry:
 
     # ---- spatial features and neighbourhoods -------------------------------------------------
 
-    def class_choices(self):
+    def class_choices(self, neighbourhoods=False):
         """[(label, key)] of what objects can be classed by for spatial analysis: the
-        phenotypes (deepest, or at a level) and every clustering's clusters."""
+        phenotypes (deepest, or at a level), every clustering's clusters and every
+        classification's classes; with `neighbourhoods`, also every neighbourhood
+        analysis's types (what trajectories of neighbourhood types run on)."""
         out = []
         if len(self.tree):
             out.append(("Phenotypes (deepest)", "phenotype"))
@@ -868,6 +871,9 @@ class Cytometry:
                 out.append((f"{name} clusters", self.analyses[name]["columns"]["cluster"]))
         for name in self.analyses_of("classification"):
             out.append((f"{name} classes", self.analyses[name]["columns"]["class"]))
+        if neighbourhoods:
+            for name in self.analyses_of("neighbourhoods"):
+                out.append((f"{name} types", self.analyses[name]["columns"]["type"]))
         return out
 
     def classes(self, key):
@@ -881,7 +887,28 @@ class Cytometry:
         names = self.class_names(key)
         if names:
             return np.array([names.get(int(i)) for i in ids], dtype=object)
-        return np.array([f"cluster {i}" if i > 0 else None for i in ids], dtype=object)
+        word = "type" if self.neighbourhood_of(key) else "cluster"
+        return np.array([f"{word} {i}" if i > 0 else None for i in ids], dtype=object)
+
+    def neighbourhood_of(self, column):
+        """The neighbourhood analysis whose type column is `column`, or None."""
+        for name, info in self.analyses.items():
+            if info.get("kind") == "neighbourhoods" and info["columns"].get("type") == column:
+                return name
+        return None
+
+    def class_colors(self, key):
+        """{class name: colour} for a `class_choices` key: the phenotypes' colours, a
+        classification's, and the palette by number for clusters / neighbourhood types."""
+        if key.startswith("phenotype"):
+            return {n.name: n.color or PALETTE[k % len(PALETTE)] for k, n in enumerate(self.tree)}
+        names = self.class_names(key)
+        if names:
+            info = next(i for i in self.analyses.values() if i["columns"].get("class") == key)
+            return dict(info.get("colors", {}))
+        ids = np.unique(self.column(key).astype(np.int64))
+        word = "type" if self.neighbourhood_of(key) else "cluster"
+        return {f"{word} {i}": PALETTE[(int(i) - 1) % len(PALETTE)] for i in ids if i > 0}
 
     def class_names(self, column):
         """{code: class name} when `column` is a classification's class column, else {}."""
@@ -1123,9 +1150,144 @@ class Cytometry:
                     {"type": type_col, "features": features}, columns, len(result["types"]))
         return self.analyses[name]
 
+    # ---- trajectories ------------------------------------------------------------------------
+
+    def trajectory_job(self, settings):
+        """A function (safe in a background thread) that finds the lineages and
+        pseudotime of the objects (vtea-core `trajectory.slingshot`) and what changes
+        along them. Returns a dict.
+
+        settings: "population" ([kind, key]), "classes" (a `class_choices` key: cell types,
+        clusters, classes or neighbourhood types), "features", "asinh", "scaling",
+        "space" ("pca", or the name of a clustering whose map is used), "components"
+        (PCA), "start" (a class), "ends" (classes, optional), "distance" ("slingshot" /
+        "euclidean"), "n_bins", "track" (a second `class_choices` key whose classes are
+        followed along pseudotime, optional)."""
+        from vtea_core.measurements.normalize import normalize_features
+        from vtea_core.reduction import reduction as rd
+        from vtea_core.trajectory import association, composition_along, feature_trends, slingshot
+
+        features = list(settings["features"])
+        if not features:
+            raise ValueError("tick at least one feature")
+        classes = self.classes(settings["classes"])
+        rows, values = self.matrix(tuple(settings.get("population") or ("all", None)), features,
+                                   asinh=bool(settings.get("asinh")), cofactor=settings.get("cofactor", ASINH_COFACTOR))
+        keep = np.array([classes[r] is not None for r in rows], bool)
+        rows, values = rows[keep], values[keep]
+        labels = classes[rows]
+        start = settings.get("start")
+        if start not in set(labels):
+            raise ValueError(f"the start {start!r} has no objects among those analysed")
+        if len(set(labels)) < 2:
+            raise ValueError("a trajectory needs objects of at least two classes")
+        space = settings.get("space") or "pca"
+        mapped = None
+        if space != "pca":
+            cols = self.analyses[space]["columns"].get("map") or []
+            if len(cols) < 2:
+                raise ValueError(f"{space} has no map")
+            mapped = np.column_stack([self.column(c)[rows] for c in cols[:2]])
+            ok = np.isfinite(mapped).all(axis=1)
+            if not ok.all():  # objects not in that map's run
+                rows, values, labels, mapped = rows[ok], values[ok], labels[ok], mapped[ok]
+        track = settings.get("track")
+        tracked = self.classes(track)[rows] if track else None
+        n_bins = int(settings.get("n_bins") or 20)
+
+        def job():
+            data = normalize_features(np.asarray(values, float), settings.get("scaling", "zscore"))
+            if mapped is not None:
+                points = mapped
+            else:
+                n_comp = int(max(1, min(settings.get("components") or 10, data.shape[1], len(data) - 1)))
+                points = rd.pca(data, n_comp, normalize="none") if data.shape[1] > 1 else data
+                points = np.asarray(points, float)
+            traj = slingshot(points, labels, start, ends=settings.get("ends") or None,
+                             distance=settings.get("distance", "slingshot"))
+            names = [f"t{j + 1}" for j in range(traj.n_lineages)]
+            frame = pd.DataFrame(data, columns=features)
+            out = {"rows": rows, "trajectory": traj, "lineage_names": names,
+                   "display": points[:, :2] if points.shape[1] >= 2 else np.column_stack([points[:, 0],
+                                                                                         np.zeros(len(points))]),
+                   "trends": feature_trends(traj.pseudotime, frame, weights=traj.weights, n_bins=n_bins,
+                                            lineages=names),
+                   "association": association(traj.pseudotime, frame, weights=traj.weights, lineages=names),
+                   "composition": composition_along(traj.pseudotime, labels, weights=traj.weights,
+                                                    n_bins=max(4, n_bins // 2), lineages=names)}
+            if tracked is not None:
+                out["tracked"] = composition_along(traj.pseudotime, tracked, weights=traj.weights,
+                                                   n_bins=max(4, n_bins // 2), lineages=names)
+            return out
+
+        return job
+
+    def add_trajectory(self, name, settings, result):
+        """Store a `trajectory_job` result: "<name> pseudotime" (the weighted mean over
+        an object's lineages), "<name> lineage" (its main lineage, 1..L; 0 = none),
+        "<name> pseudotime t<j>" per lineage (empty off the lineage), "<name> PC 1/2"
+        when the space was PCA, and the lineages, curves and tables the results show."""
+        self._check_analysis_name(name)
+        n = len(self.table)
+        rows = np.asarray(result["rows"], np.int64)
+        traj = result["trajectory"]
+        names = result["lineage_names"]
+
+        def full(values, fill=np.nan, dtype=float):
+            out = np.full(n, fill, dtype=dtype)
+            out[rows] = values
+            return out
+
+        mean_col, lineage_col = f"{name} pseudotime", f"{name} lineage"
+        columns = {mean_col: full(traj.average_pseudotime()),
+                   lineage_col: full(traj.main_lineage(), 0, np.int64)}
+        per_lineage = []
+        for j, lin in enumerate(names):
+            col = f"{name} pseudotime {lin}"
+            columns[col] = full(traj.pseudotime[:, j])
+            per_lineage.append(col)
+        maps = []
+        if settings.get("space", "pca") == "pca":
+            for k in range(2):
+                col = f"{name} PC {k + 1}"
+                columns[col] = full(result["display"][:, k])
+                maps.append(col)
+            display = maps
+        else:
+            display = list(self.analyses[settings["space"]]["columns"]["map"][:2])
+        structure = traj.to_dict()
+        two_d = lambda a: [list(p[:2]) + [0.0] * (2 - len(p[:2])) for p in a]  # noqa: E731
+        structure = {"clusters": structure["clusters"], "edges": structure["edges"],
+                     "start": structure["start"], "ends": structure["ends"],
+                     "lineages": structure["lineages"], "names": names,
+                     "centers": two_d(structure["centers"]), "curves": [two_d(c) for c in structure["curves"]],
+                     "display": display,
+                     "objects": [int(np.isfinite(traj.pseudotime[:, j]).sum()) for j in range(len(names))]}
+        tables = {k: _split(result[k]) for k in ("trends", "association", "composition", "tracked") if k in result}
+        self._store(name, {**settings, "kind": "trajectory", "structure": structure, "tables": tables},
+                    {"pseudotime": mean_col, "lineage": lineage_col, "features": [mean_col, *per_lineage],
+                     "lineages": per_lineage, "map": maps}, columns, len(rows))
+        return self.analyses[name]
+
+    def show_trajectory(self, name, bins=10):
+        """Colour the objects by pseudotime (`bins` steps of viridis, early to late)."""
+        from matplotlib import colormaps
+
+        t = self.column(self.analyses[name]["columns"]["pseudotime"])
+        ok = np.isfinite(t)
+        codes = np.zeros(len(t), np.int64)
+        if ok.any():
+            lo, hi = np.nanmin(t), np.nanmax(t)
+            codes[ok] = 1 + np.minimum(((t[ok] - lo) / ((hi - lo) or 1) * bins).astype(np.int64), bins - 1)
+        cmap = colormaps["viridis"]
+        colors = {k: "#%02x%02x%02x" % tuple(int(255 * c) for c in cmap((k - 0.5) / bins)[:3])
+                  for k in range(1, bins + 1)}
+        return self.paint(codes, f"{self.layer_name} {name}", colors)
+
     def analysis_table(self, name, which):
         """A table saved with a neighbourhood result ("profile", "sizes", "pairs",
-        "by_type") as a DataFrame."""
+        "by_type") or a trajectory ("trends", "association", "composition",
+        "tracked") as a DataFrame."""
         data = self.analyses[name]["tables"][which]
         return pd.DataFrame(data["data"], index=data["index"], columns=data["columns"])
 
@@ -1175,7 +1337,7 @@ class Cytometry:
         merged = self.table[keys].merge(saved, on=keys, how="left")
         self.derived = merged.drop(columns=keys)
         for info in self.analyses.values():
-            for key in ("cluster", "type", "class"):
+            for key in ("cluster", "type", "class", "lineage"):
                 col = info.get("columns", {}).get(key)
                 if col in self.derived.columns:
                     self.derived[col] = self.derived[col].fillna(0).astype(np.int64)
@@ -1242,7 +1404,8 @@ def _split(frame):
 def _analysis_columns(info):
     """Every derived column an analysis made."""
     cols = info.get("columns", {})
-    return [c for c in [cols.get("cluster"), cols.get("type"), cols.get("class"), *cols.get("map", []),
+    return [c for c in [cols.get("cluster"), cols.get("type"), cols.get("class"), cols.get("lineage"),
+                        *cols.get("map", []),
                         *cols.get("features", []), *cols.get("probabilities", [])] if c]
 
 

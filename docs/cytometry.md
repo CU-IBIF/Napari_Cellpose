@@ -148,7 +148,44 @@ vtea-core, so VTEA and IBIF napari share them.
      pickles, so a shared library is safe to open. Engine: vtea-core
      `classification`. NephNet3D and STELLAR follow (see
      [classification-plan.md](classification-plan.md)).
-8. **Make phenotypes.** Selecting phenotypes in the list shows their objects on the
+8. **Follow lineages through the types** (the **Trajectory** tab), once objects have
+   types:
+   - **Objects**: all, a gate, or a phenotype, e.g. only the proximal tubule cells.
+     **Classes**: phenotypes, clusters, a classification's classes, or a neighbourhood
+     analysis's **types**. A trajectory of neighbourhood types follows how one niche
+     turns into another; the neighbourhoods' composition is ticked as its features.
+   - **Space**: PCA of the scaled features (**Components**), or a clustering's map
+     (UMAP / t-SNE). **Start**: the class at pseudotime 0, chosen from biology (the
+     healthy type, or a candidate transitional state). **Ends** (optional): classes
+     that must end lineages.
+   - **Distance**:
+     - Between class means (Euclidean, the default).
+     - Or Slingshot's covariance-scaled distance. It suits round clusters, but can
+       join types cut from one continuum out of order; compare both.
+   - **Also follow** (optional): a second classing whose fractions are followed along
+     pseudotime. For example, neighbourhood types along a cell-type trajectory, or cell
+     types along a neighbourhood trajectory.
+   - **Run** (background). The classes are joined into a minimum spanning tree rooted
+     at the start, with one lineage per leaf (*t1*, *t2*, …). Each lineage is fitted
+     with a principal curve; lineages that share their first classes are shrunk onto
+     a common trunk (Slingshot; Street et al. 2018). Each object gets a pseudotime per
+     lineage and a weight.
+   - Columns: `<name> pseudotime` (weighted mean over the object's lineages),
+     `<name> lineage` (main lineage, 1 = t1), `<name> pseudotime t<j>` (empty off the
+     lineage), and `<name> PC 1/2` when the space was PCA.
+   - **Show**:
+     - lineages on the map (by class, with the tree and the curves);
+     - pseudotime on the map;
+     - a feature along pseudotime per lineage (mean ± SEM of the z-scored feature: the
+       "pseudotime spectrum" of Asghari et al. 2025, figs. 5 and 6);
+     - every feature along one lineage (heat map);
+     - which features change: Spearman ρ with pseudotime, shown where the BH q-value is
+       below 0.05; the start-vs-end difference is in the saved table;
+     - classes, and the followed classes, along pseudotime (stacked fractions).
+   - **Colour the plot by pseudotime**, **Show pseudotime on image**. Engine: vtea-core
+     `trajectory` (`slingshot`, `feature_trends`, `association`, `composition_along`);
+     see vtea-python `docs/TRAJECTORIES.md`.
+9. **Make phenotypes.** Selecting phenotypes in the list shows their objects on the
    image, as selecting gates does: Ctrl- or Shift-click several, each is shown in its
    colour and objects in more than one in white. Select a gate and click **Make phenotype…**, choosing the
    phenotype it belongs **within**. Or click **Add…** to write a rule yourself, for
@@ -168,7 +205,7 @@ vtea-core, so VTEA and IBIF napari share them.
    one level are exclusive (the first that matches wins). A phenotype with an empty
    rule is "the rest of its parent": everything in the parent that an earlier sibling
    did not claim (e.g. *Other T*).
-9. **Use the result.**
+10. **Use the result.**
    - **Show phenotypes on image** (workbench: **Show on image**) colours every object by
      its phenotype, either the deepest (most specific) one or the one at a chosen level
      of the hierarchy.
@@ -188,7 +225,8 @@ as lists of objects, so the same tree can type the next acquisition.
 
 The section is being built in stages. **Phase 1** (gating, subgating, image gates and
 the phenotype hierarchy), **Phase 2** (maps and clustering), **Phase 3** (spatial
-features) and **Phase 4** (neighbourhoods) are done. The later phases use the same object table and the
+features), **Phase 4** (neighbourhoods) and **Phase 6** (trajectories, one dataset) are
+done; Phase 5 is in progress. The later phases use the same object table and the
 same phenotype tree. The larger tools get their own tabs in the workbench rather than
 crowding the section.
 
@@ -199,6 +237,8 @@ crowding the section.
 | 3 ✅ | **Spatial features per object**, once some identities are known. Distance to the nearest object of each phenotype, by centroid or by **surface** (exact distance between masks, in µm, 3D included). Number and fraction of each phenotype within a radius. Contacts (touching masks). These features can be gated and clustered like any measurement, to split types further (e.g. CD8 T cells touching tumour cells). | vtea-core `spatial` (new) |
 | 4 ✅ | **Neighbourhood analysis.** Cellular neighbourhoods: composition of each cell's *k* nearest neighbours or of the cells within a radius, clustered into neighbourhood types (the CODEX / Schürch–Nolan approach). Cell-type × neighbourhood enrichment, and pairwise neighbourhood enrichment with permutation z-scores. Neighbourhood maps on the image. Neighbourhood features reflected back onto cells for gating. | vtea-core `neighborhoods` (extended) |
 | 5 (in progress: 5.0, 5.1 done) | **Supervised object classification**: a Classification tab (apply a model; class and confidence per object; make phenotypes) and a Training workbench (labels from phenotypes, gates or clicked objects; train or fine-tune; validate; model library). First models: a generic ANN on measurements, **NephNet3D** on 3D nuclear crops (Woloshuk et al. 2021), and **STELLAR** reference-based annotation (Brbić et al. 2022). Training locally, on the facility GPU server or a cluster. See [classification-plan.md](classification-plan.md). | vtea-core `classification` (extended) |
+| 6 ✅ | **Trajectories** of cell types and neighbourhood types in one dataset: lineages from a chosen start class (Slingshot-style cluster tree and principal curves), pseudotime per lineage, features along pseudotime, which features change (Spearman, BH), class and neighbourhood-type fractions along pseudotime. After Asghari et al., *Sci Adv* 2025, figs. 5–6. | vtea-core `trajectory` (new) |
+| 7 (planned) | **Atlas / cohort analysis**: a pipeline built and checked here (phenotype rules or a classification model, neighbourhood definition, trajectory settings) frozen and applied unchanged to many datasets; a shared reference space; lineages fitted once and every dataset projected onto them; per-sample summaries and sample-level statistics across conditions. See [trajectory-atlas-plan.md](trajectory-atlas-plan.md). | vtea-core (headless cohort workflow) |
 
 ### Notes on the methods
 

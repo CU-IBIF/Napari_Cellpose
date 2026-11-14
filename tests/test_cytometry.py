@@ -1134,3 +1134,177 @@ def test_classification_is_saved_and_shown_on_the_image(qtbot, tmp_path, monkeyp
     assert restored.analysis_kind("Classes 1") == "classification"
     np.testing.assert_array_equal(restored.column("Classes 1 class"), s.column("Classes 1 class"))
     assert restored.class_names("Classes 1 class") == {1: "Other", 2: "T"}
+
+
+def repair_scene(n=150, seed=0):
+    """A proximal tubule repair continuum (as in Asghari et al. 2025): healthy PT
+    (LRP2 high) -> transitional (THY1+PROM1+) -> either THY1+ or PROM1+, as phenotypes
+    from a 'truth' column. Laid out in space along the same Y: healthy on the left, the
+    THY1 branch top right, the PROM1 branch bottom right, with immune cells (CD45)
+    mixed into the PROM1 branch."""
+    rng = np.random.default_rng(seed)
+    parts = []
+    # (name, code, progress from, to, branch: 0 trunk, 1 THY1, 2 PROM1)
+    for name, code, a, b, br in (("Healthy PT", 0, 0.0, 0.3, 0), ("Transitional", 1, 0.3, 0.55, 0),
+                                 ("THY1+ PT", 2, 0.55, 0.85, 1), ("PROM1+ PT", 3, 0.55, 0.85, 2)):
+        p = rng.uniform(a, b, n)
+        late = np.clip((p - 0.55) / 0.3, 0, 1)
+        trunk = np.clip(p / 0.55, 0, 1)
+        thy1 = 50 + 300 * trunk * (br != 2) + 500 * late * (br == 1) - 150 * late * (br == 2)
+        prom1 = 50 + 300 * trunk * (br != 1) + 500 * late * (br == 2) - 150 * late * (br == 1)
+        x = 200 * p + rng.normal(0, 3, n)
+        y = np.where(br == 1, 100 * late, np.where(br == 2, -100 * late, 0)) + rng.normal(0, 3, n)
+        parts.append(pd.DataFrame({
+            "LRP2 mean": (800 - 700 * p) * rng.lognormal(0, 0.1, n),
+            "THY1 mean": np.maximum(thy1, 10) * rng.lognormal(0, 0.1, n),
+            "PROM1 mean": np.maximum(prom1, 10) * rng.lognormal(0, 0.1, n),
+            "centroid Y (µm)": y, "centroid X (µm)": x, "truth": code, "progress": p, "branch": br}))
+    immune = pd.DataFrame({"LRP2 mean": rng.lognormal(3, 0.1, n // 2), "THY1 mean": rng.lognormal(3, 0.1, n // 2),
+                           "PROM1 mean": rng.lognormal(3, 0.1, n // 2),
+                           "centroid Y (µm)": -100 * rng.uniform(0.5, 1, n // 2),
+                           "centroid X (µm)": 200 * rng.uniform(0.75, 1, n // 2), "truth": 4,
+                           "progress": np.nan, "branch": -1})
+    table = pd.concat(parts + [immune], ignore_index=True)
+    table.insert(0, "label", np.arange(1, len(table) + 1))
+    s = cy.state_of(ViewerModel())
+    s.set_table("cells", table, "cells")
+    s.add_phenotype("PT", "truth < 4", color="#2ca02c")
+    for code, name, color in ((0, "Healthy PT", "#1f77b4"), (1, "Transitional", "#ff7f0e"),
+                              (2, "THY1+ PT", "#d62728"), (3, "PROM1+ PT", "#9467bd")):
+        s.add_phenotype(name, f"truth == {code}", parent="PT", color=color)
+    s.add_phenotype("Immune", "truth == 4", color="#7f7f7f")
+    return s, table
+
+
+def test_trajectory_tab_finds_the_repair_lineages(qtbot, tmp_path):
+    from ibif_napari._cyto_trajectory import VIEWS
+    from ibif_napari._cyto_workbench import Workbench
+
+    s, table = repair_scene()
+    bench = Workbench(s.viewer)
+    qtbot.addWidget(bench)
+    tab = bench.trajectory
+    assert bench.tabs.tabText(bench.tabs.count() - 1) == "Trajectory"
+    assert tab.checked_features() == ["LRP2 mean", "THY1 mean", "PROM1 mean"]
+    tab.population.setCurrentIndex(tab.population.findData("phenotype\tPT"))
+    assert tab.population.currentText() == "Phenotype: PT"
+    tab.classes.setCurrentIndex(tab.classes.findData("phenotype"))
+    starts = [tab.start.itemText(i) for i in range(tab.start.count())]
+    assert "Healthy PT" in starts and "Immune" not in starts  # only the classes of the objects chosen
+    tab.start.setCurrentText("Healthy PT")
+    info = tab.run(wait=True)
+    assert info is not None and info["kind"] == "trajectory", tab.status.text()
+    st = info["structure"]
+    assert sorted(map(tuple, st["lineages"])) == [("Healthy PT", "Transitional", "PROM1+ PT"),
+                                                ("Healthy PT", "Transitional", "THY1+ PT")]
+    assert info["n_objects"] == 4 * 150  # PT only: the immune cells are not in it
+    t = s.column("Trajectory 1 pseudotime")
+    assert np.isnan(t[table["truth"] == 4]).all()
+    pt = table["truth"].to_numpy() < 4
+    rho = pd.Series(t[pt]).corr(table["progress"][pt], method="spearman")
+    assert rho > 0.9
+    # Each branch's cells are on their own lineage.
+    lineage = s.column("Trajectory 1 lineage").astype(int)
+    thy1_lin = 1 + next(j for j, lin in enumerate(st["lineages"]) if lin[-1] == "THY1+ PT")
+    assert (lineage[table["truth"] == 2] == thy1_lin).mean() > 0.95
+    assert (lineage[table["truth"] == 3] != thy1_lin).mean() > 0.95
+    # THY1 rises along the THY1 lineage, PROM1 along the other.
+    assoc = s.analysis_table("Trajectory 1", "association").set_index(["lineage", "feature"])
+    thy1_name = f"t{thy1_lin}"
+    prom1_name = "t2" if thy1_name == "t1" else "t1"
+    assert assoc.loc[(thy1_name, "THY1 mean"), "rho"] > 0.5 > assoc.loc[(prom1_name, "THY1 mean"), "rho"]
+    assert assoc.loc[(prom1_name, "PROM1 mean"), "rho"] > 0.5
+    assert assoc.loc[(thy1_name, "LRP2 mean"), "rho"] < -0.5
+    # The columns are like any other: in rules, colour the plot, the map.
+    assert "Trajectory 1 pseudotime" in s.measured_features() and "Trajectory 1 PC 1" in s.features()
+    assert s.rule_count("`Trajectory 1 pseudotime` >= 0")[0] == 600
+    for k in range(len(VIEWS)):  # every view draws
+        tab.view.setCurrentIndex(k)
+        widget = tab.stack.currentWidget()
+        assert widget.figure.axes, VIEWS[k]
+    tab.colour_plot()
+    assert bench.color_by.currentText() == "Trajectory 1 pseudotime"
+    assert bench.x_col.currentText() == "Trajectory 1 PC 1"
+    bench.color_by.setCurrentText("Trajectory 1 lineage")
+    assert {text.get_text() for text in bench.plot.axes.get_legend().get_texts()} >= {"t1", "t2"}
+    # Saved and restored with the workspace (no image needed for the tables).
+    data = json.loads(json.dumps(s.to_dict()))
+    assert data["analyses"]["Trajectory 1"]["structure"]["start"] == "Healthy PT"
+    s.save_derived(tmp_path)
+    s2 = cy.state_of(ViewerModel())
+    s2.load_dict(data, {"cells": table}, tmp_path / "cytometry" / "derived.csv")
+    np.testing.assert_allclose(s2.column("Trajectory 1 pseudotime"), t)
+    assert s2.analysis_table("Trajectory 1", "trends").shape == s.analysis_table("Trajectory 1", "trends").shape
+    tab.delete()
+    assert not s.analyses_of("trajectory")
+
+
+def test_trajectory_of_neighbourhood_types_and_following_cell_types(qtbot):
+    from ibif_napari._cyto_workbench import Workbench
+
+    s, table = repair_scene()
+    bench = Workbench(s.viewer)
+    qtbot.addWidget(bench)
+    hoods = bench.neighbourhoods
+    hoods.radius.setValue(25.0)
+    hoods.n_types.setValue(4)
+    hoods.permutations.setValue(0)
+    assert hoods.run(wait=True) is not None
+    tab = bench.trajectory
+    key = s.analyses["Neighbourhoods 1"]["columns"]["type"]
+    index = tab.classes.findData(key)
+    assert index >= 0 and tab.classes.itemText(index) == "Neighbourhoods 1 types"
+    assert bench.spatial.classes.findData(key) < 0  # only the Trajectory tab offers them
+    tab.classes.setCurrentIndex(index)
+    # Classed by neighbourhood types: the composition is ticked, not the intensities.
+    assert set(tab.checked_features()) == set(s.analyses["Neighbourhoods 1"]["columns"]["features"])
+    # Start from the neighbourhood type of the healthy cells.
+    types = s.column(key).astype(int)
+    healthy = np.bincount(types[table["truth"] == 0]).argmax()
+    tab.start.setCurrentText(f"type {healthy}")
+    tab.track.setCurrentIndex(tab.track.findData("phenotype"))
+    info = tab.run(wait=True)
+    assert info is not None, tab.status.text()
+    assert info["structure"]["start"] == f"type {healthy}" and len(info["structure"]["lineages"]) >= 1
+    # Healthy PT cells are early in neighbourhood pseudotime, the branches late.
+    t = s.column(f"{info['columns']['pseudotime']}")
+    truth = table["truth"].to_numpy()
+    assert np.nanmedian(t[truth == 0]) < np.nanmedian(t[truth >= 2])
+    tracked = s.analysis_table("Trajectory 1", "tracked")
+    assert {"Healthy PT", "Immune"} <= set(tracked["class"])
+    first = tracked[(tracked["lineage"] == "t1") & (tracked["bin"] == 0)].set_index("class")["fraction"]
+    assert first["Healthy PT"] > 0.5
+    tab.view.setCurrentIndex(6)
+    assert tab.plot.figure.axes
+    # Switching back to cell types ticks the intensities again.
+    tab.classes.setCurrentIndex(tab.classes.findData("phenotype"))
+    assert tab.checked_features() == ["LRP2 mean", "THY1 mean", "PROM1 mean"]
+
+
+def test_trajectory_needs_a_start_with_objects(qtbot):
+    s, table = repair_scene(n=30)
+    job_settings = {"population": ["all", None], "classes": "phenotype", "features": ["LRP2 mean"],
+                    "start": "Nope"}
+    with pytest.raises(ValueError, match="start"):
+        s.trajectory_job(job_settings)
+    with pytest.raises(ValueError, match="feature"):
+        s.trajectory_job({**job_settings, "features": []})
+
+
+def test_trajectory_pseudotime_on_the_image(qtbot):
+    from ibif_napari._cyto_workbench import Workbench
+
+    v, s = _typed_scene()
+    bench = Workbench(v)
+    qtbot.addWidget(bench)
+    tab = bench.trajectory
+    tab.check_features("all")
+    tab.start.setCurrentText("T")
+    info = tab.run(wait=True)
+    assert info is not None, tab.status.text()
+    assert info["structure"]["lineages"] == [["T", "Other"]]
+    t = s.column("Trajectory 1 pseudotime")
+    assert np.nanmedian(t[s.mask("phenotype", "T")]) < np.nanmedian(t[~s.mask("phenotype", "T")])
+    layer = tab.show_on_image()
+    assert layer is not None and layer.name == "cells Trajectory 1"
+    assert set(np.unique(layer.data)) - {0} <= set(range(1, 11)) and layer.data.max() > 1

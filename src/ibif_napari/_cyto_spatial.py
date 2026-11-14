@@ -58,6 +58,7 @@ class _AnalysisTab(QWidget):
 
     kind = ""
     base_name = ""
+    include_neighbourhoods = False  # offer neighbourhood types as classes (the Trajectory tab)
 
     def __init__(self, bench):
         super().__init__()
@@ -119,7 +120,7 @@ class _AnalysisTab(QWidget):
         self.classes.blockSignals(True)
         self.classes.clear()
         if state.table is not None and not state.broken_phenotypes():
-            for label, key in state.class_choices():
+            for label, key in state.class_choices(neighbourhoods=self.include_neighbourhoods):
                 self.classes.addItem(label, key)
         index = self.classes.findData(keep)
         self.classes.setCurrentIndex(max(index, 0) if self.classes.count() else -1)

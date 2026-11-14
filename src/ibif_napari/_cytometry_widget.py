@@ -25,8 +25,9 @@ from . import _cytometry as cy
 from . import _measure
 from ._measure_widget import COMBINED
 
-COMING = ("Coming next in this section: spatial features (distance to cell types, by "
-          "centroid or surface) and neighbourhood analysis (cellular neighbourhoods, enrichment).")
+COMING = ("In the workbench: clustering, spatial features, neighbourhoods, classification and "
+          "trajectories. Coming next: more classification models, and analyses across many "
+          "datasets (atlas / cohort).")
 
 
 class CytometryWidget(QWidget):
