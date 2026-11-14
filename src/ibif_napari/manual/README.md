@@ -891,6 +891,83 @@ microscope, instead of training from scratch. Models are saved in your model lib
 (`.ibif-napari/models` in your home folder); a facility can share models by putting
 them in a common folder and using **Browse…**.
 
+### 10.8 Trajectories: lineages through cell types and neighbourhoods
+
+Once objects have types, the **Trajectory** tab asks how the types connect. For example,
+it can show which states lie between healthy proximal tubule cells and injured ones, where
+the lineages branch, and which markers change along each branch (Asghari et al. 2025,
+figures 5 and 6). It works on one dataset (the objects in use).
+
+1. Choose the **Objects**: all of them, a gate, or a phenotype. Choose only the cells
+   whose states you are following, e.g. *Phenotype: PT*.
+2. Choose the **Classes**: phenotypes, a clustering's clusters, a classification's
+   classes, or a neighbourhood analysis's **types**. Classed by neighbourhood types, the
+   lineages follow how one kind of neighbourhood turns into another, and the
+   neighbourhoods' composition is ticked as the features.
+3. Tick the **Features** (the mean intensities by default). Then choose the **Space** the
+   lineages are found in: **PCA of the features** (10 components by default), or the map
+   (UMAP, t-SNE) of a clustering run.
+4. Choose the **Start**: the class where pseudotime is 0. Pseudotime has no direction of
+   its own, so choose the start from biology, such as the healthy type or a candidate
+   transitional state. Optionally tick **Ends**: classes that must be the ends of lineages.
+5. Optionally, **Also follow** a second set of classes along pseudotime, e.g. the
+   neighbourhood types along a cell-type trajectory, or the cell types along a
+   neighbourhood trajectory.
+6. Click **Run**. The classes are joined into a tree (each class to its nearest, starting
+   from the start). There is one lineage, *t1*, *t2*, …, from the start to each end of the
+   tree. Each lineage gets a smooth curve through its objects (Slingshot; Street et al.
+   2018). Each object's **pseudotime** is how far along the curve it is. Then each feature
+   gets a smooth curve along each lineage (a GAM with **Knots** knots), and tradeSeq's
+   tests (Van den Berge et al. 2020) ask what changes.
+
+**Show** draws:
+
+- **Lineages on the map**: the objects coloured by class, the tree (dashed) and the
+  lineage curves (arrows from start to end).
+- **Pseudotime on the map**: the objects coloured by pseudotime.
+- **A feature along pseudotime**: the fitted curve of one feature (in standard deviations)
+  along each lineage, with its 95% band, over the mean in bins of pseudotime (points).
+  This is the marker's "pseudotime spectrum".
+- **Features along a lineage**: every feature along one lineage, as a heat map.
+- **Which features change**: the tradeSeq tests, as −log10 of the q-value
+  (Benjamini–Hochberg; 2 means q = 0.01, higher is stronger). One row per test, overall
+  and per lineage or pair of lineages:
+  - **association**: the feature changes along the lineage;
+  - **start vs end**: it differs between the lineage's start and end;
+  - **different ends**: the lineages end at different values;
+  - **different patterns**: the lineages differ anywhere along the way.
+
+  With thousands of objects small changes are significant, so look at the curves too.
+- **Classes along pseudotime** and **Also followed**: the share of each class along each
+  lineage.
+
+Each object gets *Trajectory 1 pseudotime*, *Trajectory 1 lineage* (its main lineage) and
+*Trajectory 1 pseudotime t1*, … as columns of the table. Plot them, gate on them (e.g. late
+pseudotime on t2), use them in rules, and export them. **Colour the plot by pseudotime**
+shows the map on the Gating tab. **Show pseudotime on image** colours the objects from dark
+(early) to yellow (late).
+
+**Distance** sets how far apart two classes are when the tree is built:
+
+- **Slingshot** (the default) scales the distance between class means by how spread out
+  the classes are. On simulated data it found the right tree at least as often as
+  Euclidean.
+- **Euclidean** uses the distance between the class means.
+
+Either way, a class should cover each branch point. If the first classes of two branches
+are joined to each other instead of to the trunk, cluster again (or merge classes there).
+
+**Knots** (6, as tradeSeq): more knots follow short-lived changes. With too few, a narrow
+bump can bend the curve's ends and show up in *start vs end* or *different ends*.
+
+**Engine**: vtea-core's ports of slingshot and tradeSeq, or, when R with the Bioconductor
+packages slingshot and tradeSeq is installed, the R packages themselves.
+
+Running from two different starts, or on each condition separately, is a good check that
+the lineages are real. Trajectories over many datasets together (an atlas or a cohort) are
+planned; see
+[docs/trajectory-atlas-plan.md](https://github.com/CU-IBIF/Napari_Cellpose/blob/main/docs/trajectory-atlas-plan.md).
+
 ## 11. Filament tracing
 
 The **Filament tracing** section traces neurons, microtubules, vessels and other branched
@@ -1191,6 +1268,15 @@ ibif-napari-vv all vv --backend classic
 - Schürch CM, Bhate SS, Barlow GL, et al. Coordinated cellular neighborhoods orchestrate
   antitumoral immunity at the colorectal cancer invasive front. *Cell* 182:1341–1359 (2020).
   [doi:10.1016/j.cell.2020.07.005](https://doi.org/10.1016/j.cell.2020.07.005)
+- Street K, Risso D, Fletcher RB, et al. Slingshot: cell lineage and pseudotime inference for
+  single-cell transcriptomics. *BMC Genomics* 19:477 (2018).
+  [doi:10.1186/s12864-018-4772-0](https://doi.org/10.1186/s12864-018-4772-0)
+- Van den Berge K, Roux de Bézieux H, Street K, et al. Trajectory-based differential
+  expression analysis for single-cell sequencing data. *Nat Commun* 11:1201 (2020).
+  [doi:10.1038/s41467-020-14766-3](https://doi.org/10.1038/s41467-020-14766-3)
+- Asghari M, Sabo AR, Barwinska D, et al. Integration of spatial protein imaging and
+  transcriptomics in the human kidney tracks the regenerative potential of proximal tubules.
+  *Sci Adv* 11:eadv8918 (2025). [doi:10.1126/sciadv.adv8918](https://doi.org/10.1126/sciadv.adv8918)
 - Levine JH, Simonds EF, Bendall SC, et al. Data-driven phenotypic dissection of AML reveals
   progenitor-like cells that correlate with prognosis. *Cell* 162:184–197 (2015).
   [doi:10.1016/j.cell.2015.05.047](https://doi.org/10.1016/j.cell.2015.05.047)

@@ -72,8 +72,12 @@ Cellpose from a [facility GPU server](docs/facility-server.md) or a
   It also finds object types by clustering: a UMAP, t-SNE or PCA map, Leiden, Louvain,
   k-means or Gaussian-mixture clusters, a heat map of each cluster's markers, and
   clusters named as phenotypes. You can re-cluster within a phenotype to split it
-  further. Built on [vtea-core](https://github.com/winfrees/vtea-python); spatial
-  features and neighbourhood analysis are next. See [docs/cytometry.md](docs/cytometry.md).
+  further. Spatial features, neighbourhood types, classification with trained models,
+  and **trajectories**: lineages and pseudotime through cell types or neighbourhood
+  types from a chosen start type, with the markers and neighbourhoods that change along
+  each lineage. Built on [vtea-core](https://github.com/winfrees/vtea-python). See
+  [docs/cytometry.md](docs/cytometry.md); analyses across many datasets (atlas /
+  cohort) are planned in [docs/trajectory-atlas-plan.md](docs/trajectory-atlas-plan.md).
 - **Save workspace**: **Save workspace…** keeps everything to come back to or share in
   one `.ibif` folder: all layers with their display settings, the view and the
   measurement tables. Microscope files (ND2 / CZI / LIF) are referenced, not copied, and
@@ -129,7 +133,7 @@ replace it when only the commit changes. If the Cytometry section says vtea-core
 than needed, run the command it shows, which is:
 
 ```bash
-pip install --force-reinstall --no-deps "vtea-core[graph,umap,opentsne] @ git+https://github.com/winfrees/vtea-python@3e2f42e351fa8367ffcacf5d7ceb86c71ec5aab6#subdirectory=packages/vtea-core"
+pip install --force-reinstall --no-deps "vtea-core[graph,umap,opentsne] @ git+https://github.com/winfrees/vtea-python@e5117709cc9985b25b83dbc2cbf724f88e0f43b9#subdirectory=packages/vtea-core"
 ``` If a file type
 reports a missing package (e.g. `No module named 'bioio_czi'`), install the package the
 message names, e.g. `pip install bioio-czi bioio-lif`.
