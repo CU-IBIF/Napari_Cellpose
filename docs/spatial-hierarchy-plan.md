@@ -186,7 +186,62 @@ class Hierarchy:
 - **Workspace.** Version 2 saves every level (`cytometry/levels/<name>/`); a version 1
   workspace loads as level 0 alone.
 
-## 4. Neighbourhood features (research)
+## 4. The hierarchy map
+
+Depth is unlimited, and levels branch: one level can be the parent of several (cells →
+windows and cells → regions; windows → windows at two radii). So the hierarchy is a
+tree, and a drop-down alone stops being a good overview after a few levels. The
+**hierarchy map** is a panel docked on the left of the workbench (collapsible, and
+openable as its own window) that shows the whole tree and is the main way to move
+around it. The level drop-down stays, as a compact shortcut that mirrors it.
+
+```
+┌ Hierarchy ──────────────────────────────┐
+│ ● Objects (cells)            12,431     │  level 0 · segmentation "cells"
+│ ├─◆ Neighbourhoods 1         12,431     │  windows · r 50 µm · by phenotype
+│ │  ├─◆ Neighbourhoods 2      12,431     │  windows · r 50 µm · by NH1 type
+│ │  │  └─◆ Neighbourhoods 3   12,431     │  windows · k 15 · by NH2 type
+│ │  └─▣ Regions 2                 41     │  regions · contact · NH1 type 3
+│ └─▣ Regions 1                    86     │  regions · contact · tubular
+│    └─◆ Neighbourhoods 4          86     │  windows · r 200 µm · by region type
+└─────────────────────────────────────────┘
+  ◆ windows (overlapping)   ▣ regions (functional units)   ● segmentation
+```
+
+**Each node** is one level: its name, kind (segmentation, windows, regions), object
+count, and a one-line provenance (builder, radius / k / contact, the class column of
+the parent it was built on, seed and member populations if a subset was used). A small
+bar under the name shows the level's type mix (its current classes, coloured as on the
+plot), so the map is also a summary of what was found at each depth. A tooltip gives
+the full provenance and when it was built.
+
+**Navigating:**
+
+- Click a node: make it the current level. All tabs switch to it; the plot keeps its
+  axes where the columns exist.
+- Right-click a node: build a child level (windows, regions) from it, rename, show on
+  the image, export its table, or delete it with its descendants (after a confirmation
+  that lists them).
+- A node whose parent was rebuilt or changed is marked **stale** (its build is no
+  longer reproducible from the current parent) with "Rebuild" offered; nothing is
+  rebuilt silently.
+
+**Following objects through the hierarchy.** With objects selected at any level (a
+gate, a phenotype, clicked objects on the image), the map shows, at every other node,
+how many objects are related to them: below the selection, their **members** (expanded
+through every level in between); above it, their **containers** (every object that
+contains any of them). Clicking that count makes the node current with that
+population shown, so one can go from a region to its windows to its cells and back
+without writing a gate at each level. For windows, members and containers count
+overlap honestly: a cell in seven windows of the selection counts once as a member,
+and the map says how many windows it is in on average.
+
+**Where it lives in the code.** The map is a view of `Hierarchy` (vtea-core) and of the
+per-level states (workbench); it holds no state of its own beyond which nodes are
+expanded, which is saved with the workspace view. Member and container counts use the
+sparse membership products of §2, so they stay interactive on millions of cells.
+
+## 5. Neighbourhood features (research)
 
 Today a neighbourhood is described by its class composition (fractions and counts),
 size and mean distance; types are k-means on raw fractions. That is the CODEX recipe
@@ -221,7 +276,7 @@ colorectal cancer data of Schürch et al. 2020), scored by how well each feature
 and clustering recovers the truth (adjusted Rand index), its stability across seeds
 and radii, and its run time. The defaults in the tab come from that table.
 
-## 5. Classification is level-specific
+## 6. Classification is level-specific
 
 A model applies to the kind of object it was trained on. The model card
 (`ModelCard.inputs`) gains:
@@ -241,7 +296,7 @@ Training at higher levels (e.g. an ANN separating "glomerulus" from "tubulointer
 regions from labelled regions) uses the same Training workbench with labels from that
 level's phenotypes.
 
-## 6. Milestones
+## 7. Milestones
 
 | | what | where |
 |---|---|---|
@@ -250,12 +305,15 @@ level's phenotypes.
 | H2 | Feature families and the benchmark; membership-weighted cell type × type enrichment; defaults chosen from results | vtea-core |
 | H3 | `LevelState` refactor and the level selector, with only level 0 (no behaviour change; all current tests pass); workspace v2 | workbench |
 | H4 | Make a level (windows, regions); every tab at level ≥ 1; painting levels on the image; members / containers populations; reflect and aggregate | workbench |
+| H4b | Hierarchy map: the tree of levels with counts, provenance and type mix; click to switch level; build / delete / rebuild from a node; stale marking; members and containers of a selection at every node | workbench |
 | H5 | Level-aware model cards and Classification tab | vtea-core, workbench |
 | H6 | Docs, V&V cases for levels (synthetic tissue with known structure at two levels) | both |
 
-H1 and H3 are independent and can proceed in parallel; H4 needs both.
+H1 and H3 are independent and can proceed in parallel; H4 needs both. A read-only
+map (nodes, counts, click to switch) comes with H3 as soon as there is more than one
+level; the rest of the map is H4b.
 
-## 7. Decisions
+## 8. Decisions
 
 1. **Level ≥ 2 stays windows** when built from windows. Regions are a separate
    builder for functional tissue units, not a default for deeper levels; windows
@@ -267,10 +325,12 @@ H1 and H3 are independent and can proceed in parallel; H4 needs both.
    of windows at level n.
 4. **Windows join into a region only when their seeds touch**, not when they share
    members (for now; a looser rule can be added as an option later if needed).
+5. **Any depth is allowed**, and levels may branch. A **hierarchy map** gives the
+   overview and the navigation (§4); the level drop-down is a shortcut that mirrors it.
 
-## 8. Open questions
+## 9. Open questions
 
-1. Maximum depth: unlimited in the engine; the selector stays readable to about 4.
+None at present.
 
 ## References
 
