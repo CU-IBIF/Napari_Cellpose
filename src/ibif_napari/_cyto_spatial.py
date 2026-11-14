@@ -433,7 +433,8 @@ class NeighbourhoodTab(_AnalysisTab):
         self.info.setText(f"<b>{name}</b>: {info['n_objects']:,} objects by {info.get('class_label', '')}; "
                           f"each object and the objects {how}; {len(sizes)} types "
                           f"(column <i>{info['columns']['type']}</i>)"
-                          + (f" ({info['seconds']:.1f} s)" if "seconds" in info else "") + ".")
+                          + (f" ({info['seconds']:.1f} s)" if "seconds" in info else "") + "."
+                          + self._overlap_text(name, info))
         view = self.view.currentIndex()
         counts = sizes.to_frame("objects")
         if view == 0:
@@ -461,6 +462,16 @@ class NeighbourhoodTab(_AnalysisTab):
             grid = table.pivot(index="class", columns="neighbor", values="z")
             self.heatmap.show(grid, row_label="class (centre)", value_label="z-score (neighbours vs. chance)",
                               limits=(-5, 5), color_rows=False, annotate=True)
+
+    def _overlap_text(self, name, info):
+        """Neighbourhoods overlap: how many each object is a member of."""
+        col = f"{name} memberships"
+        if not info["columns"].get("member_type") or col not in self.state.features():
+            return ""
+        n = self.state.column(col)
+        return (f" Neighbourhoods overlap: each object is a member of {int(n.min())}-{int(n.max())} "
+                f"(median {np.median(n):g}); <i>{info['columns']['member_type']}</i> is the most "
+                f"common type among them.")
 
     def colour_plot(self):
         name = self.analysis.currentText()

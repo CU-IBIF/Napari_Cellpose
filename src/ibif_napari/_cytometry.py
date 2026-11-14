@@ -1058,13 +1058,20 @@ class Cytometry:
         neighbourhood (itself and the objects within `radius`, or its `k` nearest),
         measures its class composition, sorts the neighbourhoods into `n_types` types
         (k-means on the composition; vtea-core `neighborhoods`) and computes the
-        enrichment statistics (vtea-core `spatial.enrichment`). Returns a dict."""
+        enrichment statistics (vtea-core `spatial.enrichment`). Returns a dict.
+
+        Neighbourhoods overlap: one is drawn around every object, so an object is a
+        member of its own and of every neighbour's. Each object gets both views: the
+        type of its own neighbourhood ("what surrounds it"), and, over every
+        neighbourhood it is a member of, how many there are and their most common
+        type ("what it is part of")."""
         from vtea_core.neighborhoods import (
             NEIGHBORHOOD_TYPE,
             build_neighborhoods,
             classify_neighborhoods,
             composition_columns,
             neighborhood_features,
+            reflect_neighborhoods,
         )
         from vtea_core.spatial import neighbor_enrichment, type_enrichment
 
@@ -1089,6 +1096,12 @@ class Cytometry:
             order = typed["neighborhood_id"].to_numpy(np.int64) - 1  # centred: one per object
             types = np.zeros(len(points), np.int64)
             types[order] = _by_size(typed[NEIGHBORHOOD_TYPE].to_numpy())
+            # The membership view: every neighbourhood an object falls in, its own included.
+            typed[NEIGHBORHOOD_TYPE] = types[order]
+            member = reflect_neighborhoods(hoods, typed[["neighborhood_id", NEIGHBORHOOD_TYPE]], data,
+                                           relation="member")
+            memberships = member["n_neighborhoods"].to_numpy(np.int64)
+            member_types = np.maximum(member[NEIGHBORHOOD_TYPE].to_numpy(np.int64), 0)
             composition = {}
             for col in fractions:
                 value = col[len("Class_"):-len("_ClassFraction")]
@@ -1101,18 +1114,27 @@ class Cytometry:
             pairs = neighbor_enrichment(points, classes, n_permutations=perms, random_state=seed, **graph)
             by_type = type_enrichment(classes, types)
             return {"types": types, "composition": composition, "profile": profile, "sizes": sizes,
-                    "pairs": pairs, "by_type": by_type}
+                    "pairs": pairs, "by_type": by_type, "memberships": memberships,
+                    "member_types": member_types}
 
         return job
 
     def add_neighbourhoods(self, name, settings, result):
-        """Store a `neighbourhood_job` result: each object's neighbourhood type in
-        "<name> neighbourhood" (1 = the most common type), the composition of its
-        neighbourhood in "<name> fraction <class>", and the tables the results show."""
+        """Store a `neighbourhood_job` result: the type of each object's own
+        neighbourhood in "<name> neighbourhood" (1 = the most common type), the
+        composition of its own neighbourhood in "<name> fraction <class>", how many
+        neighbourhoods it is a member of in "<name> memberships" and their most common
+        type in "<name> member neighbourhood", and the tables the results show."""
         self._check_analysis_name(name)
         type_col = f"{name} neighbourhood"
         columns = {type_col: result["types"]}
         features = []
+        member_col = None
+        if "memberships" in result:  # results made before memberships were kept have none
+            member_col = f"{name} member neighbourhood"
+            columns[member_col] = result["member_types"]
+            columns[f"{name} memberships"] = result["memberships"]
+            features.append(f"{name} memberships")
         for value, values in result["composition"].items():
             col = f"{name} fraction {value}"
             columns[col] = values
@@ -1120,7 +1142,8 @@ class Cytometry:
         tables = {"profile": _split(result["profile"]), "sizes": _split(result["sizes"].to_frame("objects")),
                   "pairs": _split(result["pairs"]), "by_type": _split(result["by_type"])}
         self._store(name, {**settings, "kind": "neighbourhoods", "tables": tables},
-                    {"type": type_col, "features": features}, columns, len(result["types"]))
+                    {"type": type_col, "member_type": member_col, "features": features}, columns,
+                    len(result["types"]))
         return self.analyses[name]
 
     def analysis_table(self, name, which):
@@ -1175,7 +1198,7 @@ class Cytometry:
         merged = self.table[keys].merge(saved, on=keys, how="left")
         self.derived = merged.drop(columns=keys)
         for info in self.analyses.values():
-            for key in ("cluster", "type", "class"):
+            for key in ("cluster", "type", "member_type", "class"):
                 col = info.get("columns", {}).get(key)
                 if col in self.derived.columns:
                     self.derived[col] = self.derived[col].fillna(0).astype(np.int64)
@@ -1242,7 +1265,8 @@ def _split(frame):
 def _analysis_columns(info):
     """Every derived column an analysis made."""
     cols = info.get("columns", {})
-    return [c for c in [cols.get("cluster"), cols.get("type"), cols.get("class"), *cols.get("map", []),
+    return [c for c in [cols.get("cluster"), cols.get("type"), cols.get("member_type"), cols.get("class"),
+                        *cols.get("map", []),
                         *cols.get("features", []), *cols.get("probabilities", [])] if c]
 
 
