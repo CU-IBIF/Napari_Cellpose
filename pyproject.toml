@@ -38,9 +38,10 @@ dependencies = [
     "macro-kit>=0.4.10; python_version >= '3.11'",
     "paramiko>=3.2",
     # Cytometry: VTEA's headless analysis library (gates, phenotype trees, clustering,
-    # neighbourhoods), with UMAP and Leiden/Louvain. Not on PyPI yet, so installed from its
-    # repository at a fixed commit.
-    "vtea-core[graph,umap,opentsne] @ git+https://github.com/winfrees/vtea-python@772e5cf410c33f4277cd191b08c79477253b6fd3#subdirectory=packages/vtea-core",
+    # neighbourhoods, the spatial hierarchy), with UMAP and Leiden/Louvain. Not on PyPI yet,
+    # so installed from its repository at a fixed commit (winfrees/vtea-python#17; move to
+    # the merge commit on main once it is merged).
+    "vtea-core[graph,umap,opentsne] @ git+https://github.com/winfrees/vtea-python@3e2f42e351fa8367ffcacf5d7ceb86c71ec5aab6#subdirectory=packages/vtea-core",
 ]
 
 [project.optional-dependencies]

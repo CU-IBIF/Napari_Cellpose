@@ -30,11 +30,12 @@ import pandas as pd
 # The vtea-core this version needs (as in pyproject.toml; a test keeps them equal). pip
 # does not replace an installed vtea-core with the same version number, so an upgrade of
 # IBIF napari can leave an older one: `vtea_core_problem` notices, and gives the command.
-VTEA_CORE = "vtea-core[graph,umap,opentsne] @ git+https://github.com/winfrees/vtea-python@772e5cf410c33f4277cd191b08c79477253b6fd3#subdirectory=packages/vtea-core"
+VTEA_CORE = "vtea-core[graph,umap,opentsne] @ git+https://github.com/winfrees/vtea-python@3e2f42e351fa8367ffcacf5d7ceb86c71ec5aab6#subdirectory=packages/vtea-core"
 VTEA_CORE_FEATURES = {"vtea_core.clustering": ["nearest_neighbors"],
                       "vtea_core.classes": ["column_references", "rename_columns"],
                       "vtea_core.spatial": ["surface_distance", "neighbor_enrichment"],
-                      "vtea_core.classification": ["ANNClassifier", "load_model", "predictions"]}
+                      "vtea_core.classification": ["ANNClassifier", "load_model", "predictions"],
+                      "vtea_core.hierarchy": ["Hierarchy", "build_windows", "build_regions"]}
 
 GATE_PREFIX = "gate: "
 IMAGE_GATE_PREFIX = "image gate: "
@@ -50,10 +51,16 @@ _states = weakref.WeakKeyDictionary()
 
 
 def state_of(viewer):
-    """The viewer's cytometry analysis (created when first asked for)."""
+    """The viewer's cytometry analysis (created when first asked for): its levels of
+    objects (`Levels`), which acts as the level currently being analysed."""
     if viewer not in _states:
-        _states[viewer] = Cytometry(viewer)
+        _states[viewer] = Levels(viewer)
     return _states[viewer]
+
+
+def root_of(viewer):
+    """The viewer's level-0 analysis: the segmented objects."""
+    return state_of(viewer).root
 
 
 def axis_column(column, transform="linear", cofactor=ASINH_COFACTOR):
@@ -133,6 +140,13 @@ class Cytometry:
         if not same and self.analyses:  # clustering results belong to the objects they were run on
             self.dropped_analyses = list(self.analyses)
             self.analyses, self.derived = {}, None
+        owner = getattr(self, "_owner", None)
+        self.dropped_levels = []
+        if owner is not None and self is owner.root:
+            owner.__dict__["_contacts"] = None  # the masks may have changed
+            if not same:  # levels are built on these objects
+                self.dropped_levels = [n for _, n in owner.level_tree()[1:]]
+                owner.clear_levels(notify=False)
         self.changed()
 
     def features(self):
@@ -276,6 +290,8 @@ class Cytometry:
             return frame[IMAGE_GATE_PREFIX + key].to_numpy(bool)
         if kind == "gate" and key in self.gates and GATE_PREFIX + self.gates.get(key).name in frame.columns:
             return frame[GATE_PREFIX + self.gates.get(key).name].to_numpy(bool)
+        if kind == "selection" and self.selections().get(key) in frame.columns:
+            return frame[self.selections()[key]].to_numpy() > 0
         return np.ones(len(frame), bool)
 
     # ---- populations ---------------------------------------------------------------------
@@ -295,7 +311,14 @@ class Cytometry:
         for node in self.tree:
             out.append(("phenotype", node.name, "  " * (self.tree.depth(node.name) - 1)
                         + f"Phenotype: {node.name}"))
+        for name in self.selections():
+            out.append(("selection", name, f"Selection: {name}"))
         return out
+
+    def selections(self):
+        """{name: column} of selections followed here from other levels (0/1 columns)."""
+        return {name: info["columns"]["selection"][0] for name, info in self.analyses.items()
+                if info.get("kind") == "link" and info.get("columns", {}).get("selection")}
 
     def mask(self, kind, key):
         frame = self.frame()
@@ -309,6 +332,8 @@ class Cytometry:
             return frame[IMAGE_GATE_PREFIX + key].to_numpy(bool)
         if kind == "phenotype":
             return self.tree.members(key, frame, exclusive=True)
+        if kind == "selection":
+            return self.column(self.selections()[key]) > 0
         raise ValueError(kind)
 
     # ---- gates -----------------------------------------------------------------------------
@@ -337,7 +362,7 @@ class Cytometry:
                     parent_id=parent, color=color or self._next_color())
         self.gates.add(gate)
         self.order.append(("gate", gate.id))
-        if kind in ("phenotype", "image"):
+        if kind in ("phenotype", "image", "selection"):
             self.scope[("gate", gate.id)] = (kind, key)
         self.changed()
         return gate
@@ -377,6 +402,9 @@ class Cytometry:
         for item, scope in list(self.scope.items()):  # gates drawn within this one go too
             if scope == (kind, key) and item in self.order:
                 self.remove_gate(*item)
+        if kind == "selection":  # followed from another level: its column goes with it
+            self.remove_analysis(key)
+            return
         if kind == "gate":
             for child in self.gates.children(key):
                 self.remove_gate("gate", child.id)
@@ -388,6 +416,8 @@ class Cytometry:
         self.changed()
 
     def rename_gate(self, kind, key, new):
+        if kind == "selection":
+            raise ValueError("a selection keeps the name of what it was followed from")
         if new in self.gate_names():
             raise ValueError(f"there is already a gate called {new!r}")
         old = self.gates.get(key).name if kind == "gate" else key
@@ -411,6 +441,8 @@ class Cytometry:
         objects on the image, the outline of image-gated objects on the plot)."""
         if kind == "gate":
             self.gates.get(key).color = color
+        elif kind == "selection":
+            self.analyses[key]["color"] = color
         else:
             self.image_gates[key]["color"] = color
         self.changed()
@@ -424,6 +456,8 @@ class Cytometry:
     def gate_column(self, kind, key):
         if kind == "gate":
             return GATE_PREFIX + self.gates.get(key).name
+        if kind == "selection":
+            return self.selections()[key]
         return IMAGE_GATE_PREFIX + key
 
     def _image_gate_mask(self, gate, frame):
@@ -465,8 +499,9 @@ class Cytometry:
         """A phenotype whose rule is membership of a gate."""
         column = self.gate_column(kind, key)
         if color is None:
-            color = self.gates.get(key).color if kind == "gate" else self.image_gates[key]["color"]
-        return self.add_phenotype(name, quote(column), parent, color)
+            color = self.population_color(kind, key)
+        rule = f"{quote(column)} > 0" if kind == "selection" else quote(column)
+        return self.add_phenotype(name, rule, parent, color)
 
     def edit_phenotype(self, name, rule=None, color=None, new_name=None):
         node = self.tree.get(name)
@@ -668,6 +703,13 @@ class Cytometry:
         `values` (one int per table row, 0 = hidden) coloured by `colors` {value: hex}."""
         from napari.utils.colormaps import DirectLabelColormap
 
+        owner = getattr(self, "_owner", None)
+        if owner is not None and self is not owner.root:
+            # A spatial level has no masks of its own: each segmented object shows the
+            # value of its own window, or of its region, at this level.
+            from . import _cyto_levels
+
+            return owner.root.paint(_cyto_levels.to_root(owner, self._level_name, values), name, colors)
         layer = self.labels_layer()
         if layer is None:
             raise ValueError(f"the objects layer {self.layer_name!r} is not open")
@@ -716,7 +758,8 @@ class Cytometry:
     def population_color(self, kind, key):
         return (self.gates.get(key).color if kind == "gate" else
                 self.image_gates[key]["color"] if kind == "image" else
-                (self.tree.get(key).color or "#ffff00") if kind == "phenotype" else "#ffff00")
+                (self.tree.get(key).color or "#ffff00") if kind == "phenotype" else
+                self.analyses[key].get("color", "#ffff00") if kind == "selection" else "#ffff00")
 
     def show_populations(self, items, overlap_color="#ffffff"):
         """Several gates (or phenotypes) on the image at once, each in its colour, in the
@@ -868,6 +911,8 @@ class Cytometry:
                 out.append((f"{name} clusters", self.analyses[name]["columns"]["cluster"]))
         for name in self.analyses_of("classification"):
             out.append((f"{name} classes", self.analyses[name]["columns"]["class"]))
+        if self.table is not None and LEVEL_TYPE in self.table.columns:
+            out.append(("Neighbourhood types (from the level below)", LEVEL_TYPE))
         return out
 
     def classes(self, key):
@@ -878,6 +923,8 @@ class Cytometry:
             return np.array([None if v is None or v != v or v == "unlabelled" else str(v) for v in values],
                             dtype=object)
         ids = self.column(key).astype(np.int64)
+        if key == LEVEL_TYPE:
+            return np.array([f"type {i}" if i > 0 else None for i in ids], dtype=object)
         names = self.class_names(key)
         if names:
             return np.array([names.get(int(i)) for i in ids], dtype=object)
@@ -980,6 +1027,10 @@ class Cytometry:
     def label_blocks(self):
         """[(table rows, label image, voxel size or None)] for each time point /
         position of the objects layer (what surface distances and contacts read)."""
+        owner = getattr(self, "_owner", None)
+        if owner is not None and self is not owner.root:
+            raise ValueError("surface distances and contacts need masks: they are measured on the "
+                             "segmented objects, not on a spatial level")
         layer = self.labels_layer()
         if layer is None:
             raise ValueError(f"the objects layer {self.layer_name!r} is not open")
@@ -1057,22 +1108,20 @@ class Cytometry:
         """A function (safe in a background thread) that builds each object's
         neighbourhood (itself and the objects within `radius`, or its `k` nearest),
         measures its class composition, sorts the neighbourhoods into `n_types` types
-        (k-means on the composition; vtea-core `neighborhoods`) and computes the
-        enrichment statistics (vtea-core `spatial.enrichment`). Returns a dict.
+        (k-means on the composition) and computes the enrichment statistics (vtea-core
+        `hierarchy` windows, `neighborhoods`, `spatial.enrichment`). Returns a dict.
 
         Neighbourhoods overlap: one is drawn around every object, so an object is a
         member of its own and of every neighbour's. Each object gets both views: the
         type of its own neighbourhood ("what surrounds it"), and, over every
         neighbourhood it is a member of, how many there are and their most common
-        type ("what it is part of")."""
-        from vtea_core.neighborhoods import (
-            NEIGHBORHOOD_TYPE,
-            build_neighborhoods,
-            classify_neighborhoods,
-            composition_columns,
-            neighborhood_features,
-            reflect_neighborhoods,
-        )
+        type ("what it is part of").
+
+        `settings["seeds"]` / `["members"]` (population keys, optional): which objects
+        get a neighbourhood, and which are counted in one. An object that is not a seed
+        has no type of its own (0) but is still a member of its neighbours'."""
+        from vtea_core.hierarchy import ObjectLevel, build_windows
+        from vtea_core.neighborhoods import NEIGHBORHOOD_TYPE, classify_neighborhoods, composition_columns
         from vtea_core.spatial import neighbor_enrichment, type_enrichment
 
         classes = self.classes(settings["classes"])
@@ -1081,38 +1130,53 @@ class Cytometry:
         radius, k = float(settings.get("radius") or 0), int(settings.get("k") or 10)
         n_types, seed = int(settings.get("n_types") or 6), int(settings.get("seed") or 0)
         perms = int(settings.get("permutations", 200))
+        populations = {}
+        for which in ("seeds", "members"):
+            key = settings.get(which)
+            populations[which] = (np.asarray(self.mask(key[0], key[1]), bool)
+                                  if key and key[0] != "all" else None)
+        if populations["seeds"] is not None and not populations["seeds"].any():
+            raise ValueError("the seed population has no objects")
 
         def job():
             named = np.array([c if c is not None else NO_CLASS for c in classes], dtype=object)
             data = pd.DataFrame({"object_id": np.arange(1, len(points) + 1),
                                  **{f"centroid-{i}": points[:, i] for i in range(points.shape[1])},
                                  "class": named})
-            hoods = build_neighborhoods(data, method="nearest" if method == "nearest" else "radius",
-                                        radius=radius if radius > 0 else 1.0, k=k)
-            table = neighborhood_features(hoods, data, class_column="class")
+            base = ObjectLevel("objects", "objects", data)
+            windows = build_windows(base, points, name="windows",
+                                    method="nearest" if method == "nearest" else "radius",
+                                    radius=radius if radius > 0 else 1.0, k=k, classes="class",
+                                    seeds=populations["seeds"], members=populations["members"])
+            table = windows.table
             fractions = composition_columns(table)
             typed = classify_neighborhoods(table, method="kmeans", n_clusters=n_types, features=",".join(fractions),
                                            random_state=seed)
-            order = typed["neighborhood_id"].to_numpy(np.int64) - 1  # centred: one per object
+            order = windows.seeds  # the object each neighbourhood is centred on
+            window_types = _by_size(typed[NEIGHBORHOOD_TYPE].to_numpy())
             types = np.zeros(len(points), np.int64)
-            types[order] = _by_size(typed[NEIGHBORHOOD_TYPE].to_numpy())
-            # The membership view: every neighbourhood an object falls in, its own included.
-            typed[NEIGHBORHOOD_TYPE] = types[order]
-            member = reflect_neighborhoods(hoods, typed[["neighborhood_id", NEIGHBORHOOD_TYPE]], data,
-                                           relation="member")
-            memberships = member["n_neighborhoods"].to_numpy(np.int64)
-            member_types = np.maximum(member[NEIGHBORHOOD_TYPE].to_numpy(np.int64), 0)
+            types[order] = window_types
             composition = {}
             for col in fractions:
                 value = col[len("Class_"):-len("_ClassFraction")]
                 values = np.full(len(points), np.nan)
                 values[order] = typed[col].to_numpy(float) / 100.0
                 composition[value] = values
-            profile = pd.DataFrame(composition).groupby(types).mean()
-            sizes = pd.Series(types).value_counts().sort_index()
+            # The membership view: every neighbourhood an object falls in, its own included.
+            membership = windows.membership.tocoo()
+            memberships = np.bincount(membership.col, minlength=len(points)).astype(np.int64)
+            votes = pd.DataFrame({"object": membership.col, "type": window_types[membership.row]})
+            counts = votes.groupby(["object", "type"]).size().reset_index(name="n")
+            counts = counts.sort_values(["object", "n", "type"], ascending=[True, False, True])
+            member_types = np.zeros(len(points), np.int64)
+            first = counts.drop_duplicates("object")
+            member_types[first["object"].to_numpy()] = first["type"].to_numpy()
+            seeded = types > 0
+            profile = pd.DataFrame(composition)[seeded].groupby(types[seeded]).mean()
+            sizes = pd.Series(types[seeded]).value_counts().sort_index()
             graph = {"k": k} if method == "nearest" else {"radius": radius}
             pairs = neighbor_enrichment(points, classes, n_permutations=perms, random_state=seed, **graph)
-            by_type = type_enrichment(classes, types)
+            by_type = type_enrichment(classes, np.where(seeded, types, None))
             return {"types": types, "composition": composition, "profile": profile, "sizes": sizes,
                     "pairs": pairs, "by_type": by_type, "memberships": memberships,
                     "member_types": member_types}
@@ -1182,21 +1246,27 @@ class Cytometry:
                 "scope": [[list(item), list(scope)] for item, scope in self.scope.items()],
                 "phenotypes": self.tree.to_dict(), "analyses": self.analyses, "view": dict(self.view)}
 
-    def save_derived(self, folder):
-        """Write the clustering / map columns next to the workspace; returns the path."""
+    def save_derived(self, folder, path="cytometry/derived.csv"):
+        """Write the clustering / map columns next to the workspace (at `path` in
+        `folder`); returns the path."""
         if self.derived is None:
             return None
         keys = [k for k in KEYS if k in self.table.columns]
         out = self.table[keys].join(self.derived)
-        (folder / "cytometry").mkdir(exist_ok=True)
-        out.to_csv(folder / "cytometry" / "derived.csv", index=False)
-        return "cytometry/derived.csv"
+        (folder / path).parent.mkdir(parents=True, exist_ok=True)
+        out.to_csv(folder / path, index=False)
+        return path
 
     def load_derived(self, path):
         keys = [k for k in KEYS if k in self.table.columns]
         saved = pd.read_csv(path)
-        merged = self.table[keys].merge(saved, on=keys, how="left")
-        self.derived = merged.drop(columns=keys)
+        if keys:
+            merged = self.table[keys].merge(saved, on=keys, how="left")
+            self.derived = merged.drop(columns=keys)
+        elif len(saved) == len(self.table):  # a level above the segmentation: rows in order
+            self.derived = saved.reset_index(drop=True)
+        else:
+            raise ValueError(f"{path.name}: {len(saved)} rows saved for {len(self.table)} objects")
         for info in self.analyses.values():
             for key in ("cluster", "type", "member_type", "class"):
                 col = info.get("columns", {}).get(key)
@@ -1266,7 +1336,7 @@ def _analysis_columns(info):
     """Every derived column an analysis made."""
     cols = info.get("columns", {})
     return [c for c in [cols.get("cluster"), cols.get("type"), cols.get("member_type"), cols.get("class"),
-                        *cols.get("map", []),
+                        *cols.get("map", []), *cols.get("selection", []),
                         *cols.get("features", []), *cols.get("probabilities", [])] if c]
 
 
@@ -1390,25 +1460,363 @@ def _centroid_columns(frame, prefix=""):
     return {}
 
 
+
+ROOT_LEVEL = "Objects"
+LEVEL_KINDS = ("objects", "windows", "regions")
+LEVEL_TYPE = "neighbourhood type"  # a level's type column: each object's type at the level below
+
+
+class Levels:
+    """One viewer's analysis at every level of its spatial hierarchy.
+
+    Level 0 is the segmented objects (a Measurements table). Every level above is a
+    table of objects built on the one below it (windows or regions; see vtea-core
+    `hierarchy`) and gets a full analysis of its own: gates, phenotypes, clusterings,
+    spatial features, classifications. Attribute access goes to the *current* level, so
+    the workbench and its tabs work on whichever level is chosen without knowing there
+    are others; `set_level` switches. Every level shares one list of listeners.
+    """
+
+    _OWN = frozenset({"viewer", "_levels", "_info", "_current", "_listeners", "_contacts"})
+
+    def __init__(self, viewer):
+        own = self.__dict__
+        own["viewer"] = viewer
+        own["_listeners"] = []
+        own["_levels"] = {}
+        own["_info"] = {}
+        own["_current"] = ROOT_LEVEL
+        own["_contacts"] = None  # touching segmented objects (row + 1 pairs), read when needed
+        self._make(ROOT_LEVEL, "objects", None, {})
+
+    def _make(self, name, kind, parent, provenance):
+        state = Cytometry(self.viewer)
+        state._listeners = self._listeners  # one list: listening to any level hears every level
+        state._owner, state._level_name = self, name
+        self._levels[name] = state
+        self._info[name] = {"kind": kind, "parent": parent, "provenance": dict(provenance or {}),
+                            "geometry": None}
+        return state
+
+    def __getattr__(self, name):
+        return getattr(self.__dict__["_levels"][self.__dict__["_current"]], name)
+
+    def __setattr__(self, name, value):
+        if name in self._OWN:
+            self.__dict__[name] = value
+        else:
+            setattr(self.current, name, value)
+
+    # ---- the levels ----------------------------------------------------------------------
+
+    @property
+    def current(self):
+        """The Cytometry of the level being analysed."""
+        return self._levels[self._current]
+
+    @property
+    def current_level(self):
+        return self._current
+
+    @property
+    def root(self):
+        return self._levels[ROOT_LEVEL]
+
+    def level(self, name):
+        if name not in self._levels:
+            raise KeyError(f"no level {name!r} (levels: {list(self._levels)})")
+        return self._levels[name]
+
+    def level_names(self):
+        return list(self._levels)
+
+    def level_info(self, name):
+        """{"kind", "parent", "provenance", "depth", "objects"} of a level."""
+        self.level(name)
+        out = dict(self._info[name])
+        out["depth"] = self.level_depth(name)
+        table = self._levels[name].table
+        out["objects"] = 0 if table is None else len(table)
+        return out
+
+    def level_depth(self, name):
+        depth, parent = 0, self._info[name]["parent"]
+        while parent is not None:
+            depth, parent = depth + 1, self._info[parent]["parent"]
+        return depth
+
+    def level_children(self, name):
+        return [n for n, info in self._info.items() if info["parent"] == name]
+
+    def level_tree(self):
+        """(depth, name) of every level, depth-first, children in the order made."""
+        out = []
+
+        def walk(name, depth):
+            out.append((depth, name))
+            for child in self.level_children(name):
+                walk(child, depth + 1)
+
+        walk(ROOT_LEVEL, 0)
+        return out
+
+    def level_label(self, name):
+        """How a level is named in the level selector."""
+        info = self.level_info(name)
+        if info["depth"] == 0:
+            state = self._levels[name]
+            what = f"Objects ({state.layer_name})" if state.layer_name else "Objects"
+            return f"{what}: segmentation"
+        return f"Spatial level {info['depth']}: {name} ({info['kind']} on {info['parent']})"
+
+    def add_level(self, name, table, parent=ROOT_LEVEL, kind="windows", provenance=None, select=False,
+                  geometry=None):
+        """A level of objects built on `parent`, analysed from `table` (one row per
+        object, with centroid columns as the Measurements tables have them). `geometry`:
+        {"membership": (objects x parent objects) sparse 0/1, "seeds": parent row of each
+        window or None}, what painting and moving between levels follow. Returns its
+        Cytometry."""
+        name = str(name).strip()
+        if not name:
+            raise ValueError("a level needs a name")
+        if name in self._levels:
+            raise ValueError(f"there is already a level named {name!r}")
+        self.level(parent)
+        if kind not in LEVEL_KINDS[1:]:
+            raise ValueError(f"a level is built as windows or regions, not {kind!r}")
+        if geometry is not None:
+            n_parent = len(self.level(parent).table)
+            if geometry["membership"].shape != (len(table), n_parent):
+                raise ValueError(f"level {name!r}: membership {geometry['membership'].shape} does not match "
+                                 f"{len(table)} objects on {n_parent}")
+        state = self._make(name, kind, parent, provenance)
+        self._info[name]["geometry"] = geometry
+        state.source, state.layer_name = name, None
+        state.table = table.reset_index(drop=True).copy()
+        if select:
+            self.set_level(name)
+        else:
+            state.changed()
+        return state
+
+    def remove_level(self, name, notify=True):
+        """Delete a level and every level built on it; returns their names. The
+        segmentation cannot be removed."""
+        if name == ROOT_LEVEL:
+            raise ValueError("the segmented objects are the hierarchy's root and cannot be removed")
+        self.level(name)
+        gone = []
+
+        def collect(n):
+            gone.append(n)
+            for child in self.level_children(n):
+                collect(child)
+
+        collect(name)
+        parent = self._info[name]["parent"]
+        for n in gone:
+            del self._levels[n], self._info[n]
+        if self._current in gone:
+            self.__dict__["_current"] = parent
+        if notify:
+            self.current.changed()
+        return gone
+
+    def set_level(self, name):
+        """Analyse level `name` from now on (every tab follows)."""
+        self.level(name)
+        if name != self._current:
+            self.__dict__["_current"] = name
+            self.current.changed()
+
+    def clear_levels(self, notify=True):
+        """Back to the segmentation alone."""
+        for name in self.level_children(ROOT_LEVEL):
+            self.remove_level(name, notify=notify)
+
+    # ---- building levels and moving between them (vtea-core hierarchy) -----------------
+
+    def unique_level_name(self, base):
+        name, i = base, 1
+        while name in self._levels:
+            i += 1
+            name = f"{base} {i}"
+        return name
+
+    def _neighbourhood_result(self, analysis):
+        state = self.current
+        info = state.analyses.get(analysis)
+        if info is None or info.get("kind") != "neighbourhoods":
+            raise ValueError(f"no neighbourhood result {analysis!r} at level {self._current!r}")
+        return state, info
+
+    def make_windows_level(self, analysis, name=None, select=True):
+        """A level of the windows of neighbourhood result `analysis` of the current
+        level: one window per seed object, with its composition and the neighbourhood
+        type of the object it is centred on."""
+        from . import _cyto_levels
+
+        state, info = self._neighbourhood_result(analysis)
+        parent = self._current
+        types = state.column(info["columns"]["type"])
+        table, geometry, provenance = _cyto_levels.windows_level(self, parent, {**info, "analysis": analysis},
+                                                                 types)
+        name = name or self.unique_level_name(f"{analysis} windows")
+        return self.add_level(name, table, parent, "windows", provenance, select=select, geometry=geometry)
+
+    def make_regions_level(self, analysis, name=None, *, values=None, touching=True, d=0.0, tau=0.5,
+                           min_size=1, select=True):
+        """A level of regions: contiguous objects of the current level with the same
+        type in neighbourhood result `analysis` merged into one (see vtea-core
+        `hierarchy`): touching (masks, seeds or members) or within `d`, joined when
+        their members sit close (`tau`). `values`: the types to make regions of."""
+        from . import _cyto_levels
+
+        state, info = self._neighbourhood_result(analysis)
+        parent = self._current
+        types = state.column(info["columns"]["type"])
+        if touching:
+            self.touching_pairs()
+        table, geometry, provenance = _cyto_levels.regions_level(
+            self, parent, types, values=values, touching=touching, d=d, tau=tau, min_size=min_size,
+            source=info["columns"]["type"])
+        if not len(table):
+            raise ValueError("no regions: no objects of those types are joined (try a distance, a lower "
+                             "threshold or a smaller minimum size)")
+        name = name or self.unique_level_name(f"{analysis} regions")
+        provenance["analysis"] = analysis
+        return self.add_level(name, table, parent, "regions", provenance, select=select, geometry=geometry)
+
+    def touching_pairs(self):
+        """Touching segmented objects (row + 1 pairs), read from the masks once."""
+        from . import _cyto_levels
+
+        if self._contacts is None:
+            self.__dict__["_contacts"] = _cyto_levels.contacts(self)
+        if self._contacts is None:
+            raise ValueError("touching needs the objects layer's masks: open it, or join by distance")
+        return self._contacts
+
+    def link_selection(self, source, kind, key, target, select=True):
+        """The objects of level `target` related to population (`kind`, `key`) of level
+        `source` - its members below, the objects containing it above - as a selection
+        of `target` (a population, from a 0/1 column; make it a phenotype if wanted).
+        Returns its name."""
+        from . import _cyto_levels
+
+        src, dst = self.level(source), self.level(target)
+        if source == target:
+            raise ValueError("choose another level to follow the selection to")
+        mask = np.asarray(src.mask(kind, key), bool)
+        related = _cyto_levels.related(self, source, mask, target)
+        below = target in self._ancestors(source)
+        label = key if kind != "all" else "all objects"
+        base = f"{'members of' if below else 'containing'} {label} ({source})"
+        name, i = base, 1
+        while name in dst.analyses:
+            i += 1
+            name = f"{base} {i}"
+        column = f"{name} selected"
+        # A selection, not a phenotype: phenotypes share the objects out among themselves,
+        # and a selection followed from another level may cut across them.
+        dst._store(name, {"kind": "link", "source": source, "population": [kind, key]},
+                   {"selection": [column]}, {column: related.astype(np.int64)}, len(related))
+        if select:
+            self.set_level(target)
+        return name
+
+    def bring_columns(self, source, columns, target, how="mean", name=None):
+        """Columns of level `source` onto level `target` (see `_cyto_levels.bring`),
+        as "<column> (<source>)". Returns the new column names."""
+        from . import _cyto_levels
+
+        dst = self.level(target)
+        out = _cyto_levels.bring(self, source, list(columns), target, how)
+        name = name or dst.unique_analysis_name(f"From {source}")
+        dst._check_analysis_name(name)
+        suffix = f" ({source}{', own' if how == 'own' else ''})"
+        new = {f"{c}{suffix}": out[c].to_numpy() for c in columns}
+        dst._store(name, {"kind": "link", "source": source, "how": how, "columns_from": list(columns)},
+                   {"features": list(new)}, new, len(out))
+        return list(new)
+
+    def _ancestors(self, name):
+        out = []
+        parent = self._info[name]["parent"]
+        while parent is not None:
+            out.append(parent)
+            parent = self._info[parent]["parent"]
+        return out
+
+
 # ---- workspace ---------------------------------------------------------------------------------
 
 
 def _save(viewer, folder):
-    state = _states.get(viewer)
-    if state is None or (state.table is None and not state.order and not len(state.tree)):
+    levels = _states.get(viewer)
+    if levels is None:
         return None
-    data = state.to_dict()
-    if state.table is not None and state.derived is not None:
-        data["derived"] = state.save_derived(folder)
+    root = levels.root
+    higher = [name for _, name in levels.level_tree()][1:]
+    if not higher and (root.table is None and not root.order and not len(root.tree)):
+        return None
+    data = root.to_dict()
+    if root.table is not None and root.derived is not None:
+        data["derived"] = root.save_derived(folder)
+    if higher:
+        data["version"] = 2
+        data["current_level"] = levels.current_level
+        data["levels"] = []
+        for index, name in enumerate(higher, start=1):
+            state, info = levels.level(name), levels.level_info(name)
+            sub = f"cytometry/levels/{index:03d}"
+            (folder / sub).mkdir(parents=True, exist_ok=True)
+            entry = {"name": name, "kind": info["kind"], "parent": info["parent"],
+                     "provenance": info["provenance"], "state": state.to_dict(), "table": None,
+                     "derived": None, "geometry": None}
+            if info.get("geometry") is not None:
+                from . import _cyto_levels
+
+                entry["geometry"] = _cyto_levels.save_geometry(info["geometry"], folder, sub)
+            if state.table is not None:
+                state.table.to_csv(folder / sub / "table.csv", index=False)
+                entry["table"] = f"{sub}/table.csv"
+                if state.derived is not None:
+                    entry["derived"] = state.save_derived(folder, f"{sub}/derived.csv")
+            data["levels"].append(entry)
     return data
 
 
 def _load(viewer, folder, data):
     from . import _measure
 
-    state = state_of(viewer)
+    levels = state_of(viewer)
+    levels.set_level(ROOT_LEVEL)
+    levels.clear_levels()
     derived = folder / data["derived"] if data.get("derived") else None
-    return state.load_dict(data, _measure.tables_of(viewer), derived_path=derived)
+    notes = levels.root.load_dict(data, _measure.tables_of(viewer), derived_path=derived)
+    for entry in data.get("levels") or []:  # version 2: levels above the segmentation
+        name = entry["name"]
+        if entry.get("parent") not in levels.level_names():
+            notes.append(f"cytometry: level {name!r} was built on a level that was not restored")
+            continue
+        path = folder / entry["table"] if entry.get("table") else None
+        if path is None or not path.exists():
+            notes.append(f"cytometry: the table of level {name!r} was not found")
+            continue
+        table = pd.read_csv(path)
+        from . import _cyto_levels
+
+        geometry = _cyto_levels.load_geometry(folder, entry.get("geometry"))
+        state = levels.add_level(name, table, entry["parent"], entry.get("kind", "windows"),
+                                 entry.get("provenance"), geometry=geometry)
+        level_derived = folder / entry["derived"] if entry.get("derived") else None
+        notes += state.load_dict(entry["state"], {name: table}, derived_path=level_derived)
+        state.layer_name = None
+    current = data.get("current_level")
+    if current in levels.level_names():
+        levels.set_level(current)
+    return notes
 
 
 def _by_size(labels):

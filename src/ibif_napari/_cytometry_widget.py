@@ -33,7 +33,7 @@ class CytometryWidget(QWidget):
     def __init__(self, napari_viewer):
         super().__init__()
         self.viewer = napari_viewer
-        self.state = cy.state_of(napari_viewer)
+        self.state = cy.root_of(napari_viewer)  # the segmented objects: level 0
         layout = QVBoxLayout(self)
         intro = QLabel("Gate objects on a plot or on the image, cluster them to find types, "
                        "and build a hierarchy of phenotypes (e.g. Immune > T cell > CD8 T cell). "
