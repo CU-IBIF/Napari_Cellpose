@@ -114,9 +114,9 @@ Two windows A and B of the same type (seeds a and b) are joined in two stages.
              (0 for a member both windows share)
    ```
 
-   δ comes from k-d tree queries on the members' level-0 positions (one tree for the
-   whole level; each pair queries only its few dozen members, so the cost is linear in
-   the number of candidate pairs). The pair is joined when w ≥ **τ**. A window whose
+   δ comes from k-d tree queries on the members' positions (the objects of the level
+   below the windows: cells, for windows of cells; each pair queries only its few
+   dozen members, so the cost is linear in the number of candidate pairs). The pair is joined when w ≥ **τ**. A window whose
    members sit right against the other's scores near 1; two windows whose seeds are
    close but whose members extend in different directions (two tubules running side
    by side, a tubule beside a glomerulus) score low and stay apart. A check on two
@@ -341,7 +341,7 @@ level's phenotypes.
 | | what | where |
 |---|---|---|
 | H0 ✅ | Overlap review: k-nearest tie fix; memberships and member type kept in the workbench | vtea-core, workbench |
-| H1 | `vtea_core.hierarchy`: `ObjectLevel`, sparse membership, expand / reflect / aggregate, regions builder, persistence, protocol steps, tests | vtea-core |
+| H1 ✅ | `vtea_core.hierarchy` (vtea-python `docs/HIERARCHY.md`): `ObjectLevel`, sparse membership, expand / reflect / aggregate, regions builder, persistence, protocol steps, tests | vtea-core |
 | H2 | Feature families and the benchmark; membership-weighted cell type × type enrichment; defaults chosen from results | vtea-core |
 | H3 | `LevelState` refactor and the level selector, with only level 0 (no behaviour change; all current tests pass); workspace v2 | workbench |
 | H4 | Make a level (windows, regions); every tab at level ≥ 1; painting levels on the image; members / containers populations; reflect and aggregate | workbench |
