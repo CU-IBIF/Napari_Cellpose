@@ -50,10 +50,16 @@ _states = weakref.WeakKeyDictionary()
 
 
 def state_of(viewer):
-    """The viewer's cytometry analysis (created when first asked for)."""
+    """The viewer's cytometry analysis (created when first asked for): its levels of
+    objects (`Levels`), which acts as the level currently being analysed."""
     if viewer not in _states:
-        _states[viewer] = Cytometry(viewer)
+        _states[viewer] = Levels(viewer)
     return _states[viewer]
+
+
+def root_of(viewer):
+    """The viewer's level-0 analysis: the segmented objects."""
+    return state_of(viewer).root
 
 
 def axis_column(column, transform="linear", cofactor=ASINH_COFACTOR):
@@ -1182,21 +1188,27 @@ class Cytometry:
                 "scope": [[list(item), list(scope)] for item, scope in self.scope.items()],
                 "phenotypes": self.tree.to_dict(), "analyses": self.analyses, "view": dict(self.view)}
 
-    def save_derived(self, folder):
-        """Write the clustering / map columns next to the workspace; returns the path."""
+    def save_derived(self, folder, path="cytometry/derived.csv"):
+        """Write the clustering / map columns next to the workspace (at `path` in
+        `folder`); returns the path."""
         if self.derived is None:
             return None
         keys = [k for k in KEYS if k in self.table.columns]
         out = self.table[keys].join(self.derived)
-        (folder / "cytometry").mkdir(exist_ok=True)
-        out.to_csv(folder / "cytometry" / "derived.csv", index=False)
-        return "cytometry/derived.csv"
+        (folder / path).parent.mkdir(parents=True, exist_ok=True)
+        out.to_csv(folder / path, index=False)
+        return path
 
     def load_derived(self, path):
         keys = [k for k in KEYS if k in self.table.columns]
         saved = pd.read_csv(path)
-        merged = self.table[keys].merge(saved, on=keys, how="left")
-        self.derived = merged.drop(columns=keys)
+        if keys:
+            merged = self.table[keys].merge(saved, on=keys, how="left")
+            self.derived = merged.drop(columns=keys)
+        elif len(saved) == len(self.table):  # a level above the segmentation: rows in order
+            self.derived = saved.reset_index(drop=True)
+        else:
+            raise ValueError(f"{path.name}: {len(saved)} rows saved for {len(self.table)} objects")
         for info in self.analyses.values():
             for key in ("cluster", "type", "member_type", "class"):
                 col = info.get("columns", {}).get(key)
@@ -1390,25 +1402,228 @@ def _centroid_columns(frame, prefix=""):
     return {}
 
 
+
+ROOT_LEVEL = "Objects"
+LEVEL_KINDS = ("objects", "windows", "regions")
+
+
+class Levels:
+    """One viewer's analysis at every level of its spatial hierarchy.
+
+    Level 0 is the segmented objects (a Measurements table). Every level above is a
+    table of objects built on the one below it (windows or regions; see vtea-core
+    `hierarchy`) and gets a full analysis of its own: gates, phenotypes, clusterings,
+    spatial features, classifications. Attribute access goes to the *current* level, so
+    the workbench and its tabs work on whichever level is chosen without knowing there
+    are others; `set_level` switches. Every level shares one list of listeners.
+    """
+
+    _OWN = frozenset({"viewer", "_levels", "_info", "_current", "_listeners"})
+
+    def __init__(self, viewer):
+        own = self.__dict__
+        own["viewer"] = viewer
+        own["_listeners"] = []
+        own["_levels"] = {}
+        own["_info"] = {}
+        own["_current"] = ROOT_LEVEL
+        self._make(ROOT_LEVEL, "objects", None, {})
+
+    def _make(self, name, kind, parent, provenance):
+        state = Cytometry(self.viewer)
+        state._listeners = self._listeners  # one list: listening to any level hears every level
+        self._levels[name] = state
+        self._info[name] = {"kind": kind, "parent": parent, "provenance": dict(provenance or {})}
+        return state
+
+    def __getattr__(self, name):
+        return getattr(self.__dict__["_levels"][self.__dict__["_current"]], name)
+
+    def __setattr__(self, name, value):
+        if name in self._OWN:
+            self.__dict__[name] = value
+        else:
+            setattr(self.current, name, value)
+
+    # ---- the levels ----------------------------------------------------------------------
+
+    @property
+    def current(self):
+        """The Cytometry of the level being analysed."""
+        return self._levels[self._current]
+
+    @property
+    def current_level(self):
+        return self._current
+
+    @property
+    def root(self):
+        return self._levels[ROOT_LEVEL]
+
+    def level(self, name):
+        if name not in self._levels:
+            raise KeyError(f"no level {name!r} (levels: {list(self._levels)})")
+        return self._levels[name]
+
+    def level_names(self):
+        return list(self._levels)
+
+    def level_info(self, name):
+        """{"kind", "parent", "provenance", "depth", "objects"} of a level."""
+        self.level(name)
+        out = dict(self._info[name])
+        out["depth"] = self.level_depth(name)
+        table = self._levels[name].table
+        out["objects"] = 0 if table is None else len(table)
+        return out
+
+    def level_depth(self, name):
+        depth, parent = 0, self._info[name]["parent"]
+        while parent is not None:
+            depth, parent = depth + 1, self._info[parent]["parent"]
+        return depth
+
+    def level_children(self, name):
+        return [n for n, info in self._info.items() if info["parent"] == name]
+
+    def level_tree(self):
+        """(depth, name) of every level, depth-first, children in the order made."""
+        out = []
+
+        def walk(name, depth):
+            out.append((depth, name))
+            for child in self.level_children(name):
+                walk(child, depth + 1)
+
+        walk(ROOT_LEVEL, 0)
+        return out
+
+    def level_label(self, name):
+        """How a level is named in the level selector."""
+        info = self.level_info(name)
+        if info["depth"] == 0:
+            state = self._levels[name]
+            what = f"Objects ({state.layer_name})" if state.layer_name else "Objects"
+            return f"{what}: segmentation"
+        return f"Spatial level {info['depth']}: {name} ({info['kind']} on {info['parent']})"
+
+    def add_level(self, name, table, parent=ROOT_LEVEL, kind="windows", provenance=None, select=False):
+        """A level of objects built on `parent`, analysed from `table` (one row per
+        object, with centroid columns as the Measurements tables have them). Returns its
+        Cytometry."""
+        name = str(name).strip()
+        if not name:
+            raise ValueError("a level needs a name")
+        if name in self._levels:
+            raise ValueError(f"there is already a level named {name!r}")
+        self.level(parent)
+        if kind not in LEVEL_KINDS[1:]:
+            raise ValueError(f"a level is built as windows or regions, not {kind!r}")
+        state = self._make(name, kind, parent, provenance)
+        state.source, state.layer_name = name, None
+        state.table = table.reset_index(drop=True).copy()
+        if select:
+            self.set_level(name)
+        else:
+            state.changed()
+        return state
+
+    def remove_level(self, name):
+        """Delete a level and every level built on it; returns their names. The
+        segmentation cannot be removed."""
+        if name == ROOT_LEVEL:
+            raise ValueError("the segmented objects are the hierarchy's root and cannot be removed")
+        self.level(name)
+        gone = []
+
+        def collect(n):
+            gone.append(n)
+            for child in self.level_children(n):
+                collect(child)
+
+        collect(name)
+        parent = self._info[name]["parent"]
+        for n in gone:
+            del self._levels[n], self._info[n]
+        if self._current in gone:
+            self.__dict__["_current"] = parent
+        self.current.changed()
+        return gone
+
+    def set_level(self, name):
+        """Analyse level `name` from now on (every tab follows)."""
+        self.level(name)
+        if name != self._current:
+            self.__dict__["_current"] = name
+            self.current.changed()
+
+    def clear_levels(self):
+        """Back to the segmentation alone."""
+        for name in self.level_children(ROOT_LEVEL):
+            self.remove_level(name)
+
+
 # ---- workspace ---------------------------------------------------------------------------------
 
 
 def _save(viewer, folder):
-    state = _states.get(viewer)
-    if state is None or (state.table is None and not state.order and not len(state.tree)):
+    levels = _states.get(viewer)
+    if levels is None:
         return None
-    data = state.to_dict()
-    if state.table is not None and state.derived is not None:
-        data["derived"] = state.save_derived(folder)
+    root = levels.root
+    higher = [name for _, name in levels.level_tree()][1:]
+    if not higher and (root.table is None and not root.order and not len(root.tree)):
+        return None
+    data = root.to_dict()
+    if root.table is not None and root.derived is not None:
+        data["derived"] = root.save_derived(folder)
+    if higher:
+        data["version"] = 2
+        data["current_level"] = levels.current_level
+        data["levels"] = []
+        for index, name in enumerate(higher, start=1):
+            state, info = levels.level(name), levels.level_info(name)
+            sub = f"cytometry/levels/{index:03d}"
+            (folder / sub).mkdir(parents=True, exist_ok=True)
+            entry = {"name": name, "kind": info["kind"], "parent": info["parent"],
+                     "provenance": info["provenance"], "state": state.to_dict(), "table": None,
+                     "derived": None}
+            if state.table is not None:
+                state.table.to_csv(folder / sub / "table.csv", index=False)
+                entry["table"] = f"{sub}/table.csv"
+                if state.derived is not None:
+                    entry["derived"] = state.save_derived(folder, f"{sub}/derived.csv")
+            data["levels"].append(entry)
     return data
 
 
 def _load(viewer, folder, data):
     from . import _measure
 
-    state = state_of(viewer)
+    levels = state_of(viewer)
+    levels.set_level(ROOT_LEVEL)
+    levels.clear_levels()
     derived = folder / data["derived"] if data.get("derived") else None
-    return state.load_dict(data, _measure.tables_of(viewer), derived_path=derived)
+    notes = levels.root.load_dict(data, _measure.tables_of(viewer), derived_path=derived)
+    for entry in data.get("levels") or []:  # version 2: levels above the segmentation
+        name = entry["name"]
+        if entry.get("parent") not in levels.level_names():
+            notes.append(f"cytometry: level {name!r} was built on a level that was not restored")
+            continue
+        path = folder / entry["table"] if entry.get("table") else None
+        if path is None or not path.exists():
+            notes.append(f"cytometry: the table of level {name!r} was not found")
+            continue
+        table = pd.read_csv(path)
+        state = levels.add_level(name, table, entry["parent"], entry.get("kind", "windows"),
+                                 entry.get("provenance"))
+        level_derived = folder / entry["derived"] if entry.get("derived") else None
+        notes += state.load_dict(entry["state"], {name: table}, derived_path=level_derived)
+        state.layer_name = None
+    current = data.get("current_level")
+    if current in levels.level_names():
+        levels.set_level(current)
+    return notes
 
 
 def _by_size(labels):

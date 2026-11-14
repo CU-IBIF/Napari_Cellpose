@@ -1144,3 +1144,106 @@ def test_classification_is_saved_and_shown_on_the_image(qtbot, tmp_path, monkeyp
     assert restored.analysis_kind("Classes 1") == "classification"
     np.testing.assert_array_equal(restored.column("Classes 1 class"), s.column("Classes 1 class"))
     assert restored.class_names("Classes 1 class") == {1: "Other", 2: "T"}
+
+
+# ---- levels of the spatial hierarchy -------------------------------------------------------
+
+
+def _level_table(s, rng_seed=0):
+    """A stand-in for a level built on the cells: one object per cell (a window around
+    it), at the cell's centre, with a composition-like feature."""
+    rng = np.random.default_rng(rng_seed)
+    cols = s.root.centroid_columns()
+    t = s.root.mask("phenotype", "T").astype(float)
+    return pd.DataFrame({"object_id": np.arange(1, len(t) + 1),
+                         "centroid Y (µm)": s.root.table[cols["Y"]].to_numpy(),
+                         "centroid X (µm)": s.root.table[cols["X"]].to_numpy(),
+                         "fraction T": np.clip(t + rng.normal(0, 0.1, len(t)), 0, 1),
+                         "n objects": rng.integers(3, 9, len(t)).astype(float)})
+
+
+def test_levels_each_have_their_own_analysis():
+    v, s = _typed_scene()
+    assert isinstance(s, cy.Levels) and s.current_level == cy.ROOT_LEVEL and s.root is s.current
+    assert s.level_tree() == [(0, "Objects")] and s.level_label("Objects") == "Objects (cells): segmentation"
+    w = s.add_level("Neighbourhoods 1", _level_table(s), provenance={"radius": 15})
+    assert s.current_level == "Objects" and len(s.tree) == 2  # still the cells' phenotypes
+    s.set_level("Neighbourhoods 1")
+    assert s.current is w and len(s.table) == 24 and "fraction T" in s.features()
+    assert len(s.tree) == 0 and s.layer_name is None
+    s.add_phenotype("T-rich", "`fraction T` > 0.5")
+    g = s.add_gate("crowded", "n objects", "fraction T", [[5, -1], [10, -1], [10, 2], [5, 2]])
+    assert s.mask("phenotype", "T-rich").sum() >= 1 and s.mask("gate", g.id).any()
+    s.set_level("Objects")
+    assert len(s.tree) == 2 and "T-rich" not in [n.name for n in s.tree]
+    with pytest.raises(KeyError):
+        s.gates.get(g.id)  # the level's gate is not the cells'
+    s.add_level("Windows 2", _level_table(s, 1), parent="Neighbourhoods 1")
+    assert s.level_tree() == [(0, "Objects"), (1, "Neighbourhoods 1"), (2, "Windows 2")]
+    assert s.level_info("Windows 2")["depth"] == 2 and s.level_info("Windows 2")["objects"] == 24
+    assert s.level_label("Windows 2") == "Spatial level 2: Windows 2 (windows on Neighbourhoods 1)"
+    with pytest.raises(ValueError, match="already"):
+        s.add_level("Windows 2", _level_table(s))
+    with pytest.raises(ValueError, match="root"):
+        s.remove_level("Objects")
+    s.set_level("Windows 2")
+    assert s.remove_level("Neighbourhoods 1") == ["Neighbourhoods 1", "Windows 2"]
+    assert s.current_level == "Objects" and s.level_names() == ["Objects"]
+
+
+def test_one_list_of_listeners_hears_every_level():
+    v, s = _typed_scene()
+    heard = []
+    cy.root_of(v).listen(lambda: heard.append(s.current_level))
+    s.add_level("NH", _level_table(s), select=True)
+    s.current.changed()
+    assert heard[-2:] == ["NH", "NH"]
+
+
+def test_workbench_level_selector(qtbot):
+    from ibif_napari._cyto_workbench import Workbench
+
+    v, s = _typed_scene()
+    bench = Workbench(v)
+    qtbot.addWidget(bench)
+    assert bench.level_box.count() == 1 and not bench.level_box.isEnabled()
+    bench.x_col.setCurrentText("CD3 mean")
+    s.add_level("NH 1", _level_table(s))
+    assert bench.level_box.count() == 2 and bench.level_box.isEnabled()
+    bench.level_box.setCurrentIndex(1)  # the user picks the level
+    assert s.current_level == "NH 1" and bench.level_path.text() == "Objects › NH 1"
+    assert "spatial level 1" in bench.windowTitle()
+    assert bench.x_col.findText("fraction T") >= 0 and bench.x_col.findText("CD3 mean") < 0
+    # every tab works on this level's objects
+    bench.x_col.setCurrentText("n objects")
+    bench.y_col.setCurrentText("fraction T")
+    gate = bench.add_gate("rich", [[0, 0.5], [20, 0.5], [20, 2], [0, 2]])
+    assert gate is not None and s.mask("gate", gate.id).sum() >= 1
+    bench.clustering.refresh()
+    assert bench.clustering.features.count() >= 2
+    bench.set_level("Objects")
+    assert bench.x_col.currentText() == "CD3 mean"  # the cells' plot set-up comes back
+    assert bench.level_box.currentData() == "Objects" and bench.windowTitle() == "Cytometry workbench"
+
+
+def test_levels_are_saved_with_the_workspace(tmp_path):
+    v, s = _typed_scene()
+    s.add_level("NH 1", _level_table(s), provenance={"radius": 15.0})
+    s.add_level("NH 2", _level_table(s, 1), parent="NH 1", kind="regions")
+    s.set_level("NH 1")
+    s.add_phenotype("T-rich", "`fraction T` > 0.5")
+    rows = np.arange(len(s.table))
+    s.add_analysis("Clusters", {"features": ["fraction T"]}, rows, labels=(s.column("fraction T") > 0.5) + 1)
+    expected = s.typed_table()
+    folder, notes = _workspace.save_workspace(v, tmp_path / "w")
+    assert notes == []
+    data = json.loads((folder / "workspace.json").read_text())["extensions"]["cytometry"]
+    assert data["version"] == 2 and [e["name"] for e in data["levels"]] == ["NH 1", "NH 2"]
+    w = ViewerModel()
+    assert _workspace.load_workspace(w, folder) == []
+    r = cy.state_of(w)
+    assert r.level_tree() == [(0, "Objects"), (1, "NH 1"), (2, "NH 2")] and r.current_level == "NH 1"
+    assert r.level_info("NH 2")["kind"] == "regions" and r.level_info("NH 1")["provenance"] == {"radius": 15.0}
+    pd.testing.assert_frame_equal(r.typed_table(), expected, check_dtype=False)
+    assert "Clusters" in r.analyses and (r.clusters("Clusters") > 0).all()
+    assert len(r.root.tree) == 2  # the cells' own analysis is back too

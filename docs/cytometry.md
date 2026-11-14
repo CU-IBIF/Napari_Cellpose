@@ -21,6 +21,13 @@ vtea-core, so VTEA and IBIF napari share them.
    objects in use again updates them and keeps the gates, phenotypes and clusterings.
 3. **Open the Cytometry workbench.** It is a separate window, so the plot can be large
    next to the image. It stays above napari and closes with it.
+   - **Level** (at the top) chooses which objects every tab works on: the segmented
+     objects, or a spatial level built on them (neighbourhood windows or regions, at
+     any depth; *Spatial level 1* is built on the objects, *Spatial level 2* on level 1,
+     and so on). Each level has its own gates, phenotypes, clusterings, spatial
+     features and classifications, its own plot set-up, and is saved with the
+     workspace. The path beside it shows what the level is built on. With only the
+     segmented objects, the selector is greyed out.
    - **Show** chooses which objects are plotted: all of them, a gate, an image gate or
      a phenotype. A gate you draw now is drawn **within** them. Within a gate, the new
      gate is a subgate; within a phenotype, it only ever contains that phenotype's

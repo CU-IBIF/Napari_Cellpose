@@ -55,6 +55,20 @@ class Workbench(QWidget):
         self._watched = None
         self._filling = False
         outer = QVBoxLayout(self)
+        # ---- which level of the spatial hierarchy is analysed ----
+        level_row = QHBoxLayout()
+        level_row.addWidget(QLabel("Level"))
+        self.level_box = QComboBox()
+        self.level_box.setToolTip(
+            "Which objects every tab works on: the segmented objects, or a spatial level built "
+            "on them (neighbourhood windows or regions), at any depth")
+        self.level_box.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self.level_box.currentIndexChanged.connect(self._level_chosen)
+        level_row.addWidget(self.level_box)
+        self.level_path = QLabel()
+        self.level_path.setToolTip("Where this level sits: what it is built on, down to the segmentation")
+        level_row.addWidget(self.level_path, 1)
+        outer.addLayout(level_row)
         self.tabs = QTabWidget()
         outer.addWidget(self.tabs)
         gating = QWidget()
@@ -195,6 +209,38 @@ class Workbench(QWidget):
         self.refresh()
         self.fit_to_screen()
 
+    # ---- levels -------------------------------------------------------------------------
+
+    def _fill_levels(self):
+        levels = self.state
+        box = self.level_box
+        box.blockSignals(True)
+        box.clear()
+        for depth, name in levels.level_tree():
+            info = levels.level_info(name)
+            box.addItem(f"{'   ' * depth}{levels.level_label(name)}  ({info['objects']:,})", name)
+        box.setCurrentIndex(max(box.findData(levels.current_level), 0))
+        box.setEnabled(box.count() > 1)
+        box.blockSignals(False)
+        path = []
+        name = levels.current_level
+        while name is not None:
+            path.insert(0, name)
+            name = levels.level_info(name)["parent"]
+        self.level_path.setText(" › ".join(path))
+        depth = levels.level_info(levels.current_level)["depth"]
+        self.setWindowTitle("Cytometry workbench" + (f": spatial level {depth}, {levels.current_level}"
+                                                     if depth else ""))
+
+    def _level_chosen(self, index):
+        name = self.level_box.itemData(index)
+        if name and name != self.state.current_level:
+            self.set_level(name)
+
+    def set_level(self, name):
+        """Work on level `name` (every tab follows); also used by scripts."""
+        self.state.set_level(name)
+
     def fit_to_screen(self, available=None):
         """Size the window for a 4:3 plot with side panels about half its width: as large
         as fits on the screen (92% x 88% of its available area), but never so small that
@@ -231,6 +277,7 @@ class Workbench(QWidget):
     def refresh(self):
         """Rebuild the choices and lists from the state, keeping the current choices."""
         state = self.state
+        self._fill_levels()
         current_pop = self.population.currentData()  # "kind\tkey" (Qt keeps strings, not tuples)
         features = state.features()
         _fill(self.population, [(label, _pop_key(kind, key)) for kind, key, label in state.populations()]
@@ -248,9 +295,10 @@ class Workbench(QWidget):
         self._fill_gates()
         self._fill_phenotypes()
         self._watch_layer()
-        if getattr(self, "_view_version", None) != state.view_version:
-            self._view_version = state.view_version
-            self.apply_view(state.view)  # e.g. restored from a workspace
+        view_key = (state.current_level, state.view_version)
+        if getattr(self, "_view_version", None) != view_key:
+            self._view_version = view_key
+            self.apply_view(state.view)  # e.g. restored from a workspace, or another level's
         self.replot()
         for tab in ("clustering", "spatial", "neighbourhoods", "classification"):
             if hasattr(self, tab):

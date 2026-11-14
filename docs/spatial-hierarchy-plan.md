@@ -342,8 +342,8 @@ level's phenotypes.
 |---|---|---|
 | H0 ✅ | Overlap review: k-nearest tie fix; memberships and member type kept in the workbench | vtea-core, workbench |
 | H1 ✅ | `vtea_core.hierarchy` (vtea-python `docs/HIERARCHY.md`): `ObjectLevel`, sparse membership, expand / reflect / aggregate, regions builder, persistence, protocol steps, tests | vtea-core |
-| H2 | Feature families and the benchmark; membership-weighted cell type × type enrichment; defaults chosen from results | vtea-core |
-| H3 | `LevelState` refactor and the level selector, with only level 0 (no behaviour change; all current tests pass); workspace v2 | workbench |
+| H2 ✅ | Feature families and the benchmark (results in vtea-python `docs/HIERARCHY.md`; the CODEX reference dataset is still to run); membership-weighted cell type × type enrichment; defaults chosen from results | vtea-core |
+| H3 ✅ | Per-level state (`Levels`: one full analysis per level, the current one answering for all) and the level selector, indented as a tree with object counts and the path to the segmentation; no behaviour change at level 0 (all earlier tests pass); workspace v2 (v1 loads as level 0) | workbench |
 | H4 | Make a level (windows, regions); every tab at level ≥ 1; painting levels on the image; members / containers populations; reflect and aggregate | workbench |
 | H4b | Hierarchy map: the tree of levels with counts, provenance and type mix; click to switch level; build / delete / rebuild from a node; stale marking; members and containers of a selection at every node | workbench |
 | H5 | Level-aware model cards and Classification tab | vtea-core, workbench |
