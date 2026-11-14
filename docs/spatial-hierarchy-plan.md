@@ -66,9 +66,40 @@ plan supports two builders per level:
 | **Windows** (centred: radius, k nearest; or grid) | yes | = objects below (or grid points) | what surrounds each object | CODEX cellular neighbourhoods (Schürch et al. 2020) |
 | **Regions** (contiguous objects of the same type merged: connected components of the neighbour graph restricted to one type, with a minimum size) | no (a partition) | few | which structures exist, their size, shape and makeup | UTAG domains (Kim et al. 2022); CellCharter spatial clusters (Varrone et al. 2024); tissue motifs (Bhate et al. 2022) |
 
+The two are not interchangeable, and neither is the default for the other:
+
+- **Windows describe state and change.** Because they overlap, an object of level
+  n − 1 sits in many windows, so windows grade continuously across tissue. They are
+  the tool for alteration: immune cells infiltrating tubulointerstitium show up as a
+  gradient of window composition, not as a boundary. Windows on windows (level ≥ 2)
+  stay windows, each level reaching further: a level-2 window describes what
+  surrounds the surroundings, which is how an infiltrate's front and its
+  hinterland are told apart.
+- **Regions are functional tissue units** (a glomerulus, a tubule segment, a
+  follicle): countable, non-overlapping, with a size and a shape of their own. They
+  are built when the question is about units rather than gradients.
+
 A typical chain: cells → windows (types: "tubular", "glomerular", "immune-rich") →
-regions of contiguous same-type windows → windows over regions (which regions sit next
+windows on those windows (where infiltration is advancing); and, alongside,
+cells → regions (tubules, glomeruli) → windows over regions (which units sit next
 to which: Bhate's tissue motifs).
+
+**How each is drawn in 3D:**
+
+- Regions follow **touching masks** by default (the contact graph between level-0
+  masks; radius or k nearest as alternatives), so a tubule is traced along its
+  epithelium and not bridged across the lumen or the interstitium to its neighbour.
+  At level ≥ 1, where there are no masks, two objects touch when they share members.
+- Windows stay **radius or k nearest**, centred on every object of level n − 1, so
+  objects at level n − 1 are included in many windows.
+
+**Building on a subset.** A level is built on all objects of the level below by
+default. Optionally it can be built on a population (a gate, a phenotype, a cluster,
+a type), e.g. windows only over tubular neighbourhoods. Two separate choices, both
+recorded in the provenance: which objects **seed** windows, and which objects can be
+**members**. Seeding on a subset while counting every object as a member is usually
+what is wanted (the windows of tubular neighbourhoods, with whatever infiltrates
+them); restricting members too gives the subset's own arrangement.
 
 ## 2. vtea-core (engine)
 
@@ -89,7 +120,8 @@ class ObjectLevel:
 
 class Hierarchy:
     levels: dict[str, ObjectLevel]
-    def build(self, parent, *, builder="windows"|"regions", classes, **params) -> ObjectLevel
+    def build(self, parent, *, builder="windows"|"regions", classes, seeds=None, members=None,
+              **params) -> ObjectLevel    # seeds / members: optional row masks of the parent
     def expand(self, level, to=0) -> csr_matrix        # members at any depth (product of memberships, binarised)
     def reflect(self, level, onto, columns, how="own"|"member")   # down: objects carry what they are part of
     def aggregate(self, level, columns, how="mean"|...)            # up: a level summarises its members
@@ -99,8 +131,12 @@ class Hierarchy:
 - Membership as sparse matrices makes "which cells are in this level-2 object" one
   product (`M2 @ M1`), and reflection and aggregation matrix products, so it scales to
   millions of cells. `NeighborhoodSet` gets `to_sparse()` / `from_sparse()`.
-- Regions builder: `regions(parent, types, graph="radius"|"knn"|"contact", min_size)`;
-  members are the parent objects of each component; centre = mean of members.
+- Regions builder: `regions(parent, types, graph="contact"|"radius"|"knn", min_size)`,
+  contact by default: touching masks at level 0 (from the labels image, 3D included),
+  shared members above it. Members are the parent objects of each component; centre =
+  mean of members; shape (volume, length along the principal axis, elongation) is
+  measured from the members' masks.
+- Windows builder: today's `build_neighborhoods`, plus `seeds` and `members` subsets.
 - Persistence: one folder per level (table as parquet or CSV, membership as `.npz`,
   `level.json` with provenance and format version).
 - Protocol steps (`workflow` registry) for build / reflect / aggregate, so a hierarchy
@@ -125,7 +161,8 @@ class Hierarchy:
   current one. `state_of(viewer)` keeps returning something with today's interface (the
   current level), so the tabs need few changes.
 - **Making a level.** The Neighbourhoods tab gets "Make a level from this" (windows) and
-  "Make regions from these types" (regions). The new level appears in the selector;
+  "Make regions from these types" (regions), each with an optional "Seeds" and
+  "Members" population (default: all objects). The new level appears in the selector;
   its table starts with the neighbourhood features (composition, size, density, and
   the H2 families) and the type as a column, so it can be gated, clustered and
   phenotyped immediately.
@@ -212,16 +249,23 @@ level's phenotypes.
 
 H1 and H3 are independent and can proceed in parallel; H4 needs both.
 
-## 7. Open questions
+## 7. Decisions
 
-1. Windows over windows grow quickly in what they span (a level-2 window of radius r
-   over level-1 windows of radius r covers about 2r of cells). Is that the intended
-   reading of "level 2", or should level ≥ 2 default to regions?
-2. Should higher levels be built on all objects, or on a gated population (e.g. only
-   tubular neighbourhoods)? The plan allows a population, as clustering does.
-3. 3D kidney volumes: is a contact graph (touching masks) preferred over a radius for
-   regions, so a tubule is followed along its epithelium?
-4. Maximum depth: unlimited in the engine; the selector stays readable to about 4.
+1. **Level ≥ 2 stays windows** when built from windows. Regions are a separate
+   builder for functional tissue units, not a default for deeper levels; windows
+   describe alteration and change (e.g. immune infiltration), which needs overlap.
+2. **Subsets are an option, not a requirement**: a level is built on all objects by
+   default, with optional seed and member populations.
+3. **Regions follow touching masks** (in 3D), so a tubule is traced along its
+   epithelium. **Windows keep overlap**: an object at level n − 1 can be in any number
+   of windows at level n.
+
+## 8. Open questions
+
+1. Maximum depth: unlimited in the engine; the selector stays readable to about 4.
+2. Regions at level ≥ 1 join objects that share members. Is that the right notion of
+   touching for neighbourhood windows, or should it be shared *seed-adjacent* members
+   only (stricter, fewer merges)?
 
 ## References
 
