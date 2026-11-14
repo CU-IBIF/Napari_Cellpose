@@ -89,14 +89,53 @@ to which: Bhate's tissue motifs).
 - Regions follow **touching masks** by default (the contact graph between level-0
   masks; radius or k nearest as alternatives), so a tubule is traced along its
   epithelium and not bridged across the lumen or the interstitium to its neighbour.
-  At level ≥ 1, where there are no masks, two windows touch when their **seeds**
-  touch (the seed objects are adjacent at the level below: touching masks at level
-  0, or touching seeds again above it). Sharing members is not enough: overlapping
-  windows share members almost everywhere, so that rule would merge whole tissues.
-  Regions at level ≥ 1 that are not windows (regions of regions) touch when any of
-  their members touch.
+  At level ≥ 1 windows are merged by the **seed-distance, member-weighted rule**
+  below, which reduces to "seeds touch" when its distance is 0.
 - Windows stay **radius or k nearest**, centred on every object of level n − 1, so
   objects at level n − 1 are included in many windows.
+
+### Merging windows into regions: a k-d tree problem
+
+Two windows A and B of the same type (seeds a and b) are joined in two stages.
+
+1. **Candidates by seed distance.** A and B are candidates when their seeds are within
+   a distance **d**: `cKDTree(seed positions).query_pairs(d)`, plus seeds whose masks
+   touch. d = 0 is exactly "seeds touch"; a larger d bridges small gaps (a missed
+   segmentation, a thin lumen) without needing contact. In 3D the distance is in µm
+   with the voxel size, as for every neighbourhood. Sharing members never makes a
+   candidate on its own: overlapping windows share members almost everywhere, so that
+   rule would merge whole tissues.
+2. **Weight by member proximity.** Each candidate pair gets a score from how close
+   the members of each window are to the members of the other:
+
+   ```
+   w(A, B) = mean over m in A ∪ B of  exp(−δ(m)² / 2σ²)
+   δ(m)    = distance from m to the nearest member of the other window
+             (0 for a member both windows share)
+   ```
+
+   δ comes from k-d tree queries on the members' level-0 positions (one tree for the
+   whole level; each pair queries only its few dozen members, so the cost is linear in
+   the number of candidate pairs). The pair is joined when w ≥ **τ**. A window whose
+   members sit right against the other's scores near 1; two windows whose seeds are
+   close but whose members extend in different directions (two tubules running side
+   by side, a tubule beside a glomerulus) score low and stay apart. A check on two
+   parallel rows of cells (10 µm spacing, rows 16 µm apart, windows of radius 12 µm,
+   σ = 10 µm): neighbouring windows along a row score 0.87, windows facing each other
+   across the rows 0.28, so τ = 0.5 joins each row and keeps the two apart.
+
+Joined pairs form a graph; its connected components (union-find), at least
+`min_size` windows, are the regions. Every window of a region keeps its own
+membership, so the region's cells are the union of its windows' members.
+
+Defaults, all recorded in the region level's provenance: d = 0 (touching, the
+conservative start), σ = the median nearest-neighbour distance between level-0
+objects (one cell spacing), τ = 0.5. The Neighbourhoods tab shows a preview count
+of regions as d and τ move, before the level is made.
+
+Regions of regions (level ≥ 2 regions) use the same rule with the region's centre in
+place of the seed. At level 0 (regions of cells) the rule is not needed: cells are
+joined by touching masks, or by the same seed-distance stage with d > 0.
 
 **Building on a subset.** A level is built on all objects of the level below by
 default. Optionally it can be built on a population (a gate, a phenotype, a cluster,
@@ -138,8 +177,9 @@ class Hierarchy:
   millions of cells. `NeighborhoodSet` gets `to_sparse()` / `from_sparse()`.
 - Regions builder: `regions(parent, types, graph="contact"|"radius"|"knn", min_size)`,
   contact by default: touching masks at level 0 (from the labels image, 3D included);
-  above it, windows touch when their seeds touch (recursively down to the masks), and
-  regions when any of their members touch. Members are the parent objects of each component; centre =
+  above it, the seed-distance, member-weighted rule of §1 (`d`, `sigma`, `tau`
+  parameters; candidates from `cKDTree.query_pairs`, member distances from k-d tree
+  queries, components by union-find). Members are the parent objects of each component; centre =
   mean of members; shape (volume, length along the principal axis, elongation) is
   measured from the members' masks.
 - Windows builder: today's `build_neighborhoods`, plus `seeds` and `members` subsets.
@@ -323,8 +363,10 @@ level; the rest of the map is H4b.
 3. **Regions follow touching masks** (in 3D), so a tubule is traced along its
    epithelium. **Windows keep overlap**: an object at level n − 1 can be in any number
    of windows at level n.
-4. **Windows join into a region only when their seeds touch**, not when they share
-   members (for now; a looser rule can be added as an option later if needed).
+4. **Merging windows into regions is a k-d tree problem**: candidates are windows of
+   the same type whose seeds are within a distance d (d = 0: seeds touch); a candidate
+   pair is joined when its members are close to each other's (Gaussian-weighted
+   member-to-member distance, threshold τ). Sharing members alone never merges.
 5. **Any depth is allowed**, and levels may branch. A **hierarchy map** gives the
    overview and the navigation (§4); the level drop-down is a shortcut that mirrors it.
 
