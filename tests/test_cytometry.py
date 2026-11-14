@@ -1007,6 +1007,16 @@ def test_neighbourhood_tab_types_and_enrichment(qtbot):
     assert (types[t] == left_type).mean() > 0.6 and (types[~t] != left_type).mean() > 0.6
     frac = s.column("Neighbourhoods 1 fraction T")
     assert frac[t].mean() > frac[~t].mean()
+    # Neighbourhoods overlap: one is drawn around every cell, so each cell is a member
+    # of its own and of every neighbour's within the radius (3 to 8 neighbours here),
+    # and the most common type among them is kept as well as its own.
+    memberships = s.column("Neighbourhoods 1 memberships")
+    assert memberships.min() == 4 and memberships.max() == 9
+    assert info["columns"]["member_type"] == "Neighbourhoods 1 member neighbourhood"
+    member = s.column("Neighbourhoods 1 member neighbourhood")
+    assert set(member) <= {1, 2} and (member == types).mean() > 0.6
+    assert "Neighbourhoods 1 memberships" in s.measured_features()
+    assert "overlap" in tab.info.text()
     profile = s.analysis_table("Neighbourhoods 1", "profile")
     assert set(profile.columns) == {"T", "Other"} and len(profile) == 2
     pairs = s.analysis_table("Neighbourhoods 1", "pairs").set_index(["class", "neighbor"])

@@ -199,6 +199,7 @@ crowding the section.
 | 3 ✅ | **Spatial features per object**, once some identities are known. Distance to the nearest object of each phenotype, by centroid or by **surface** (exact distance between masks, in µm, 3D included). Number and fraction of each phenotype within a radius. Contacts (touching masks). These features can be gated and clustered like any measurement, to split types further (e.g. CD8 T cells touching tumour cells). | vtea-core `spatial` (new) |
 | 4 ✅ | **Neighbourhood analysis.** Cellular neighbourhoods: composition of each cell's *k* nearest neighbours or of the cells within a radius, clustered into neighbourhood types (the CODEX / Schürch–Nolan approach). Cell-type × neighbourhood enrichment, and pairwise neighbourhood enrichment with permutation z-scores. Neighbourhood maps on the image. Neighbourhood features reflected back onto cells for gating. | vtea-core `neighborhoods` (extended) |
 | 5 (in progress: 5.0, 5.1 done) | **Supervised object classification**: a Classification tab (apply a model; class and confidence per object; make phenotypes) and a Training workbench (labels from phenotypes, gates or clicked objects; train or fine-tune; validate; model library). First models: a generic ANN on measurements, **NephNet3D** on 3D nuclear crops (Woloshuk et al. 2021), and **STELLAR** reference-based annotation (Brbić et al. 2022). Training locally, on the facility GPU server or a cluster. See [classification-plan.md](classification-plan.md). | vtea-core `classification` (extended) |
+| Next | **Spatial hierarchy**: neighbourhoods as objects, built again on themselves at any depth; one workbench with a level selector and the same tabs at every level; expanded neighbourhood features; level-aware classification. See [spatial-hierarchy-plan.md](spatial-hierarchy-plan.md). | vtea-core `hierarchy` (new) |
 
 ### Notes on the methods
 
@@ -211,3 +212,28 @@ crowding the section.
   - Its code is 2D, but the graph only needs centroids, so 3D works by giving it Z.
   - Its pinned dependencies are old (PyTorch 1.9, PyG 2.0), so it needs a port to
     current versions.
+
+### Neighbourhood analysis with VTEA in the kidney
+
+The Neighbourhoods tab follows the cell-centric neighbourhood analysis our group has
+published with VTEA (the "spatial by cell" method; composition as class sums and
+fractions; neighbourhoods clustered into niches):
+
+- Winfree S, McNutt AT, Khochare S, et al. Integrated cytometry with machine learning
+  applied to high-content imaging of human kidney tissue for in situ cell
+  classification and neighborhood analysis. *Laboratory Investigation* 103(6), 100104
+  (2023). doi:10.1016/j.labinv.2023.100104. VTEA tissue cytometry with NephNet3D
+  classification of kidney cell types from a nuclear stain, and neighbourhood analysis
+  of the classified cells in situ.
+- Lake BB, Menon R, Winfree S, et al. An atlas of healthy and injured cell states and
+  niches in the human kidney. *Nature* 619, 585–594 (2023).
+  doi:10.1038/s41586-023-05769-3. Injury neighbourhoods located by spatial
+  transcriptomics, and large-scale 3D imaging analysis of about 1.2 million
+  neighbourhoods linking them to active immune responses.
+- Asghari M, Sabo AR, Barwinska D, et al. Integration of spatial protein imaging and
+  transcriptomics in the human kidney tracks the regenerative potential of proximal
+  tubules. *Science Advances* 11(33), eadv8918 (2025). doi:10.1126/sciadv.adv8918.
+  Cell-centric neighbourhoods built with VTEA's "spatial by cell" method (55 µm
+  diameter, matched to the Visium spot), described by class sums and fractions,
+  clustered with Louvain into 19 niches, compared between reference and disease
+  tissue by odds ratio.
