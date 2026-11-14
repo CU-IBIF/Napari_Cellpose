@@ -916,20 +916,28 @@ figures 5 and 6). It works on one dataset (the objects in use).
 6. Click **Run**. The classes are joined into a tree (each class to its nearest, starting
    from the start). There is one lineage, *t1*, *t2*, …, from the start to each end of the
    tree. Each lineage gets a smooth curve through its objects (Slingshot; Street et al.
-   2018). Each object's **pseudotime** is how far along the curve it is.
+   2018). Each object's **pseudotime** is how far along the curve it is. Then each feature
+   gets a smooth curve along each lineage (a GAM with **Knots** knots), and tradeSeq's
+   tests (Van den Berge et al. 2020) ask what changes.
 
 **Show** draws:
 
 - **Lineages on the map**: the objects coloured by class, the tree (dashed) and the
   lineage curves (arrows from start to end).
 - **Pseudotime on the map**: the objects coloured by pseudotime.
-- **A feature along pseudotime**: the mean of one feature (in standard deviations) along
-  each lineage, with its standard error. This is the marker's "pseudotime spectrum".
+- **A feature along pseudotime**: the fitted curve of one feature (in standard deviations)
+  along each lineage, with its 95% band, over the mean in bins of pseudotime (points).
+  This is the marker's "pseudotime spectrum".
 - **Features along a lineage**: every feature along one lineage, as a heat map.
-- **Which features change**: the Spearman correlation of each feature with pseudotime on
-  each lineage. Only correlations with a q-value below 0.05 (Benjamini–Hochberg) are
-  shown. With thousands of objects almost everything is significant, so look at the size of
-  ρ.
+- **Which features change**: the tradeSeq tests, as −log10 of the q-value
+  (Benjamini–Hochberg; 2 means q = 0.01, higher is stronger). One row per test, overall
+  and per lineage or pair of lineages:
+  - **association**: the feature changes along the lineage;
+  - **start vs end**: it differs between the lineage's start and end;
+  - **different ends**: the lineages end at different values;
+  - **different patterns**: the lineages differ anywhere along the way.
+
+  With thousands of objects small changes are significant, so look at the curves too.
 - **Classes along pseudotime** and **Also followed**: the share of each class along each
   lineage.
 
@@ -941,10 +949,19 @@ shows the map on the Gating tab. **Show pseudotime on image** colours the object
 
 **Distance** sets how far apart two classes are when the tree is built:
 
-- **Euclidean** (the default) uses the distance between the class means.
-- **Slingshot** scales that distance by how spread out the classes are. It suits round
-  clusters. Types cut from one continuous change can be joined out of order with it, so
-  compare both.
+- **Slingshot** (the default) scales the distance between class means by how spread out
+  the classes are. On simulated data it found the right tree at least as often as
+  Euclidean.
+- **Euclidean** uses the distance between the class means.
+
+Either way, a class should cover each branch point. If the first classes of two branches
+are joined to each other instead of to the trunk, cluster again (or merge classes there).
+
+**Knots** (6, as tradeSeq): more knots follow short-lived changes. With too few, a narrow
+bump can bend the curve's ends and show up in *start vs end* or *different ends*.
+
+**Engine**: vtea-core's ports of slingshot and tradeSeq, or, when R with the Bioconductor
+packages slingshot and tradeSeq is installed, the R packages themselves.
 
 Running from two different starts, or on each condition separately, is a good check that
 the lineages are real. Trajectories over many datasets together (an atlas or a cohort) are
@@ -1254,6 +1271,9 @@ ibif-napari-vv all vv --backend classic
 - Street K, Risso D, Fletcher RB, et al. Slingshot: cell lineage and pseudotime inference for
   single-cell transcriptomics. *BMC Genomics* 19:477 (2018).
   [doi:10.1186/s12864-018-4772-0](https://doi.org/10.1186/s12864-018-4772-0)
+- Van den Berge K, Roux de Bézieux H, Street K, et al. Trajectory-based differential
+  expression analysis for single-cell sequencing data. *Nat Commun* 11:1201 (2020).
+  [doi:10.1038/s41467-020-14766-3](https://doi.org/10.1038/s41467-020-14766-3)
 - Asghari M, Sabo AR, Barwinska D, et al. Integration of spatial protein imaging and
   transcriptomics in the human kidney tracks the regenerative potential of proximal tubules.
   *Sci Adv* 11:eadv8918 (2025). [doi:10.1126/sciadv.adv8918](https://doi.org/10.1126/sciadv.adv8918)

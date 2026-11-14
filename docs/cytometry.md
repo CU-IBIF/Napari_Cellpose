@@ -159,9 +159,20 @@ vtea-core, so VTEA and IBIF napari share them.
      healthy type, or a candidate transitional state). **Ends** (optional): classes
      that must end lineages.
    - **Distance**:
-     - Between class means (Euclidean, the default).
-     - Or Slingshot's covariance-scaled distance. It suits round clusters, but can
-       join types cut from one continuum out of order; compare both.
+     - Slingshot's covariance-scaled distance (the default). On simulated
+       trajectories it found the topology at least as often as Euclidean, and found
+       trifurcations where Euclidean never did.
+     - Or between class means (Euclidean).
+     - With either, a class should cover each branch point. If the first classes of
+       two branches are joined to each other rather than to the trunk, re-cluster or
+       merge classes there.
+   - **Knots** (tradeSeq, 6 by default): more follow short-lived changes; too few can
+     bend a curve's ends.
+   - **Engine**:
+     - vtea-core's ports of slingshot and tradeSeq (the default);
+     - or the R packages themselves (Bioconductor slingshot + tradeSeq through
+       Rscript), offered when R with both is installed (`VTEA_RSCRIPT` points to an
+       Rscript off the PATH).
    - **Also follow** (optional): a second classing whose fractions are followed along
      pseudotime. For example, neighbourhood types along a cell-type trajectory, or cell
      types along a neighbourhood trajectory.
@@ -169,22 +180,32 @@ vtea-core, so VTEA and IBIF napari share them.
      at the start, with one lineage per leaf (*t1*, *t2*, …). Each lineage is fitted
      with a principal curve; lineages that share their first classes are shrunk onto
      a common trunk (Slingshot; Street et al. 2018). Each object gets a pseudotime per
-     lineage and a weight.
+     lineage and a weight. Then a Gaussian GAM per feature along the lineages, and its
+     Wald tests (tradeSeq; Van den Berge et al. 2020):
+     - association: does it change along a lineage?
+     - start vs end;
+     - different ends between lineages;
+     - different patterns between lineages.
+
+     Each test is run globally and per lineage or pair, with BH q-values.
    - Columns: `<name> pseudotime` (weighted mean over the object's lineages),
      `<name> lineage` (main lineage, 1 = t1), `<name> pseudotime t<j>` (empty off the
      lineage), and `<name> PC 1/2` when the space was PCA.
    - **Show**:
      - lineages on the map (by class, with the tree and the curves);
      - pseudotime on the map;
-     - a feature along pseudotime per lineage (mean ± SEM of the z-scored feature: the
-       "pseudotime spectrum" of Asghari et al. 2025, figs. 5 and 6);
+     - a feature along pseudotime per lineage: the GAM's fitted curve and 95% band over
+       the binned means ± SEM of the z-scored feature (the "pseudotime spectrum" of
+       Asghari et al. 2025, figs. 5 and 6);
      - every feature along one lineage (heat map);
-     - which features change: Spearman ρ with pseudotime, shown where the BH q-value is
-       below 0.05; the start-vs-end difference is in the saved table;
+     - which features change: −log10 q of each tradeSeq test (rows: test and lineage /
+       pair; columns: features);
      - classes, and the followed classes, along pseudotime (stacked fractions).
    - **Colour the plot by pseudotime**, **Show pseudotime on image**. Engine: vtea-core
-     `trajectory` (`slingshot`, `feature_trends`, `association`, `composition_along`);
-     see vtea-python `docs/TRAJECTORIES.md`.
+     `trajectory` (`slingshot`, `fit_gam` and the tests, `feature_trends`,
+     `composition_along`, `r_engine`). See vtea-python `docs/TRAJECTORIES.md` for what
+     is ported and the validation: simulations with a known truth, and parity with R by
+     a CI workflow that has not run yet.
 9. **Make phenotypes.** Selecting phenotypes in the list shows their objects on the
    image, as selecting gates does: Ctrl- or Shift-click several, each is shown in its
    colour and objects in more than one in white. Select a gate and click **Make phenotype…**, choosing the
@@ -237,7 +258,7 @@ crowding the section.
 | 3 ✅ | **Spatial features per object**, once some identities are known. Distance to the nearest object of each phenotype, by centroid or by **surface** (exact distance between masks, in µm, 3D included). Number and fraction of each phenotype within a radius. Contacts (touching masks). These features can be gated and clustered like any measurement, to split types further (e.g. CD8 T cells touching tumour cells). | vtea-core `spatial` (new) |
 | 4 ✅ | **Neighbourhood analysis.** Cellular neighbourhoods: composition of each cell's *k* nearest neighbours or of the cells within a radius, clustered into neighbourhood types (the CODEX / Schürch–Nolan approach). Cell-type × neighbourhood enrichment, and pairwise neighbourhood enrichment with permutation z-scores. Neighbourhood maps on the image. Neighbourhood features reflected back onto cells for gating. | vtea-core `neighborhoods` (extended) |
 | 5 (in progress: 5.0, 5.1 done) | **Supervised object classification**: a Classification tab (apply a model; class and confidence per object; make phenotypes) and a Training workbench (labels from phenotypes, gates or clicked objects; train or fine-tune; validate; model library). First models: a generic ANN on measurements, **NephNet3D** on 3D nuclear crops (Woloshuk et al. 2021), and **STELLAR** reference-based annotation (Brbić et al. 2022). Training locally, on the facility GPU server or a cluster. See [classification-plan.md](classification-plan.md). | vtea-core `classification` (extended) |
-| 6 ✅ | **Trajectories** of cell types and neighbourhood types in one dataset: lineages from a chosen start class (Slingshot-style cluster tree and principal curves), pseudotime per lineage, features along pseudotime, which features change (Spearman, BH), class and neighbourhood-type fractions along pseudotime. After Asghari et al., *Sci Adv* 2025, figs. 5–6. | vtea-core `trajectory` (new) |
+| 6 ✅ | **Trajectories** of cell types and neighbourhood types in one dataset: lineages from a chosen start class and pseudotime (Slingshot), a GAM per feature along the lineages and its tests (tradeSeq: association, start vs end, different ends, different patterns), class and neighbourhood-type fractions along pseudotime. Ports in vtea-core, validated on simulations; or the R packages when installed. After Asghari et al., *Sci Adv* 2025, figs. 5–6. | vtea-core `trajectory` (new) |
 | 7 (planned) | **Atlas / cohort analysis**: a pipeline built and checked here (phenotype rules or a classification model, neighbourhood definition, trajectory settings) frozen and applied unchanged to many datasets; a shared reference space; lineages fitted once and every dataset projected onto them; per-sample summaries and sample-level statistics across conditions. See [trajectory-atlas-plan.md](trajectory-atlas-plan.md). | vtea-core (headless cohort workflow) |
 
 ### Notes on the methods

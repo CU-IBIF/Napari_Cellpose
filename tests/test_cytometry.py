@@ -1141,13 +1141,16 @@ def repair_scene(n=150, seed=0):
     (LRP2 high) -> transitional (THY1+PROM1+) -> either THY1+ or PROM1+, as phenotypes
     from a 'truth' column. Laid out in space along the same Y: healthy on the left, the
     THY1 branch top right, the PROM1 branch bottom right, with immune cells (CD45)
-    mixed into the PROM1 branch."""
+    mixed into the PROM1 branch. The transitional cells straddle the branch point (as a
+    clustering puts one cluster there), so the cluster tree can find it."""
     rng = np.random.default_rng(seed)
     parts = []
     # (name, code, progress from, to, branch: 0 trunk, 1 THY1, 2 PROM1)
-    for name, code, a, b, br in (("Healthy PT", 0, 0.0, 0.3, 0), ("Transitional", 1, 0.3, 0.55, 0),
-                                 ("THY1+ PT", 2, 0.55, 0.85, 1), ("PROM1+ PT", 3, 0.55, 0.85, 2)):
+    for name, code, a, b, br in (("Healthy PT", 0, 0.0, 0.3, 0), ("Transitional", 1, 0.3, 0.62, 0),
+                                 ("THY1+ PT", 2, 0.62, 0.85, 1), ("PROM1+ PT", 3, 0.62, 0.85, 2)):
         p = rng.uniform(a, b, n)
+        # Past the branch point (0.55) the transitional cells are on either branch.
+        br = np.where(p > 0.55, rng.integers(1, 3, n), 0) if code == 1 else np.full(n, br)
         late = np.clip((p - 0.55) / 0.3, 0, 1)
         trunk = np.clip(p / 0.55, 0, 1)
         thy1 = 50 + 300 * trunk * (br != 2) + 500 * late * (br == 1) - 150 * late * (br == 2)
@@ -1209,12 +1212,19 @@ def test_trajectory_tab_finds_the_repair_lineages(qtbot, tmp_path):
     assert (lineage[table["truth"] == 2] == thy1_lin).mean() > 0.95
     assert (lineage[table["truth"] == 3] != thy1_lin).mean() > 0.95
     # THY1 rises along the THY1 lineage, PROM1 along the other.
-    assoc = s.analysis_table("Trajectory 1", "association").set_index(["lineage", "feature"])
+    # tradeSeq: THY1 and PROM1 change along their lineages and end differently.
+    tests = s.analysis_table("Trajectory 1", "tests").set_index(["test", "scope", "feature"])
     thy1_name = f"t{thy1_lin}"
     prom1_name = "t2" if thy1_name == "t1" else "t1"
-    assert assoc.loc[(thy1_name, "THY1 mean"), "rho"] > 0.5 > assoc.loc[(prom1_name, "THY1 mean"), "rho"]
-    assert assoc.loc[(prom1_name, "PROM1 mean"), "rho"] > 0.5
-    assert assoc.loc[(thy1_name, "LRP2 mean"), "rho"] < -0.5
+    assert set(tests.index.get_level_values("test")) == {"association", "start_vs_end", "diff_end", "pattern"}
+    assert tests.loc[("association", thy1_name, "THY1 mean"), "q"] < 1e-6
+    assert tests.loc[("association", prom1_name, "PROM1 mean"), "q"] < 1e-6
+    for feature in ("THY1 mean", "PROM1 mean"):
+        assert tests.loc[("diff_end", "global", feature), "q"] < 1e-6
+        assert tests.loc[("pattern", "global", feature), "q"] < 1e-6
+    curves = s.analysis_table("Trajectory 1", "smoothers")
+    thy1 = curves[(curves["feature"] == "THY1 mean") & (curves["lineage"] == thy1_name)]["fit"].to_numpy()
+    assert thy1[-1] > thy1[0] + 1  # the fitted THY1 curve rises along the THY1 lineage (z-scores)
     # The columns are like any other: in rules, colour the plot, the map.
     assert "Trajectory 1 pseudotime" in s.measured_features() and "Trajectory 1 PC 1" in s.features()
     assert s.rule_count("`Trajectory 1 pseudotime` >= 0")[0] == 600
@@ -1308,3 +1318,44 @@ def test_trajectory_pseudotime_on_the_image(qtbot):
     layer = tab.show_on_image()
     assert layer is not None and layer.name == "cells Trajectory 1"
     assert set(np.unique(layer.data)) - {0} <= set(range(1, 11)) and layer.data.max() > 1
+
+
+def test_trajectory_r_engine_is_used_when_chosen(qtbot, monkeypatch):
+    """With the R engine, the trajectory and the tradeSeq tests come from
+    vtea-core's r_engine (here stand-ins that run the Python ports and note the
+    call); without R the choice is greyed out."""
+    from vtea_core.trajectory import r_engine, slingshot
+
+    from ibif_napari._cyto_workbench import Workbench
+
+    calls = []
+
+    def fake_slingshot_r(points, labels, start, **kw):
+        calls.append("slingshot")
+        return slingshot(points, labels, start, ends=kw.get("ends"), distance=kw.get("distance", "slingshot"))
+
+    def fake_tradeseq_r(pt, w, values, **kw):
+        calls.append("tradeSeq")
+        n = values.shape[1]
+        table = pd.DataFrame({"waldStat": np.ones(n), "df": 2, "pvalue": 0.5, "waldStat_1": 1.0, "df_1": 1,
+                              "pvalue_1": 0.5}, index=values.columns)
+        return {"association": table, "start_vs_end": table}
+
+    monkeypatch.setattr(r_engine, "slingshot_r", fake_slingshot_r)
+    monkeypatch.setattr(r_engine, "tradeseq_r", fake_tradeseq_r)
+    s, table = repair_scene(n=60)
+    bench = Workbench(s.viewer)
+    qtbot.addWidget(bench)
+    tab = bench.trajectory
+    has_r = r_engine.r_available("slingshot", "tradeSeq")
+    assert tab.engine.model().item(1).isEnabled() == has_r
+    tab.population.setCurrentIndex(tab.population.findData("phenotype\tPT"))
+    tab.start.setCurrentText("Healthy PT")
+    tab.engine.setCurrentIndex(1)
+    info = tab.run(wait=True)
+    assert info is not None and info["engine"] == "r", tab.status.text()
+    assert calls == ["slingshot", "tradeSeq"]
+    tests = s.analysis_table("Trajectory 1", "tests")
+    assert set(tests["scope"]) == {"global", "t1"} and "smoothers" not in info["tables"]
+    tab.view.setCurrentIndex(2)  # the feature view without GAM curves: the binned means
+    assert tab.plot.figure.axes

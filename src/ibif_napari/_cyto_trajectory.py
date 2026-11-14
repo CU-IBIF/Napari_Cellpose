@@ -12,12 +12,17 @@ the analysis of Asghari et al. (Sci Adv 2025, figures 5 and 6) for one dataset:
   (e.g. its UMAP), where the lineages are found.
 - **Start** (a class chosen from biology, e.g. healthy PT or THY1+PROM1+ cells) and,
   optionally, **ends** that must be ends of lineages.
-- Lineages and curves come from vtea-core `trajectory.slingshot` (Slingshot's cluster
-  tree and simultaneous principal curves); each object gets a pseudotime per lineage.
+- Lineages and curves come from Slingshot (Street et al. 2018), each object gets a
+  pseudotime per lineage, and tradeSeq (Van den Berge et al. 2020) fits a GAM per feature
+  along the lineages and tests what changes. **Engine**: vtea-core's ports
+  (`trajectory.slingshot`, `trajectory.tradeseq`; validated on simulations, see
+  vtea-python docs/TRAJECTORIES.md), or the R packages themselves when R with slingshot
+  and tradeSeq is installed.
 
 The results show the lineages on the map, pseudotime on the map, a feature along
-pseudotime per lineage (its "pseudotime spectrum"), all features along a lineage as a
-heat map, which features change with pseudotime (Spearman rho, BH q < 0.05), and how
+pseudotime per lineage (the GAM's fitted curve with its 95% band over the binned means:
+the "pseudotime spectrum"), all features along a lineage as a heat map, the tradeSeq
+tests (association, start vs end, different ends, different patterns; BH q), and how
 the classes, or a second classing (**Also follow**, e.g. neighbourhood types along a
 cell-type trajectory), change along each lineage. "<name> pseudotime", "<name> lineage"
 and "<name> pseudotime t<j>" become columns of the object table, to plot, gate, write
@@ -46,12 +51,13 @@ from ._cyto_cluster import INTENSITY_STATS, Heatmap
 from ._cyto_spatial import _AnalysisTab
 
 VIEWS = ("Lineages on the map (by class)", "Pseudotime on the map", "A feature along pseudotime",
-         "Features along a lineage (heat map)", "Which features change (Spearman ρ)",
+         "Features along a lineage (heat map)", "Which features change (tradeSeq tests)",
          "Classes along pseudotime", "Also followed: classes along pseudotime")
-# Euclidean first: Slingshot's covariance-scaled distance can join types out of order when
-# they are cut from a continuum (each type is long along the trajectory and its spread
-# shortens the distance along it); compare both.
-DISTANCES = {"Euclidean (between class means)": "euclidean", "Slingshot (covariance-scaled)": "slingshot"}
+# Slingshot's distance first: on simulated trajectories it found the topology at least as
+# often as the Euclidean one, and trifurcations where Euclidean never did (vtea-python
+# docs/trajectory-validation/REPORT.md).
+DISTANCES = {"Slingshot (covariance-scaled)": "slingshot", "Euclidean (between class means)": "euclidean"}
+ENGINES = {"vtea-core (Python ports)": "python", "R (slingshot + tradeSeq)": "r"}
 MAX_POINTS = 30000  # drawn on the map (a random sample beyond that)
 
 
@@ -108,11 +114,30 @@ class TrajectoryTab(_AnalysisTab):
         self.distance = QComboBox()
         for text, value in DISTANCES.items():
             self.distance.addItem(text, value)
-        self.distance.setToolTip("Distance between classes for the tree: between their means (default), "
-                                 "or Slingshot's, scaled by the classes' spread. Slingshot's suits round "
-                                 "clusters; with types cut from a continuum it can join them out of order. "
-                                 "Compare both")
+        self.distance.setToolTip("Distance between classes for the tree: Slingshot's (scaled by the classes' "
+                                 "spread; the default) or between their means. If two branches are joined "
+                                 "to each other rather than to the trunk, no class covers the branch "
+                                 "point: re-cluster or merge classes there")
         self.form.addRow("Distance", self.distance)
+        self.nknots = QSpinBox()
+        self.nknots.setRange(3, 20)
+        self.nknots.setValue(6)
+        self.nknots.setToolTip("tradeSeq: knots of each lineage's spline (6 as tradeSeq). More follow "
+                               "short-lived changes; too few can bend a curve's ends")
+        self.form.addRow("Knots", self.nknots)
+        self.engine = QComboBox()
+        from vtea_core.trajectory.r_engine import r_available
+
+        has_r = r_available("slingshot", "tradeSeq")
+        for text, value in ENGINES.items():
+            self.engine.addItem(text, value)
+        item = self.engine.model().item(1)
+        if item is not None and not has_r:
+            item.setEnabled(False)
+        self.engine.setToolTip("vtea-core's ports of slingshot and tradeSeq, or the R packages themselves "
+                               + ("(R found)" if has_r else "(needs R with Bioconductor slingshot and "
+                                  "tradeSeq; not found)"))
+        self.form.addRow("Engine", self.engine)
         self.track = QComboBox()
         self.track.setToolTip("Also follow how these classes change along pseudotime, e.g. neighbourhood "
                               "types along a trajectory of cell types, or cell types along one of "
@@ -289,7 +314,8 @@ class TrajectoryTab(_AnalysisTab):
                    ends=[e for e in self.checked_ends() if e != self.start.currentText()],
                    distance=self.distance.currentData(), track=self.track.currentData(),
                    track_label=self.track.currentText() if self.track.currentData() else None,
-                   n_bins=self.bins.value())
+                   n_bins=self.bins.value(), nknots=self.nknots.value(),
+                   engine=self.engine.currentData() or "python")
         if not out["features"]:
             raise ValueError("Tick at least one feature.")
         return out
@@ -335,7 +361,7 @@ class TrajectoryTab(_AnalysisTab):
         elif view == 3:
             self._show_heatmap(name)
         elif view == 4:
-            self._show_association(name)
+            self._show_tests(name)
         else:
             self._show_composition(name, info, tracked=view == 6)
 
@@ -376,13 +402,21 @@ class TrajectoryTab(_AnalysisTab):
                            xlabel=st["display"][0], ylabel=st["display"][1])
 
     def _show_feature(self, name):
+        info = self.state.analyses[name]
         trends = self.state.analysis_table(name, "trends")
         feature = self.feature.currentText()
         part = trends[trends["feature"] == feature]
         series = [(lin, g["pseudotime"].to_numpy(float), g["mean"].to_numpy(float), g["sem"].to_numpy(float))
                   for lin, g in part.groupby("lineage", sort=False)]
+        fitted = None
+        if "smoothers" in info.get("tables", {}):  # the GAM's curves, drawn over the binned means
+            curves = self.state.analysis_table(name, "smoothers")
+            curves = curves[curves["feature"] == feature]
+            fitted = [(lin, g["pseudotime"].to_numpy(float), g["fit"].to_numpy(float),
+                       g["lower"].to_numpy(float), g["upper"].to_numpy(float))
+                      for lin, g in curves.groupby("lineage", sort=False)]
         self.stack.setCurrentWidget(self.plot)
-        self.plot.draw_trends(series, ylabel=f"{feature} (z-score)")
+        self.plot.draw_trends(series, ylabel=f"{feature} (z-score)", fitted=fitted)
 
     def _show_heatmap(self, name):
         trends = self.state.analysis_table(name, "trends")
@@ -396,19 +430,29 @@ class TrajectoryTab(_AnalysisTab):
         self.heatmap.show(grid, row_label="pseudotime bin (early → late)", value_label="mean (z-score)",
                           color_rows=False)
 
-    def _show_association(self, name):
-        table = self.state.analysis_table(name, "association")
+    def _show_tests(self, name):
+        """-log10 q of each tradeSeq test (rows) for each feature (columns)."""
+        info = self.state.analyses[name]
         self.stack.setCurrentWidget(self.heatmap)
+        if "tests" not in info.get("tables", {}):
+            self.heatmap.show(None)
+            self.info.setText(self.info.text() + "<br>No tradeSeq tests in this result (made by an older "
+                              "version): run it again.")
+            return
+        table = self.state.analysis_table(name, "tests")
         if table.empty:
             self.heatmap.show(None)
             return
-        table = table.assign(rho=np.where(table["q"] < 0.05, table["rho"], np.nan))
-        grid = table.pivot(index="lineage", columns="feature", values="rho")
-        grid = grid.loc[list(dict.fromkeys(table["lineage"])), list(dict.fromkeys(table["feature"]))]
-        counts = table.groupby("lineage")["objects"].max().to_frame("objects")
-        self.heatmap.show(grid, counts, row_label="lineage (objects)",
-                          value_label="Spearman ρ with pseudotime (q < 0.05)", limits=(-1, 1), color_rows=False,
-                          annotate=True)
+        label = {"association": "association", "start_vs_end": "start vs end", "diff_end": "different ends",
+                 "pattern": "different patterns"}
+        table = table.assign(row=[label.get(t, t) + ("" if sc == "global" else f" {sc}")
+                                  for t, sc in zip(table["test"], table["scope"])],
+                             score=-np.log10(np.clip(table["q"].to_numpy(float), 1e-10, 1)))
+        grid = table.pivot(index="row", columns="feature", values="score")
+        grid = grid.loc[list(dict.fromkeys(table["row"])), list(dict.fromkeys(table["feature"]))]
+        self.heatmap.show(grid, row_label="tradeSeq test (lineage / pair)",
+                          value_label="-log10 q (2 = q 0.01; capped at 10)", limits=(0, 10), cmap="viridis",
+                          color_rows=False, annotate=True)
 
     def _show_composition(self, name, info, tracked):
         which = "tracked" if tracked else "composition"
@@ -521,16 +565,27 @@ class TrajectoryPlot(QWidget):
         ax.tick_params(labelsize=7)
         self.canvas.draw_idle()
 
-    def draw_trends(self, series, ylabel=""):
-        """`series`: [(lineage, pseudotime, mean, sem)], one line (and band) per lineage."""
+    def draw_trends(self, series, ylabel="", fitted=None):
+        """`series`: [(lineage, pseudotime, mean, sem)], the binned means. `fitted`:
+        [(lineage, pseudotime, fit, lower, upper)], the GAM's curves and 95% bands;
+        with them the binned means are drawn as points (± SEM) under the curves."""
         self.figure.clf()
         ax = self.figure.add_subplot(111)
+        colors = {}
         for j, (lin, t, mean, sem) in enumerate(series):
             ok = np.isfinite(mean)
-            col = _lineage_color(j)
-            ax.plot(t[ok], mean[ok], color=col, lw=2, label=lin)
-            band = ok & np.isfinite(sem)
-            ax.fill_between(t[band], (mean - sem)[band], (mean + sem)[band], color=col, alpha=0.2, lw=0)
+            col = colors.setdefault(lin, _lineage_color(j))
+            if fitted:
+                ax.errorbar(t[ok], mean[ok], yerr=np.nan_to_num(sem[ok]), fmt="o", ms=3, color=col, alpha=0.5,
+                            lw=0.8)
+            else:
+                ax.plot(t[ok], mean[ok], color=col, lw=2, label=lin)
+                band = ok & np.isfinite(sem)
+                ax.fill_between(t[band], (mean - sem)[band], (mean + sem)[band], color=col, alpha=0.2, lw=0)
+        for j, (lin, t, fit, lo, hi) in enumerate(fitted or []):
+            col = colors.setdefault(lin, _lineage_color(j))
+            ax.plot(t, fit, color=col, lw=2, label=f"{lin} (GAM)")
+            ax.fill_between(t, lo, hi, color=col, alpha=0.2, lw=0)
         ax.axhline(0, color="#999999", lw=0.6)
         ax.set_xlabel("pseudotime", fontsize=8)
         ax.set_ylabel(ylabel, fontsize=8)

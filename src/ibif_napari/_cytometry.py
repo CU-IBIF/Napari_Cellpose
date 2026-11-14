@@ -30,12 +30,12 @@ import pandas as pd
 # The vtea-core this version needs (as in pyproject.toml; a test keeps them equal). pip
 # does not replace an installed vtea-core with the same version number, so an upgrade of
 # IBIF napari can leave an older one: `vtea_core_problem` notices, and gives the command.
-VTEA_CORE = "vtea-core[graph,umap,opentsne] @ git+https://github.com/winfrees/vtea-python@68e1acdc51b2a6601e66dd44ef24f7c137457854#subdirectory=packages/vtea-core"
+VTEA_CORE = "vtea-core[graph,umap,opentsne] @ git+https://github.com/winfrees/vtea-python@9e83b05fba69c200b3b6dbc86e8ae24f33cc34fa#subdirectory=packages/vtea-core"
 VTEA_CORE_FEATURES = {"vtea_core.clustering": ["nearest_neighbors"],
                       "vtea_core.classes": ["column_references", "rename_columns"],
                       "vtea_core.spatial": ["surface_distance", "neighbor_enrichment"],
                       "vtea_core.classification": ["ANNClassifier", "load_model", "predictions"],
-                      "vtea_core.trajectory": ["slingshot", "association", "composition_along"]}
+                      "vtea_core.trajectory": ["slingshot", "fit_gam", "association_test", "composition_along"]}
 
 GATE_PREFIX = "gate: "
 IMAGE_GATE_PREFIX = "image gate: "
@@ -1165,7 +1165,7 @@ class Cytometry:
         followed along pseudotime, optional)."""
         from vtea_core.measurements.normalize import normalize_features
         from vtea_core.reduction import reduction as rd
-        from vtea_core.trajectory import association, composition_along, feature_trends, slingshot
+        from vtea_core.trajectory import composition_along, feature_trends, slingshot
 
         features = list(settings["features"])
         if not features:
@@ -1203,16 +1203,25 @@ class Cytometry:
                 n_comp = int(max(1, min(settings.get("components") or 10, data.shape[1], len(data) - 1)))
                 points = rd.pca(data, n_comp, normalize="none") if data.shape[1] > 1 else data
                 points = np.asarray(points, float)
-            traj = slingshot(points, labels, start, ends=settings.get("ends") or None,
-                             distance=settings.get("distance", "slingshot"))
+            engine = settings.get("engine", "python")
+            if engine == "r":  # the R packages themselves
+                from vtea_core.trajectory.r_engine import slingshot_r
+
+                traj = slingshot_r(points, labels, start, ends=settings.get("ends") or None,
+                                   distance=settings.get("distance", "slingshot"))
+            else:
+                traj = slingshot(points, labels, start, ends=settings.get("ends") or None,
+                                 distance=settings.get("distance", "slingshot"))
             names = [f"t{j + 1}" for j in range(traj.n_lineages)]
             frame = pd.DataFrame(data, columns=features)
+            tests, curves = trajectory_tests(traj, frame, names, nknots=int(settings.get("nknots") or 6),
+                                             engine=engine, seed=int(settings.get("seed") or 0))
             out = {"rows": rows, "trajectory": traj, "lineage_names": names,
                    "display": points[:, :2] if points.shape[1] >= 2 else np.column_stack([points[:, 0],
                                                                                          np.zeros(len(points))]),
                    "trends": feature_trends(traj.pseudotime, frame, weights=traj.weights, n_bins=n_bins,
                                             lineages=names),
-                   "association": association(traj.pseudotime, frame, weights=traj.weights, lineages=names),
+                   "tests": tests, "smoothers": curves,
                    "composition": composition_along(traj.pseudotime, labels, weights=traj.weights,
                                                     n_bins=max(4, n_bins // 2), lineages=names)}
             if tracked is not None:
@@ -1263,7 +1272,8 @@ class Cytometry:
                      "centers": two_d(structure["centers"]), "curves": [two_d(c) for c in structure["curves"]],
                      "display": display,
                      "objects": [int(np.isfinite(traj.pseudotime[:, j]).sum()) for j in range(len(names))]}
-        tables = {k: _split(result[k]) for k in ("trends", "association", "composition", "tracked") if k in result}
+        tables = {k: _split(result[k]) for k in ("trends", "tests", "smoothers", "composition", "tracked")
+                  if k in result and result[k] is not None}
         self._store(name, {**settings, "kind": "trajectory", "structure": structure, "tables": tables},
                     {"pseudotime": mean_col, "lineage": lineage_col, "features": [mean_col, *per_lineage],
                      "lineages": per_lineage, "map": maps}, columns, len(rows))
@@ -1286,7 +1296,7 @@ class Cytometry:
 
     def analysis_table(self, name, which):
         """A table saved with a neighbourhood result ("profile", "sizes", "pairs",
-        "by_type") or a trajectory ("trends", "association", "composition",
+        "by_type") or a trajectory ("trends", "tests", "smoothers", "composition",
         "tracked") as a DataFrame."""
         data = self.analyses[name]["tables"][which]
         return pd.DataFrame(data["data"], index=data["index"], columns=data["columns"])
@@ -1376,6 +1386,83 @@ class Cytometry:
                          + ", ".join(names))
         self.changed()
         return notes
+
+
+TRADESEQ_TESTS = {"association": "Association (changes along a lineage)",
+                  "start_vs_end": "Start vs end", "diff_end": "Different ends (between lineages)",
+                  "pattern": "Different patterns (between lineages)"}
+
+
+def trajectory_tests(traj, frame, names, nknots=6, engine="python", seed=0):
+    """tradeSeq's tests of the features along a trajectory (Gaussian GAMs: the
+    features are z-scored measurements). Returns (tests, smoothers): a long table
+    `test`, `scope` ("global", a lineage "t1" or a pair "t1vst2"), `feature`,
+    `waldStat`, `df`, `pvalue`, `q` (BH within test and scope); and the fitted
+    curves `feature`, `lineage`, `pseudotime`, `fit`, `lower`, `upper` (vtea-core
+    engine only; None with R)."""
+    from vtea_core.trajectory import (
+        association_test,
+        diff_end_test,
+        fit_gam,
+        pattern_test,
+        smoothers,
+        start_vs_end_test,
+    )
+
+    if engine == "r":
+        from vtea_core.trajectory.r_engine import tradeseq_r
+
+        tables = tradeseq_r(traj.pseudotime, traj.weights, frame, nknots=nknots, family="gaussian", seed=seed)
+        curves = None
+    else:
+        fit = fit_gam(traj.pseudotime, traj.weights, frame, nknots=nknots, family="gaussian", seed=seed,
+                      lineages=names)
+        tables = {"association": association_test(fit, lineages=True),
+                  "start_vs_end": start_vs_end_test(fit, lineages=True)}
+        if len(names) > 1:
+            tables["diff_end"] = diff_end_test(fit, pairwise=True)
+            tables["pattern"] = pattern_test(fit, pairwise=True)
+        curves = pd.concat([smoothers(fit, f, n_points=40).assign(feature=f) for f in fit.features],
+                           ignore_index=True)
+    return _tests_long(tables), curves
+
+
+_TEST_COLUMN = re.compile(r"^(waldStat|df|pvalue)(?:_(.+))?$")
+
+
+def _scope(suffix):
+    """A test column's scope: "global", "t<j>" (tradeSeq's "_<j>" or "_t<j>") or
+    "t<a>vst<b>"."""
+    if not suffix:
+        return "global"
+    m = re.fullmatch(r"t?(\d+)vst?(\d+)", suffix)
+    if m:
+        return f"t{m.group(1)}vst{m.group(2)}"
+    m = re.fullmatch(r"(?:lineage)?t?(\d+)", suffix)
+    return f"t{m.group(1)}" if m else suffix
+
+
+def _tests_long(tables):
+    from vtea_core.trajectory import benjamini_hochberg
+
+    rows = []
+    for test, table in tables.items():
+        parts = {}
+        for col in table.columns:
+            m = _TEST_COLUMN.match(str(col))
+            if m:
+                parts.setdefault(_scope(m.group(2)), {})[m.group(1)] = col
+        for scope, cols in parts.items():
+            if "pvalue" not in cols:
+                continue
+            p = table[cols["pvalue"]].to_numpy(float)
+            rows.append(pd.DataFrame({
+                "test": test, "scope": scope, "feature": [str(i) for i in table.index],
+                "waldStat": table[cols["waldStat"]].to_numpy(float) if "waldStat" in cols else np.nan,
+                "df": table[cols["df"]].to_numpy(float) if "df" in cols else np.nan,
+                "pvalue": p, "q": benjamini_hochberg(p)}))
+    return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame(
+        columns=["test", "scope", "feature", "waldStat", "df", "pvalue", "q"])
 
 
 def model_library():
