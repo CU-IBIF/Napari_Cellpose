@@ -89,7 +89,12 @@ to which: Bhate's tissue motifs).
 - Regions follow **touching masks** by default (the contact graph between level-0
   masks; radius or k nearest as alternatives), so a tubule is traced along its
   epithelium and not bridged across the lumen or the interstitium to its neighbour.
-  At level ≥ 1, where there are no masks, two objects touch when they share members.
+  At level ≥ 1, where there are no masks, two windows touch when their **seeds**
+  touch (the seed objects are adjacent at the level below: touching masks at level
+  0, or touching seeds again above it). Sharing members is not enough: overlapping
+  windows share members almost everywhere, so that rule would merge whole tissues.
+  Regions at level ≥ 1 that are not windows (regions of regions) touch when any of
+  their members touch.
 - Windows stay **radius or k nearest**, centred on every object of level n − 1, so
   objects at level n − 1 are included in many windows.
 
@@ -132,8 +137,9 @@ class Hierarchy:
   product (`M2 @ M1`), and reflection and aggregation matrix products, so it scales to
   millions of cells. `NeighborhoodSet` gets `to_sparse()` / `from_sparse()`.
 - Regions builder: `regions(parent, types, graph="contact"|"radius"|"knn", min_size)`,
-  contact by default: touching masks at level 0 (from the labels image, 3D included),
-  shared members above it. Members are the parent objects of each component; centre =
+  contact by default: touching masks at level 0 (from the labels image, 3D included);
+  above it, windows touch when their seeds touch (recursively down to the masks), and
+  regions when any of their members touch. Members are the parent objects of each component; centre =
   mean of members; shape (volume, length along the principal axis, elongation) is
   measured from the members' masks.
 - Windows builder: today's `build_neighborhoods`, plus `seeds` and `members` subsets.
@@ -259,13 +265,12 @@ H1 and H3 are independent and can proceed in parallel; H4 needs both.
 3. **Regions follow touching masks** (in 3D), so a tubule is traced along its
    epithelium. **Windows keep overlap**: an object at level n − 1 can be in any number
    of windows at level n.
+4. **Windows join into a region only when their seeds touch**, not when they share
+   members (for now; a looser rule can be added as an option later if needed).
 
 ## 8. Open questions
 
 1. Maximum depth: unlimited in the engine; the selector stays readable to about 4.
-2. Regions at level ≥ 1 join objects that share members. Is that the right notion of
-   touching for neighbourhood windows, or should it be shared *seed-adjacent* members
-   only (stricter, fewer merges)?
 
 ## References
 
