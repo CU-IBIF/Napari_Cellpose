@@ -28,6 +28,28 @@ vtea-core, so VTEA and IBIF napari share them.
      features and classifications, its own plot set-up, and is saved with the
      workspace. The path beside it shows what the level is built on. With only the
      segmented objects, the selector is greyed out.
+   - **Making a level.** On the **Neighbourhoods** tab, run a neighbourhood analysis,
+     then **Make a level from this**: its windows (one around each object, overlapping)
+     become the objects of a new level, with their composition (`fraction <class>`),
+     size and the neighbourhood type of the object each is around (`neighbourhood
+     type`). **Make regions…** instead merges contiguous objects of the same type into
+     regions (functional units, no overlap): objects whose masks touch (above the
+     segmentation: windows whose centre objects touch, regions whose members touch),
+     or whose centres are within a distance; for windows, only when their members sit
+     close to each other's (*Member closeness*, 0–1), so side-by-side structures stay
+     apart. At the new level, *Neighbourhood types (from the level below)* are classes
+     to build on again. **Windows around** / **Counting** restrict which objects get a
+     window and which are counted in one (default: all).
+   - **On the image**, a level is shown through the segmented objects: each object
+     takes the value of its own window, or of its region. Surface distances and
+     contacts (Spatial tab) need masks, so they are measured on the segmented objects.
+   - **Follow selection to** takes the objects shown (Show) to another level: the
+     members they are made of below, or the objects containing them above. It appears
+     there as a *selection*: show it, gate within it, make it a phenotype, or delete it
+     in the gate list.
+   - **Columns from levels…** brings measurements of another level onto these objects:
+     from the windows or regions containing each (their mean, the most common type, or
+     its own window's), or summarised over each one's members.
    - **Show** chooses which objects are plotted: all of them, a gate, an image gate or
      a phenotype. A gate you draw now is drawn **within** them. Within a gate, the new
      gate is a subgate; within a phenotype, it only ever contains that phenotype's

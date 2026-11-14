@@ -27,10 +27,13 @@ from qtpy.QtWidgets import (
     QInputDialog,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QMenu,
     QPushButton,
     QSpinBox,
     QSplitter,
     QTabWidget,
+    QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
     QTreeWidgetItemIterator,
@@ -68,6 +71,22 @@ class Workbench(QWidget):
         self.level_path = QLabel()
         self.level_path.setToolTip("Where this level sits: what it is built on, down to the segmentation")
         level_row.addWidget(self.level_path, 1)
+        self.follow_btn = QToolButton()
+        self.follow_btn.setText("Follow selection to")
+        self.follow_btn.setToolTip(
+            "The objects shown (Show) followed to another level: the members they are made of below, "
+            "or the objects that contain them above. Shown there as a selection.")
+        self.follow_btn.setPopupMode(QToolButton.InstantPopup)
+        self.follow_menu = QMenu(self.follow_btn)
+        self.follow_menu.aboutToShow.connect(self._fill_follow_menu)
+        self.follow_btn.setMenu(self.follow_menu)
+        level_row.addWidget(self.follow_btn)
+        self.bring_btn = QPushButton("Columns from levels…")
+        self.bring_btn.setToolTip(
+            "Bring measurements of another level onto these objects: from the windows or regions "
+            "containing each (down), or summarised over each one's members (up)")
+        self.bring_btn.clicked.connect(lambda _=False: self.bring_columns())
+        level_row.addWidget(self.bring_btn)
         outer.addLayout(level_row)
         self.tabs = QTabWidget()
         outer.addWidget(self.tabs)
@@ -222,6 +241,8 @@ class Workbench(QWidget):
         box.setCurrentIndex(max(box.findData(levels.current_level), 0))
         box.setEnabled(box.count() > 1)
         box.blockSignals(False)
+        self.follow_btn.setEnabled(box.count() > 1 and levels.table is not None)
+        self.bring_btn.setEnabled(box.count() > 1 and levels.table is not None)
         path = []
         name = levels.current_level
         while name is not None:
@@ -240,6 +261,59 @@ class Workbench(QWidget):
     def set_level(self, name):
         """Work on level `name` (every tab follows); also used by scripts."""
         self.state.set_level(name)
+
+    def _related_levels(self):
+        """[(name, "below" | "above")] of the levels the current one can reach."""
+        levels = self.state
+        here = levels.current_level
+        below = levels._ancestors(here)
+        out = [(name, "below") for name in below]
+        for _depth, name in levels.level_tree():
+            if here in levels._ancestors(name):
+                out.append((name, "above"))
+        return out
+
+    def _fill_follow_menu(self):
+        self.follow_menu.clear()
+        for name, where in self._related_levels():
+            text = (f"Members in {name}" if where == "below" else f"Containing them: {name}")
+            action = self.follow_menu.addAction(text)
+            action.triggered.connect(lambda _=False, n=name: self.follow_selection(n))
+
+    def follow_selection(self, target):
+        """Follow the shown population to level `target` (a phenotype there), switch to
+        it and show it. Returns the phenotype's name."""
+        kind, key = self.current_population()
+        source = self.state.current_level
+        try:
+            name = self.state.link_selection(source, kind, key, target, select=True)
+        except (ValueError, KeyError) as e:
+            self.status.setText(f"Not followed: {e}")
+            return None
+        self.set_population("selection", name)
+        n = int(self.state.mask("selection", name).sum())
+        self.status.setText(f"{n:,} objects of {target} shown: selection {name} (Show). Gate within it, "
+                            "or make it a phenotype.")
+        return name
+
+    def bring_columns(self, source=None, columns=None, how=None):
+        """Bring columns of another level onto this one (a dialog unless `source` and
+        `columns` are given). Returns the new column names."""
+        if source is None:
+            dialog = BringDialog(self, self.state, self._related_levels())
+            if not dialog.exec_():
+                return None
+            source, columns, how = dialog.choice()
+        if not columns:
+            return None
+        how = how or "mean"
+        try:
+            new = self.state.bring_columns(source, columns, self.state.current_level, how)
+        except (ValueError, KeyError) as e:
+            self.status.setText(f"Not brought: {e}")
+            return None
+        self.status.setText(f"Added {', '.join(new)}: plot, gate and cluster on them like any measurement.")
+        return new
 
     def fit_to_screen(self, available=None):
         """Size the window for a 4:3 plot with side panels about half its width: as large
@@ -362,6 +436,15 @@ class Workbench(QWidget):
             (parent.addChild(item) if parent is not None else tree.addTopLevelItem(item))
             items[(kind, key)] = item
             if (kind, key) in selected:
+                item.setSelected(True)
+        for name in state.selections():  # followed here from another level
+            mask = state.mask("selection", name)
+            item = QTreeWidgetItem([f"{name} (selection)", f"{int(mask.sum()):,}", _pct(mask.sum(), n_all)])
+            item.setData(0, Qt.UserRole, ("selection", name))
+            item.setToolTip(0, "Followed from another level (Follow selection to). Delete it here; make it "
+                               "a phenotype to use it in rules.")
+            tree.addTopLevelItem(item)
+            if ("selection", name) in selected:
                 item.setSelected(True)
         tree.expandAll()
         for c in range(3):
@@ -977,6 +1060,52 @@ RULE_HELP = (
     "Phenotypes at one level are exclusive: an object goes to the first that matches. "
     "An empty rule takes the rest of the parent."
 )
+
+
+class BringDialog(QDialog):
+    """Which level, which of its columns, and how to bring them onto the current level."""
+
+    def __init__(self, parent, levels, related):
+        super().__init__(parent)
+        self.setWindowTitle("Columns from levels")
+        self.levels = levels
+        form = QFormLayout(self)
+        self.source = QComboBox()
+        for name, where in related:
+            self.source.addItem(f"{name} ({'built on these' if where == 'above' else 'these are built on it'})",
+                                (name, where))
+        self.source.currentIndexChanged.connect(self._fill)
+        form.addRow("From", self.source)
+        self.columns = QListWidget()
+        self.columns.setSelectionMode(QListWidget.ExtendedSelection)
+        form.addRow("Columns", self.columns)
+        self.how = QComboBox()
+        form.addRow("How", self.how)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+        self._fill()
+
+    def _fill(self, *_):
+        self.columns.clear()
+        self.how.clear()
+        data = self.source.currentData()
+        if not data:
+            return
+        name, where = data
+        for col in self.levels.level(name).features():
+            self.columns.addItem(col)
+        if where == "above":  # the source is built on the current level: down onto these objects
+            self.how.addItem("Mean over the objects containing each (most common for types)", "mean")
+            self.how.addItem("From each one's own window", "own")
+        else:
+            self.how.addItem("Mean over each one's members", "mean")
+
+    def choice(self):
+        data = self.source.currentData()
+        return (data[0] if data else None, [i.text() for i in self.columns.selectedItems()],
+                self.how.currentData())
 
 
 class PhenotypeDialog(QDialog):

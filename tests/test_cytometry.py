@@ -1247,3 +1247,170 @@ def test_levels_are_saved_with_the_workspace(tmp_path):
     pd.testing.assert_frame_equal(r.typed_table(), expected, check_dtype=False)
     assert "Clusters" in r.analyses and (r.clusters("Clusters") > 0).all()
     assert len(r.root.tree) == 2  # the cells' own analysis is back too
+
+
+def _tiled_scene():
+    """One frame of 2 x 8 touching square cells (10 x 10 px, 0.5 µm): the left half
+    bright in CD3 (T), the right half not (Other)."""
+    v = ViewerModel()
+    labels = np.zeros((20, 80), np.uint16)
+    cd3 = np.full(labels.shape, 10.0)
+    k = 0
+    for r in range(2):
+        for c in range(8):
+            k += 1
+            labels[r * 10:(r + 1) * 10, c * 10:(c + 1) * 10] = k
+            if c < 4:
+                cd3[r * 10:(r + 1) * 10, c * 10:(c + 1) * 10] = 500
+    meta = {"ibif_axes": "YX", "ibif_voxel_um": {"Y": 0.5, "X": 0.5}}
+    common = dict(scale=(0.5, 0.5), metadata=meta)
+    image = v.add_image(cd3, name="CD3", **common)
+    layer = v.add_labels(labels, name="cells", **common)
+    table = _measure.measure_layer(v, layer, [image])
+    _measure.remember(v, {"cells": table})
+    s = cy.state_of(v)
+    s.set_table("cells", table, "cells")
+    s.add_phenotype("T", "`CD3 mean` > 100")
+    s.add_phenotype("Other", "")
+    return v, s
+
+
+def test_make_levels_build_on_them_and_show_them(qtbot):
+    from ibif_napari._cyto_workbench import Workbench
+
+    v, s = _typed_scene()
+    bench = Workbench(v)
+    qtbot.addWidget(bench)
+    tab = bench.neighbourhoods
+    tab.radius.setValue(15.0)
+    tab.n_types.setValue(2)
+    tab.permutations.setValue(0)
+    assert tab.run(wait=True) is not None
+    cell_types = s.column("Neighbourhoods 1 neighbourhood")
+    level = tab.make_level("NH 1")
+    assert level is not None and s.current_level == "NH 1" and len(s.table) == 24
+    assert {"fraction T", "fraction Other", "n objects", "neighbourhood type", "T"} <= set(s.table.columns)
+    np.testing.assert_array_equal(s.table["neighbourhood type"], cell_types)  # each window, its seed's type
+    assert bench.level_box.count() == 2 and "NH 1" in bench.level_path.text()
+    # The level is analysed like the cells: its windows' types are classes to build on.
+    assert ("Neighbourhoods types (from the level below)" not in dict(s.class_choices())
+            and cy.LEVEL_TYPE in dict(s.class_choices()).values())
+    tab.refresh()
+    tab.classes.setCurrentIndex(tab.classes.findData(cy.LEVEL_TYPE))
+    tab.radius.setValue(25.0)
+    assert tab.run(wait=True) is not None
+    on_image = tab.show_on_image()  # a level is painted through the cells
+    assert on_image.data.shape == v.layers["cells"].data.shape
+    assert set(np.unique(on_image.data)) <= {0, 1, 2} and on_image.data.any()
+    level2 = tab.make_level("NH 2")
+    assert s.level_tree() == [(0, "Objects"), (1, "NH 1"), (2, "NH 2")] and len(level2.table) == 24
+    # The cells' surface measures need masks: a level says so.
+    bench.spatial.refresh()
+    with pytest.raises(ValueError, match="masks"):
+        s.label_blocks()
+
+
+def test_neighbourhoods_around_a_population(qtbot):
+    from ibif_napari._cyto_workbench import Workbench
+
+    v, s = _typed_scene()
+    bench = Workbench(v)
+    qtbot.addWidget(bench)
+    tab = bench.neighbourhoods
+    tab.radius.setValue(15.0)
+    tab.n_types.setValue(2)
+    tab.permutations.setValue(0)
+    tab.seed_pop.setCurrentIndex(tab.seed_pop.findData("phenotype\tT"))
+    info = tab.run(wait=True)
+    assert info["seeds"] == ["phenotype", "T"]
+    t = s.mask("phenotype", "T")
+    types = s.column("Neighbourhoods 1 neighbourhood")
+    assert (types[t] > 0).all() and (types[~t] == 0).all()
+    assert (s.column("Neighbourhoods 1 memberships")[~t] >= 0).all()
+    level = tab.make_level("Around T")
+    assert len(level.table) == int(t.sum())
+
+
+def test_regions_follow_touching_masks_and_selections_follow_levels(qtbot):
+    from ibif_napari._cyto_workbench import Workbench
+
+    v, s = _tiled_scene()
+    bench = Workbench(v)
+    qtbot.addWidget(bench)
+    tab = bench.neighbourhoods
+    tab.radius.setValue(6.0)  # a cell and its side neighbours (5 µm apart)
+    tab.n_types.setValue(2)
+    tab.permutations.setValue(0)
+    tab.run(wait=True)
+    regions = tab.make_regions("Units", values=None, touching=True, d=0.0, tau=0.5, min_size=1)
+    assert regions is not None and s.current_level == "Units"
+    sizes = sorted(s.table["n objects"])
+    assert sum(sizes) == 16 and len(sizes) >= 2  # the T half and the Other half, at least
+    # Regions are painted through their cells, each cell its region's value.
+    s.add_phenotype("big", "`n objects` >= 4")
+    layer = s.show_population("phenotype", "big")
+    assert layer.data.shape == v.layers["cells"].data.shape and layer.data.any()
+    # Follow the big regions down to their cells: a phenotype there.
+    bench.set_population("phenotype", "big")
+    name = bench.follow_selection("Objects")
+    assert s.current_level == "Objects" and name.startswith("members of big (Units)")
+    big_cells = s.mask("selection", name).sum()
+    assert bench.current_population() == ("selection", name)
+    s.phenotype_from("selection", name, "in big regions")  # a selection can become a phenotype
+    assert big_cells == int(s.level("Units").table.loc[s.level("Units").table["n objects"] >= 4,
+                                                        "n objects"].sum())
+    # and back up: the regions containing the T cells
+    bench.set_population("phenotype", "T")
+    up = bench.follow_selection("Units")
+    assert s.current_level == "Units" and s.mask("selection", up).sum() >= 1
+    # Columns from another level: the size of each cell's region, onto the cells.
+    bench.set_level("Objects")
+    new = bench.bring_columns("Units", ["n objects"], "mean")
+    assert new == ["n objects (Units)"] and np.nansum(s.column(new[0])) > 0
+    up_cols = bench.state.bring_columns("Objects", ["CD3 mean"], "Units")
+    assert up_cols == ["CD3 mean (Objects)"] and len(s.level("Units").column(up_cols[0])) == len(sizes)
+
+
+def test_built_levels_are_saved_with_their_members(tmp_path):
+    from ibif_napari import _cyto_levels
+
+    v, s = _typed_scene()
+    s.neighbourhood_job  # noqa: B018 - the job is run below through the state
+    settings = {"classes": "phenotype", "class_label": "Phenotypes", "method": "radius", "radius": 15.0,
+                "k": 10, "n_types": 2, "permutations": 0, "seed": 0}
+    s.add_neighbourhoods("NB", settings, s.neighbourhood_job(settings)())
+    s.make_windows_level("NB", "W")
+    folder, notes = _workspace.save_workspace(v, tmp_path / "w")
+    assert notes == []
+    w = ViewerModel()
+    _workspace.load_workspace(w, folder)
+    r = cy.state_of(w)
+    assert r.level_names() == ["Objects", "W"]
+    geometry = r._info["W"]["geometry"]
+    assert geometry is not None and geometry["membership"].shape == (24, 24)
+    assert (_cyto_levels.own_rows(r, "W") == np.arange(24)).all()
+
+
+def test_a_selection_from_another_level_is_a_population(qtbot):
+    from ibif_napari._cyto_workbench import Workbench
+
+    v, s = _tiled_scene()
+    settings = {"classes": "phenotype", "class_label": "P", "method": "radius", "radius": 6.0, "k": 10,
+                "n_types": 2, "permutations": 0, "seed": 0}
+    s.add_neighbourhoods("NB", settings, s.neighbourhood_job(settings)())
+    s.make_regions_level("NB", "Units")
+    bench = Workbench(v)
+    qtbot.addWidget(bench)
+    name = bench.follow_selection("Objects")  # all the regions, down to their cells
+    assert ("selection", name, f"Selection: {name}") in s.populations()
+    g = bench.add_gate("bright", [[0, 0], [1e5, 0], [1e5, 1e5], [0, 1e5]])  # a gate within it
+    assert s.scope[("gate", g.id)] == ("selection", name)
+    s.set_gate_color("selection", name, "#123456")
+    assert s.population_color("selection", name) == "#123456"
+    with pytest.raises(ValueError, match="keeps"):
+        s.rename_gate("selection", name, "x")
+    bench._fill_gates()
+    assert any(bench.gate_tree.topLevelItem(i).data(0, Qt.UserRole) == ("selection", name)
+               for i in range(bench.gate_tree.topLevelItemCount()))
+    s.remove_gate("selection", name)
+    assert name not in s.selections() and ("gate", g.id) not in s.order
