@@ -318,15 +318,23 @@ and radii, and its run time. The defaults in the tab come from that table.
 
 ## 6. Classification is level-specific
 
-A model applies to the kind of object it was trained on. The model card
-(`ModelCard.inputs`) gains:
+A model applies to the kind of object it was trained on. As built (H5), the model card
+records:
 
-- `level_kind`: `"segmentation"` (level 0), `"windows"`, `"regions"`, or `"any"`.
-- `input_kind`: `"crops"` (image crops around masks: **segmentation only**, so
-  NephNet3D, which classifies nuclei from 3D DAPI crops, never appears as applicable
-  at a spatial level), `"features"` (the generic ANN: any level, but bound to the
-  feature names and the builder provenance it was trained with), `"graph"` (STELLAR:
-  cells and a neighbour graph; level 0).
+- what the model reads, `inputs["kind"]` (from the family when a card does not say):
+  `"crops"` (image crops around masks: **segmented objects only**, so NephNet3D, which
+  classifies nuclei from 3D DAPI crops, never applies at a spatial level), `"graph"`
+  (STELLAR: cells and their neighbour graph; segmented objects only) or `"features"`
+  (the generic ANN);
+- the level it was trained at, `training["level"]`: its kind (`"objects"`, `"windows"`,
+  `"regions"`), depth, name and how it was built. A features model applies to the same
+  kind of level; at another depth it is allowed with a caution (its features may mean
+  something else there). Cards written before levels count as trained on segmented
+  objects.
+
+The level goes in `training` rather than `inputs` because a family rewrites `inputs`
+from the model when it saves, and because it is a fact about what the model was
+trained on. No vtea-core change was needed.
 
 The Classification tab lists every model but disables the ones that do not fit the
 current level, with the reason ("NephNet3D classifies nuclei from 3D image crops; it
@@ -346,7 +354,7 @@ level's phenotypes.
 | H3 ✅ | Per-level state (`Levels`: one full analysis per level, the current one answering for all) and the level selector, indented as a tree with object counts and the path to the segmentation; no behaviour change at level 0 (all earlier tests pass); workspace v2 (v1 loads as level 0) | workbench |
 | H4 ✅ | Make a level (windows, regions; seed and member populations); every tab at level ≥ 1; painting levels on the image through the cells; members / containers as *selections*; columns brought down (own, mean / most common) and up (mean) | workbench |
 | H4b | Hierarchy map: the tree of levels with counts, provenance and type mix; click to switch level; build / delete / rebuild from a node; stale marking; members and containers of a selection at every node | workbench |
-| H5 | Level-aware model cards and Classification tab | vtea-core, workbench |
+| H5 ✅ | Level-aware model cards and Classification tab: cards record what a model reads and the level it was trained at (`training["level"]`, no vtea-core change needed); models for another kind of level are listed greyed out with the reason, refused when run, and not offered for fine-tuning | workbench |
 | H6 | Docs, V&V cases for levels (synthetic tissue with known structure at two levels) | both |
 
 H1 and H3 are independent and can proceed in parallel; H4 needs both. A read-only
