@@ -40,7 +40,7 @@ dependencies = [
     # Cytometry: VTEA's headless analysis library (gates, phenotype trees, clustering,
     # neighbourhoods, the spatial hierarchy, trajectories), with UMAP and Leiden/Louvain.
     # Not on PyPI yet, so installed from its repository at a fixed commit.
-    "vtea-core[graph,umap,opentsne] @ git+https://github.com/winfrees/vtea-python@e5117709cc9985b25b83dbc2cbf724f88e0f43b9#subdirectory=packages/vtea-core",
+    "vtea-core[graph,umap,opentsne] @ git+https://github.com/winfrees/vtea-python@61bad641b22f421313b1d89fc387aad26ffa8888#subdirectory=packages/vtea-core",
 ]
 
 [project.optional-dependencies]
