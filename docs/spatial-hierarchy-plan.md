@@ -353,9 +353,9 @@ level's phenotypes.
 | H2 ✅ | Feature families and the benchmark (results in vtea-python `docs/HIERARCHY.md`; the CODEX reference dataset is still to run); membership-weighted cell type × type enrichment; defaults chosen from results | vtea-core |
 | H3 ✅ | Per-level state (`Levels`: one full analysis per level, the current one answering for all) and the level selector, indented as a tree with object counts and the path to the segmentation; no behaviour change at level 0 (all earlier tests pass); workspace v2 (v1 loads as level 0) | workbench |
 | H4 ✅ | Make a level (windows, regions; seed and member populations); every tab at level ≥ 1; painting levels on the image through the cells; members / containers as *selections*; columns brought down (own, mean / most common) and up (mean) | workbench |
-| H4b | Hierarchy map: the tree of levels with counts, provenance and type mix; click to switch level; build / delete / rebuild from a node; stale marking; members and containers of a selection at every node | workbench |
+| H4b ✅ | Hierarchy map: the tree of levels with counts, provenance and type mix; click to switch level; rename / export / delete / make again from a node; out-of-date marking (parent's objects, positions, classes or types changed, or its result deleted); members and containers of the shown objects at every node, double-click to follow | workbench |
 | H5 ✅ | Level-aware model cards and Classification tab: cards record what a model reads and the level it was trained at (`training["level"]`, no vtea-core change needed); models for another kind of level are listed greyed out with the reason, refused when run, and not offered for fine-tuning | workbench |
-| H6 | Docs, V&V cases for levels (synthetic tissue with known structure at two levels) | both |
+| H6 ✅ | V&V: VV-SPA-01 (windows vs brute force, k nearest with ties), VV-SPA-02 (types and regions recover known tubule bands at two levels), VV-SPA-03 (moving between levels is exact, workspace round-trip); user guide §10.6.1 with a screenshot | workbench |
 
 H1 and H3 are independent and can proceed in parallel; H4 needs both. A read-only
 map (nodes, counts, click to switch) comes with H3 as soon as there is more than one

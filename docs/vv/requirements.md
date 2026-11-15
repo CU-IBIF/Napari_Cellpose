@@ -28,6 +28,9 @@ Generated from `src/ibif_napari/vv/requirements.py` (`ibif-napari-vv requirement
 | VV-MEAS-04 | Measurements | Time series and joined tables | Measurements section: T column, All objects (one row per label) | validation |
 | VV-MEAS-05 | Measurements | Measurements on segmented nuclei are accurate | Segmentation section + Measurements section | validation |
 | VV-WS-01 | Saving | A saved workspace reopens exactly | Save workspace section: Save workspace / Open workspace | verification |
+| VV-SPA-01 | Spatial hierarchy | Neighbourhoods are drawn around every object and overlap | Cytometry workbench, Neighbourhoods tab: Run, Make a level from this (memberships column) | verification |
+| VV-SPA-02 | Spatial hierarchy | Neighbourhood types and regions recover known tissue structure | Neighbourhoods tab at two levels (cells, then their windows), Make regions… | validation |
+| VV-SPA-03 | Spatial hierarchy | Moving between levels is exact | Cytometry workbench: Follow selection to, Show on image (at a level), Columns from levels…, Save workspace / Open workspace | verification |
 
 ## VV-H-01: Metrics are correct
 
@@ -377,3 +380,56 @@ Generated from `src/ibif_napari/vv/requirements.py` (`ibif-napari-vv requirement
 - measurement tables identical
 
 *scenes: `cells_3d`; needs: napari*
+
+## VV-SPA-01: Neighbourhoods are drawn around every object and overlap
+
+**Requirement.** A neighbourhood shall be drawn around every object: the object and every object within the radius (or its k nearest, exactly k even when distances tie), so neighbourhoods overlap and an object is in as many as there are objects within the radius of it.
+
+**Feature.** Cytometry workbench, Neighbourhoods tab: Run, Make a level from this (memberships column)
+
+**Method.** Test on a synthetic tissue of 1,152 square cells on a 10 µm lattice (many tied distances), against a brute-force distance calculation.
+
+**Acceptance criteria.**
+
+- every window's members are exactly the cells within the radius of its own cell
+- each cell's memberships = the cells within the radius of it
+- k nearest: every window has k + 1 members, its own cell included, despite ties
+- windows overlap: the median cell is in more than one
+
+*needs: napari*
+
+## VV-SPA-02: Neighbourhood types and regions recover known tissue structure
+
+**Requirement.** Neighbourhood types of the cells, and of windows built on them, shall recover a known arrangement of tissue compartments, and regions of the windows of one type shall be the compartments themselves, one region each.
+
+**Feature.** Neighbourhoods tab at two levels (cells, then their windows), Make regions…
+
+**Method.** Synthetic tissue: 8 vertical bands 60 µm wide, alternating tubule (80% epithelial cells) and interstitium (60% stromal, 25% immune), cell classes drawn at random. Types: radius 15 µm, 2 types, k-means; regions of the windows' tubule type, joined where their cells touch, member closeness 0.5, at least 10 windows.
+
+**Acceptance criteria.**
+
+- adjusted Rand index of the cells' types with the bands >= 0.65
+- adjusted Rand index of the windows' types (level 1) with the bands >= 0.7
+- one region per tubule band, and no other region
+- each region: share of its cells in its band >= 0.9
+- each band: share of its cells in its region >= 0.85
+
+*needs: napari*
+
+## VV-SPA-03: Moving between levels is exact
+
+**Requirement.** Following a selection to another level, showing a level on the image, bringing columns from another level and saving the workspace shall give exactly what the levels' memberships say.
+
+**Feature.** Cytometry workbench: Follow selection to, Show on image (at a level), Columns from levels…, Save workspace / Open workspace
+
+**Method.** On the levels of VV-SPA-02, against products of the membership matrices computed here.
+
+**Acceptance criteria.**
+
+- members of the regions (down two levels) = the cells their windows contain
+- windows containing the epithelial cells (up) = those with an epithelial member
+- on the image, every cell's pixels carry the value of its own window
+- a column brought down = the mean over the windows containing each cell
+- levels, their tables and memberships reopen identical from a saved workspace
+
+*needs: napari*

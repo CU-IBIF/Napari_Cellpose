@@ -87,9 +87,25 @@ class Workbench(QWidget):
             "containing each (down), or summarised over each one's members (up)")
         self.bring_btn.clicked.connect(lambda _=False: self.bring_columns())
         level_row.addWidget(self.bring_btn)
+        self.map_btn = QPushButton("Map")
+        self.map_btn.setCheckable(True)
+        self.map_btn.setToolTip("Show or hide the hierarchy map: every level as a tree, to move around it "
+                                "and follow the shown objects through it")
+        self.map_btn.toggled.connect(self._map_toggled)
+        level_row.addWidget(self.map_btn)
         outer.addLayout(level_row)
+        from ._cyto_map import HierarchyMap
+
+        self.body = QSplitter(Qt.Horizontal)
+        self.hierarchy_map = HierarchyMap(self)
+        self.hierarchy_map.setVisible(False)
+        self._map_choice = None  # None: shown once there is a level above the segmentation
+        self.body.addWidget(self.hierarchy_map)
         self.tabs = QTabWidget()
-        outer.addWidget(self.tabs)
+        self.body.addWidget(self.tabs)
+        self.body.setStretchFactor(0, 0)
+        self.body.setStretchFactor(1, 1)
+        outer.addWidget(self.body)
         gating = QWidget()
         g_layout = QVBoxLayout(gating)
         g_layout.setContentsMargins(4, 4, 4, 4)
@@ -197,6 +213,7 @@ class Workbench(QWidget):
         split.setChildrenCollapsible(False)
         self.split, self.side = split, right
 
+        self.population.currentIndexChanged.connect(self._population_shown)
         for w in (self.population, self.x_col, self.y_col, self.color_by):
             w.currentIndexChanged.connect(self.replot)
             # Long feature names must not widen the window: the box shows about 18
@@ -246,6 +263,16 @@ class Workbench(QWidget):
         box.blockSignals(False)
         self.follow_btn.setEnabled(box.count() > 1 and levels.table is not None)
         self.bring_btn.setEnabled(box.count() > 1 and levels.table is not None)
+        show_map = self._map_choice if self._map_choice is not None else box.count() > 1
+        self.map_btn.blockSignals(True)
+        self.map_btn.setChecked(show_map)
+        self.map_btn.blockSignals(False)
+        if show_map == self.hierarchy_map.isHidden():
+            self.hierarchy_map.setVisible(show_map)
+            if show_map:
+                self.body.setSizes([320, max(self.body.width() - 320, 400)])
+        if show_map:
+            self.hierarchy_map.refresh()
         path = []
         name = levels.current_level
         while name is not None:
@@ -255,6 +282,16 @@ class Workbench(QWidget):
         depth = levels.level_info(levels.current_level)["depth"]
         self.setWindowTitle("Cytometry workbench" + (f": spatial level {depth}, {levels.current_level}"
                                                      if depth else ""))
+
+    def _map_toggled(self, on):
+        self._map_choice = bool(on)
+        self.hierarchy_map.setVisible(bool(on))
+        if on:
+            self.hierarchy_map.refresh()
+
+    def _population_shown(self, *_):
+        if not self.hierarchy_map.isHidden():
+            self.hierarchy_map.refresh()  # the Selection column follows what is shown
 
     def _level_chosen(self, index):
         name = self.level_box.itemData(index)

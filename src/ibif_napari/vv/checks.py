@@ -1192,3 +1192,221 @@ def _lif(ctx, res):
     res.evidence.append(
         "A LIF file with a 3-time-point, 2-channel Z stack and a single image listed both images in the "
         "chooser; each opened with identical pixel values, channel names, voxel size and the 30 s interval.")
+
+
+# ---- spatial hierarchy -------------------------------------------------------------------------
+
+SPA_CELL, SPA_BAND = 10, 6  # µm per cell; cells per band
+SPA_MIX = {0: [0.80, 0.10, 0.10], 1: [0.15, 0.60, 0.25]}  # tubule, interstitium: epithelial / stromal / immune
+
+
+def _spatial_tissue(seed=0, ncol=48, nrow=24):
+    """A viewer with a tissue of square cells (1 µm pixels, touching) in vertical bands
+    alternating tubule and interstitium, its measurement table in the cytometry state
+    with phenotypes epithelial / stromal / immune; and per cell its band and zone."""
+    from napari.components import ViewerModel
+
+    from .. import _cytometry as cy
+
+    rng = np.random.default_rng(seed)
+    rows, cols = (a.ravel() for a in np.meshgrid(np.arange(nrow), np.arange(ncol), indexing="ij"))
+    band = cols // SPA_BAND
+    zone = band % 2
+    kind = np.array([rng.choice(3, p=SPA_MIX[z]) for z in zone])
+    labels = np.zeros((nrow * SPA_CELL, ncol * SPA_CELL), np.uint16)
+    for i, (r, c) in enumerate(zip(rows, cols)):
+        labels[r * SPA_CELL:(r + 1) * SPA_CELL, c * SPA_CELL:(c + 1) * SPA_CELL] = i + 1
+    table = pd.DataFrame({"label": np.arange(1, len(rows) + 1),
+                          "centroid Y (µm)": rows * SPA_CELL + (SPA_CELL - 1) / 2,
+                          "centroid X (µm)": cols * SPA_CELL + (SPA_CELL - 1) / 2,
+                          "kind": kind.astype(float)})
+    from .. import _measure
+
+    viewer = ViewerModel()
+    viewer.add_labels(labels, name="cells")
+    _measure.remember(viewer, {"cells": table})  # as the Measurements section keeps it
+    state = cy.state_of(viewer)
+    state.set_table("cells", table, "cells")
+    for code, name in ((0, "epithelial"), (1, "stromal"), (2, "immune")):
+        state.add_phenotype(name, f"kind == {code}")
+    return viewer, state, band, zone
+
+
+SPA_SETTINGS = {"classes": "phenotype", "class_label": "Phenotypes (deepest)", "method": "radius",
+                "radius": 15.0, "k": 10, "n_types": 2, "permutations": 0, "seed": 0}
+
+
+def _spatial_levels(ctx):
+    """The tissue with its two levels (cached for the checks that share it): types of
+    the cells (NB), their windows (W) with types of their own (NB2), and regions of the
+    tubule windows (R)."""
+    if getattr(ctx, "_spatial", None) is not None:
+        return ctx._spatial
+    from .. import _cytometry as cy
+
+    viewer, s, band, zone = _spatial_tissue()
+    s.add_neighbourhoods("NB", SPA_SETTINGS, s.neighbourhood_job(SPA_SETTINGS)())
+    s.make_windows_level("NB", "W", select=True)
+    level = {**SPA_SETTINGS, "classes": cy.LEVEL_TYPE, "class_label": "types"}
+    s.add_neighbourhoods("NB2", level, s.neighbourhood_job(level)())
+    window_types = s.column("NB2 neighbourhood").astype(int)
+    tubule = int(np.bincount(window_types[zone == 0]).argmax())
+    s.make_regions_level("NB2", "R", values=[tubule], touching=True, tau=0.5, min_size=10, select=False)
+    s.set_level("Objects")
+    ctx._spatial = (viewer, s, band, zone, tubule)
+    return ctx._spatial
+
+
+@check("VV-SPA-01")
+def _spa_windows(ctx, res):
+    from scipy.spatial.distance import cdist
+
+    viewer, s, band, zone = _spatial_tissue(seed=1)
+    points = s.positions()
+    near = cdist(points, points) <= SPA_SETTINGS["radius"] + 1e-9
+    s.add_neighbourhoods("NB", SPA_SETTINGS, s.neighbourhood_job(SPA_SETTINGS)())
+    level = s.make_windows_level("NB", "W", select=False)
+    m = s._info["W"]["geometry"]["membership"].toarray().astype(bool)
+    seeds = s._info["W"]["geometry"]["seeds"]
+    wrong = int((m != near[seeds]).sum())
+    memberships = s.column("NB memberships").astype(int)
+    res.check("window members different from the cells within the radius", wrong, "==", 0, "{:.0f}")
+    res.check("cells whose memberships differ from the cells within the radius of them",
+              int((memberships != near.sum(axis=0)).sum()), "==", 0, "{:.0f}")
+    k = 6
+    nearest = {**SPA_SETTINGS, "method": "nearest", "k": k}
+    s.add_neighbourhoods("NBk", nearest, s.neighbourhood_job(nearest)())
+    s.make_windows_level("NBk", "Wk", select=False)
+    mk = s._info["Wk"]["geometry"]["membership"].toarray().astype(bool)
+    sizes = mk.sum(axis=1)
+    own = mk[np.arange(len(mk)), s._info["Wk"]["geometry"]["seeds"]]
+    # the k nearest by brute force: no other cell is nearer than the farthest member
+    d = cdist(points, points)
+    farthest = np.array([d[i][mk[i]].max() for i in range(len(mk))])
+    closer_left_out = int(sum(((d[i] < farthest[i] - 1e-9) & ~mk[i]).sum() for i in range(len(mk))))
+    res.check(f"k = {k}: windows without exactly k + 1 members", int((sizes != k + 1).sum()), "==", 0, "{:.0f}")
+    res.check(f"k = {k}: windows missing their own cell", int((~own).sum()), "==", 0, "{:.0f}")
+    res.check(f"k = {k}: cells nearer than a window's farthest member left out", closer_left_out, "==", 0,
+              "{:.0f}")
+    res.check("median memberships per cell (overlap)", float(np.median(memberships)), ">=", 2, "{:.0f}")
+    ties = int(sum((np.isclose(d[i], farthest[i]).sum() > 1) for i in range(len(mk))))
+    res.metrics = {"cells": len(points), "radius_um": SPA_SETTINGS["radius"], "k": k,
+                   "median_memberships": float(np.median(memberships)), "windows_with_tied_kth": ties}
+    res.tables["memberships"] = pd.DataFrame({"memberships": memberships, "within_radius": near.sum(axis=0)})
+    res.evidence.append(
+        f"On {len(points):,} cells on a {SPA_CELL} µm lattice, a window was drawn around every cell. With a "
+        f"radius of {SPA_SETTINGS['radius']:g} µm each window held exactly the cells within it (brute force), "
+        f"and each cell was a member of as many windows as there are cells within the radius of it (median "
+        f"{np.median(memberships):.0f}): windows overlap. With the {k} nearest, every window had exactly "
+        f"{k + 1} members including its own cell, although {ties:,} windows had ties at the {k}th distance.")
+
+
+@check("VV-SPA-02")
+def _spa_structure(ctx, res):
+    from sklearn.metrics import adjusted_rand_score
+
+    from .. import _cyto_levels
+
+    viewer, s, band, zone, tubule = _spatial_levels(ctx)
+    cells_ari = adjusted_rand_score(zone, s.level("Objects").column("NB neighbourhood").astype(int))
+    windows_ari = adjusted_rand_score(zone, s.level("W").column("NB2 neighbourhood").astype(int))
+    res.check("ARI of the cells' types with the bands", cells_ari, ">=", ctx.limits["spa_cells_ari"])
+    res.check("ARI of the windows' types (level 1) with the bands", windows_ari, ">=",
+              ctx.limits["spa_windows_ari"])
+    own = _cyto_levels.own_rows(s, "R")  # the region of each cell (through its window)
+    tubule_bands = sorted(set(band[zone == 0]))
+    rows = []
+    for r in range(len(s.level("R").table)):
+        cells = own == r
+        counts = np.bincount(band[cells], minlength=band.max() + 1)
+        best = int(counts.argmax())
+        rows.append({"region": r + 1, "cells": int(cells.sum()), "band": best,
+                     "purity": counts[best] / cells.sum(), "recall": counts[best] / (band == best).sum()})
+    table = pd.DataFrame(rows)
+    matched = sorted(table["band"]) == tubule_bands
+    res.check("one region per tubule band, and no other region", matched, "is", True)
+    res.check("lowest purity of a region", table["purity"].min(), ">=", ctx.limits["spa_region_purity"])
+    res.check("lowest recall of a band", table["recall"].min(), ">=", ctx.limits["spa_region_recall"])
+    res.metrics = {"cells_ari": cells_ari, "windows_ari": windows_ari, "regions": len(table),
+                   "tubule_bands": len(tubule_bands)}
+    res.tables["regions"] = table
+    plt = _plt()
+    fig, axes = plt.subplots(1, 3, figsize=(12, 3.2))
+    shape = (24, 48)
+    for ax, values, title in ((axes[0], zone, "truth: tubule (0) / interstitium (1)"),
+                              (axes[1], s.level("W").column("NB2 neighbourhood").astype(int),
+                               "window types (level 1)"),
+                              (axes[2], own + 1, "regions (level 2), 0 = none")):
+        ax.imshow(np.asarray(values).reshape(shape), cmap="tab10", interpolation="nearest")
+        ax.set_title(title, fontsize=9)
+        ax.set_xticks([])
+        ax.set_yticks([])
+    fig.tight_layout()
+    res.figures.append(("Truth, the windows' types and the regions, one square per cell", _png(fig)))
+    res.evidence.append(
+        f"Eight 60 µm bands of cells alternated between tubule and interstitium, with classes drawn at random "
+        f"from each band's mix. Neighbourhood types of the cells matched the bands with ARI {cells_ari:.2f}; "
+        f"types of their windows, one level up, with ARI {windows_ari:.2f}. Regions of the tubule-type "
+        f"windows, joined where their cells touch, gave {len(table)} regions for {len(tubule_bands)} tubule "
+        f"bands, one each, at least {table['purity'].min():.0%} pure and holding at least "
+        f"{table['recall'].min():.0%} of their band.")
+
+
+@check("VV-SPA-03")
+def _spa_moving(ctx, res):
+    import tempfile
+    from pathlib import Path
+
+    from napari.components import ViewerModel
+
+    from .. import _cyto_levels, _workspace
+    from .. import _cytometry as cy
+
+    viewer, s, band, zone, tubule = _spatial_levels(ctx)
+    m_w = s._info["W"]["geometry"]["membership"].toarray() > 0  # windows x cells
+    m_r = s._info["R"]["geometry"]["membership"].toarray() > 0  # regions x windows
+    down = ((m_r.astype(int) @ m_w.astype(int)).sum(axis=0) > 0)
+    name = s.link_selection("R", "all", None, "Objects", select=False)
+    got = s.level("Objects").mask("selection", name)
+    res.check("cells followed down from the regions that differ", int((got != down).sum()), "==", 0, "{:.0f}")
+    epithelial = s.level("Objects").mask("phenotype", "epithelial")
+    up = (m_w.astype(int) @ epithelial.astype(int)) > 0
+    name = s.link_selection("Objects", "phenotype", "epithelial", "W", select=False)
+    got = s.level("W").mask("selection", name)
+    res.check("windows followed up from the epithelial cells that differ", int((got != up).sum()), "==", 0,
+              "{:.0f}")
+    s.set_level("W")
+    values = s.column("NB2 neighbourhood").astype(np.int64)
+    layer = s.paint(values, "level check", {1: "#ff0000", 2: "#0000ff"})
+    seeds = s._info["W"]["geometry"]["seeds"]
+    expected = np.zeros(len(s.root.table), np.int64)
+    expected[seeds] = values
+    lut = np.zeros(int(viewer.layers["cells"].data.max()) + 1, np.int64)
+    lut[s.root.table["label"].to_numpy(np.int64)] = expected
+    painted_wrong = int((np.asarray(layer.data) != lut[np.asarray(viewer.layers["cells"].data)]).sum())
+    res.check("pixels not carrying their cell's own window value", painted_wrong, "==", 0, "{:.0f}")
+    s.set_level("Objects")
+    new = s.bring_columns("W", ["n objects"], "Objects", "mean")
+    n_obj = s.level("W").column("n objects")
+    mean = (m_w.T.astype(float) @ n_obj) / np.maximum(m_w.sum(axis=0), 1)
+    err = float(np.nanmax(np.abs(s.column(new[0]) - mean)))
+    res.check("largest error of a column brought down", err, "<=", ctx.limits["exact_rel"], "{:.1e}")
+    with tempfile.TemporaryDirectory() as tmp:
+        folder, _notes = _workspace.save_workspace(viewer, Path(tmp) / "w")
+        other = ViewerModel()
+        _workspace.load_workspace(other, folder)
+        r = cy.state_of(other)
+        same = r.level_tree() == s.level_tree()
+        for level in ("W", "R"):
+            a, b = s._info[level]["geometry"]["membership"], r._info[level]["geometry"]["membership"]
+            same &= (a != b).nnz == 0
+            same &= s.level(level).table.round(9).equals(r.level(level).table.round(9))
+    res.check("levels, tables and memberships reopen identical", bool(same), "is", True)
+    res.metrics = {"cells_down": int(down.sum()), "windows_up": int(up.sum())}
+    res.evidence.append(
+        f"On the levels of VV-SPA-02: following all regions down two levels gave exactly the {int(down.sum()):,} "
+        f"cells their windows contain; following the epithelial cells up gave exactly the {int(up.sum()):,} "
+        "windows with an epithelial member; showing the windows' types on the image put each window's "
+        "type on the pixels of the cell it is centred on, and nowhere else; the windows' sizes brought down "
+        "to the cells equalled the mean over the windows containing each; and the saved workspace reopened "
+        "with the same levels, tables and memberships.")

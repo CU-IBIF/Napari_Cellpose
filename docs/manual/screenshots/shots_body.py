@@ -268,6 +268,34 @@ tab.method.setCurrentIndex(tab.method.findData("leiden"))
 info = tab.run(wait=True)
 pump(1)
 snap("11_workbench_clustering", bench)
+
+# Spatial levels: neighbourhood windows of the cells as objects, the hierarchy map.
+nb = bench.neighbourhoods
+bench.tabs.setCurrentWidget(nb)
+nb.refresh()
+nb.radius.setValue(20.0)
+nb.n_types.setValue(3)
+nb.permutations.setValue(0)
+nb.run(wait=True)
+nb.make_level("Neighbourhoods 1 windows")
+bench.tabs.setCurrentWidget(nb)
+nb.refresh()
+nb.classes.setCurrentIndex(nb.classes.findData(cy.LEVEL_TYPE))
+nb.n_types.setValue(2)
+nb.run(wait=True)
+print("level analyses:", state.analyses_of("neighbourhoods"), nb.status.text(), flush=True)
+level_cols = [c for c in state.features() if c.startswith("fraction ")]
+bench.x_col.setCurrentText("n objects")
+if level_cols:
+    bench.y_col.setCurrentText(level_cols[0])
+found = state.analyses_of("neighbourhoods")
+if found:
+    bench.color_by.setCurrentText(state.analyses[found[-1]]["columns"]["type"])
+bench.tabs.setCurrentIndex(0)
+bench.replot()
+pump(1)
+snap("17_workbench_levels", bench)
+bench.set_level("Objects")
 bench.close()
 
 # ---- save workspace ------------------------------------------------------------------------
