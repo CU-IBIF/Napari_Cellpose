@@ -1639,3 +1639,82 @@ def test_trajectory_r_engine_is_used_when_chosen(qtbot, monkeypatch):
     assert set(tests["scope"]) == {"global", "t1"} and "smoothers" not in info["tables"]
     tab.view.setCurrentIndex(2)  # the feature view without GAM curves: the binned means
     assert tab.plot.figure.axes
+
+
+# ---- classification at each level (H5) -----------------------------------------------------
+
+
+def _write_card(folder, family, inputs):
+    """A model folder with only its card: enough for the library to list it."""
+    folder.mkdir(parents=True)
+    card = {"family": family, "classes": ["a", "b"], "inputs": inputs}
+    (folder / "card.json").write_text(json.dumps(card))
+    (folder / "config.json").write_text(json.dumps({"family": family, "classes": ["a", "b"]}))
+
+
+def test_models_apply_to_the_level_they_were_trained_on(qtbot, tmp_path, monkeypatch):
+    from vtea_core.classification import read_card
+
+    from ibif_napari._cyto_classify import TrainDialog, fits_level, model_needs
+    from ibif_napari._cyto_workbench import Workbench
+
+    monkeypatch.setenv("IBIF_NAPARI_MODELS", str(tmp_path / "models"))
+    s, truth = _truth_state()
+    bench = Workbench(s.viewer)
+    qtbot.addWidget(bench)
+    tab = bench.classification
+    # A model trained on the cells records that it is for segmented objects.
+    dialog = TrainDialog(s, tab)
+    qtbot.addWidget(dialog)
+    dialog.check_features("names", ["CD3 mean", "CD8 mean", "CD4 mean"])
+    dialog.train(wait=True)
+    cells_model = dialog.save("cell types")
+    card = read_card(cells_model)
+    assert card.inputs["kind"] == "features" and card.training["level"]["kind"] == "objects"
+    assert model_needs(card) == {"input_kind": "features", "level_kind": "objects", "depth": 0}
+    # NephNet3D reads image crops around masks: segmented objects only.
+    _write_card(tmp_path / "models" / "nuclei", "nephnet3d", {"kind": "crops", "channels": ["DAPI"]})
+    # A card from before levels were recorded: trained on segmented objects.
+    _write_card(tmp_path / "models" / "old", "ann", {"kind": "features", "features": ["CD3 mean"]})
+    tab.refresh()
+    names = [tab.model.itemText(i) for i in range(tab.model.count())]
+    assert all(tab.model.model().item(i).isEnabled() for i in range(tab.model.count())), names
+    # At a level of neighbourhood windows none of them applies, and each says why.
+    rng = np.random.default_rng(0)
+    level = pd.DataFrame({"object_id": np.arange(1, 201), "centroid Y (µm)": rng.uniform(0, 100, 200),
+                          "centroid X (µm)": rng.uniform(0, 100, 200),
+                          "fraction T": np.r_[rng.uniform(0.6, 1, 100), rng.uniform(0, 0.4, 100)],
+                          "n objects": rng.integers(3, 12, 200).astype(float)})
+    s.add_level("Windows", level, select=True)
+    tab.refresh()
+    enabled = {tab.model.itemText(i): tab.model.model().item(i).isEnabled() for i in range(tab.model.count())}
+    assert enabled == {"cell types": False, "nuclei": False, "old": False}
+    i = tab.model.findText("nuclei")
+    assert "image crops" in tab.model.itemData(i, Qt.ToolTipRole)
+    ok, why = fits_level(read_card(tmp_path / "models" / "cell types"), s)
+    assert not ok and "trained on segmented objects" in why and "neighbourhood windows" in why
+    tab.model.setCurrentIndex(tab.model.findText("cell types"))
+    assert not tab.run_btn.isEnabled() and "Not for this level" in tab.card.text()
+    assert tab.run() is None and "not for this level" in tab.status.text()
+    # A model trained on the windows is for windows - and not for the cells.
+    s.add_phenotype("T-rich", "`fraction T` > 0.5")
+    s.add_phenotype("other windows", "")
+    dialog = TrainDialog(s, tab)
+    qtbot.addWidget(dialog)
+    dialog.check_features("names", ["fraction T", "n objects"])
+    dialog.train(wait=True)
+    windows_model = dialog.save("window types")
+    card = read_card(windows_model)
+    assert card.training["level"] == {"kind": "windows", "depth": 1, "name": "Windows", "built": {}}
+    tab.refresh()
+    assert tab.model.currentText() == "window types" and tab.run_btn.isEnabled()
+    assert tab.run() is not None
+    s.set_level("Objects")
+    tab.refresh()
+    enabled = {tab.model.itemText(i): tab.model.model().item(i).isEnabled() for i in range(tab.model.count())}
+    assert enabled == {"cell types": True, "nuclei": True, "old": True, "window types": False}
+    # Fine-tuning offers only models for this level.
+    dialog = TrainDialog(s, tab)
+    qtbot.addWidget(dialog)
+    offered = [dialog.start_from.itemText(i) for i in range(dialog.start_from.count())]
+    assert "fine-tune cell types" in offered and "fine-tune window types" not in offered

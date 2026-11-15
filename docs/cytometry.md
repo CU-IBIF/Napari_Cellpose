@@ -172,6 +172,19 @@ vtea-core, so VTEA and IBIF napari share them.
      class**, **Show classes on image**, and **Make phenotypes** (rename or merge
      classes, within a parent, only above a confidence). The classes can also be what
      the Spatial and Neighbourhoods tabs class objects by.
+   - **A model applies to the kind of object it was trained on.** Its card records
+     what it reads (measurements, image crops around masks, or the cells' neighbour
+     graph) and the level it was trained at. The **Model** list shows every model but
+     greys out those that do not fit the level being analysed, with the reason in its
+     tooltip and on the card: a model trained on cells is not offered for
+     neighbourhood windows, one trained on windows not for cells, and an image-crop
+     model such as NephNet3D (nuclei) or a cell-graph model such as STELLAR only on
+     the segmented objects. Train a model *at* a spatial level (with that level's
+     phenotypes as labels) to classify its windows or regions. A model used at another
+     depth than it was trained at (spatial level 2 with a level-1 model) is allowed,
+     with a caution to check its features mean the same there. **Start from** offers
+     only models for the current level. Cellular classifications reach the levels
+     above as classes the neighbourhoods are measured over.
    - The first model family is a generic ANN (a multilayer perceptron over the
      measurements, CPU only). Models are folders of JSON and plain arrays, never
      pickles, so a shared library is safe to open. Engine: vtea-core
