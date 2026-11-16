@@ -1911,6 +1911,7 @@ class Levels:
         table, geometry, provenance = _cyto_levels.windows_level(self, parent, {**info, "analysis": analysis},
                                                                  types)
         name = name or self.unique_level_name(f"{analysis} windows")
+        provenance["fingerprint"] = _source_fingerprint(state, info)
         return self.add_level(name, table, parent, "windows", provenance, select=select, geometry=geometry)
 
     def make_regions_level(self, analysis, name=None, *, values=None, touching=True, d=0.0, tau=0.5,
@@ -1934,7 +1935,75 @@ class Levels:
                              "threshold or a smaller minimum size)")
         name = name or self.unique_level_name(f"{analysis} regions")
         provenance["analysis"] = analysis
+        provenance["values"] = None if values is None else [int(v) for v in values]
+        provenance["fingerprint"] = _source_fingerprint(state, info)
         return self.add_level(name, table, parent, "regions", provenance, select=select, geometry=geometry)
+
+    # ---- out of date, rebuilding, renaming ----------------------------------------------
+
+    def staleness(self, name):
+        """Why level `name` no longer matches what it was built from ("" if it does):
+        its parent's objects, positions, classes or neighbourhood types changed since,
+        or the neighbourhood result it was made from was deleted, or a level below it is
+        out of date itself."""
+        info = self._info[name]
+        if info["parent"] is None:
+            return ""
+        provenance = info.get("provenance") or {}
+        parent = self._levels[info["parent"]]
+        analysis = provenance.get("analysis")
+        if analysis and "fingerprint" in provenance:
+            result = parent.analyses.get(analysis)
+            if result is None or result.get("kind") != "neighbourhoods":
+                return f"the neighbourhood result {analysis!r} it was made from was deleted"
+            if _source_fingerprint(parent, result) != provenance["fingerprint"]:
+                return f"{info['parent']} changed since it was built (objects, positions, classes or types)"
+        below = self.staleness(info["parent"])
+        return f"{info['parent']} is out of date" if below else ""
+
+    def rebuild_level(self, name, select=True):
+        """Make level `name` again from its parent's neighbourhood result, with the same
+        options. Its own analysis and every level built on it are dropped (they belonged
+        to the old objects). Returns the new level's Cytometry."""
+        info = self._info[name]
+        provenance = dict(info.get("provenance") or {})
+        analysis = provenance.get("analysis")
+        if not analysis:
+            raise ValueError(f"level {name!r} was not made from a neighbourhood result, so it cannot be "
+                             "rebuilt here")
+        parent = info["parent"]
+        if analysis not in self._levels[parent].analyses:
+            raise ValueError(f"the neighbourhood result {analysis!r} of {parent} was deleted: run it again "
+                             "under that name, then rebuild")
+        self.remove_level(name, notify=False)
+        self.__dict__["_current"] = parent
+        if info["kind"] == "windows":
+            return self.make_windows_level(analysis, name, select=select)
+        return self.make_regions_level(
+            analysis, name, values=provenance.get("values"), touching=provenance.get("touching", True),
+            d=provenance.get("d", 0.0), tau=provenance.get("tau", 0.5), min_size=provenance.get("min_size", 1),
+            select=select)
+
+    def rename_level(self, old, new):
+        """Rename a level (not the segmented objects)."""
+        new = str(new).strip()
+        if old == ROOT_LEVEL:
+            raise ValueError("the segmented objects keep their name")
+        self.level(old)
+        if not new:
+            raise ValueError("a level needs a name")
+        if new in self._levels:
+            raise ValueError(f"there is already a level named {new!r}")
+        self.__dict__["_levels"] = {(new if k == old else k): v for k, v in self._levels.items()}
+        self.__dict__["_info"] = {(new if k == old else k): v for k, v in self._info.items()}
+        for info in self._info.values():
+            if info["parent"] == old:
+                info["parent"] = new
+        state = self._levels[new]
+        state._level_name, state.source = new, new
+        if self._current == old:
+            self.__dict__["_current"] = new
+        self.current.changed()
 
     def touching_pairs(self):
         """Touching segmented objects (row + 1 pairs), read from the masks once."""
@@ -2001,6 +2070,27 @@ class Levels:
 # ---- workspace ---------------------------------------------------------------------------------
 
 
+def _source_fingerprint(state, result):
+    """A hash of what a level is built from at `state`: the objects and their positions,
+    the classes of neighbourhood `result` (and its seed / member populations) and the
+    types it found. Changes when any of them do."""
+    import hashlib
+
+    digest = hashlib.sha1()
+    try:
+        digest.update(np.ascontiguousarray(np.round(state.positions(), 6)).tobytes())
+        classes = state.classes(result["classes"])
+        digest.update("\x1f".join("" if c is None else str(c) for c in classes).encode())
+        digest.update(np.ascontiguousarray(state.column(result["columns"]["type"]).astype(np.int64)).tobytes())
+        for which in ("seeds", "members"):
+            key = result.get(which)
+            if key and key[0] != "all":
+                digest.update(np.ascontiguousarray(np.asarray(state.mask(key[0], key[1]), bool)).tobytes())
+    except (KeyError, ValueError) as e:
+        digest.update(f"unavailable: {e}".encode())
+    return digest.hexdigest()
+
+
 def _save(viewer, folder):
     levels = _states.get(viewer)
     if levels is None:
@@ -2044,7 +2134,12 @@ def _load(viewer, folder, data):
     levels.clear_levels()
     derived = folder / data["derived"] if data.get("derived") else None
     notes = levels.root.load_dict(data, _measure.tables_of(viewer), derived_path=derived)
-    for entry in data.get("levels") or []:  # version 2: levels above the segmentation
+    entries = data.get("levels") or []  # version 2: levels above the segmentation
+    if entries and levels.root.table is None:
+        notes.append("cytometry: the spatial levels were not restored, as the segmented objects they are "
+                     "built on were not (" + ", ".join(e["name"] for e in entries) + ")")
+        entries = []
+    for entry in entries:
         name = entry["name"]
         if entry.get("parent") not in levels.level_names():
             notes.append(f"cytometry: level {name!r} was built on a level that was not restored")

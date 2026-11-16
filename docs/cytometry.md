@@ -28,6 +28,13 @@ vtea-core, so VTEA and IBIF napari share them.
      features and classifications, its own plot set-up, and is saved with the
      workspace. The path beside it shows what the level is built on. With only the
      segmented objects, the selector is greyed out.
+   - **Map** shows the **hierarchy map**, docked on the left once there is a spatial level:
+     every level as a tree (● segmentation, ◆ windows, ▣ regions) with its number of
+     objects, its type mix and how it was built. Click a level to work on it. The
+     **Selection** column counts, at every other level, the objects related to the ones
+     shown (members below, containers above); double-click a count to go there with them.
+     Right-click to rename, export, delete, or make an *out of date* level again: a level
+     turns red when its parent's objects, classes or types changed after it was built.
    - **Making a level.** On the **Neighbourhoods** tab, run a neighbourhood analysis,
      then **Make a level from this**: its windows (one around each object, overlapping)
      become the objects of a new level, with their composition (`fraction <class>`),

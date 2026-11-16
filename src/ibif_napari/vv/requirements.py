@@ -44,6 +44,11 @@ LIMITS = {
     "noise_se": 4.0,  # measured mean within this many standard errors of the noise-free mean
     "drift_rel": 0.02,
     "e2e_size_rel": 0.15, "e2e_mean_rel": 0.10,
+    # Spatial hierarchy (synthetic tubule bands; seed 0 measures 0.74, 0.81, 0.94, 0.90)
+    "spa_cells_ari": 0.65,  # neighbourhood types of the cells vs the true bands
+    "spa_windows_ari": 0.70,  # types of the windows (level 1) vs the true bands
+    "spa_region_purity": 0.90,  # share of a region's cells in its band (each region)
+    "spa_region_recall": 0.85,  # share of a band's cells in its region (each band)
 }
 
 
@@ -290,6 +295,49 @@ REQUIREMENTS = [
         "Save workspace section: Save workspace / Open workspace", "Test on cells_3d.",
         ["arrays identical", "scale and translate identical", "measurement tables identical"],
         kind="verification", needs=["napari"], scenes=["cells_3d"]),
+    # ---- spatial hierarchy -----------------------------------------------------------------
+    Requirement(
+        "VV-SPA-01", "Spatial hierarchy", "Neighbourhoods are drawn around every object and overlap",
+        "A neighbourhood shall be drawn around every object: the object and every object within "
+        "the radius (or its k nearest, exactly k even when distances tie), so neighbourhoods overlap "
+        "and an object is in as many as there are objects within the radius of it.",
+        "Cytometry workbench, Neighbourhoods tab: Run, Make a level from this (memberships column)",
+        "Test on a synthetic tissue of 1,152 square cells on a 10 µm lattice (many tied distances), "
+        "against a brute-force distance calculation.",
+        ["every window's members are exactly the cells within the radius of its own cell",
+         "each cell's memberships = the cells within the radius of it",
+         "k nearest: every window has k + 1 members, its own cell included, despite ties",
+         "windows overlap: the median cell is in more than one"],
+        kind="verification", needs=["napari"]),
+    Requirement(
+        "VV-SPA-02", "Spatial hierarchy", "Neighbourhood types and regions recover known tissue structure",
+        "Neighbourhood types of the cells, and of windows built on them, shall recover a known "
+        "arrangement of tissue compartments, and regions of the windows of one type shall be the "
+        "compartments themselves, one region each.",
+        "Neighbourhoods tab at two levels (cells, then their windows), Make regions…",
+        "Synthetic tissue: 8 vertical bands 60 µm wide, alternating tubule (80% epithelial cells) and "
+        "interstitium (60% stromal, 25% immune), cell classes drawn at random. Types: radius 15 µm, "
+        "2 types, k-means; regions of the windows' tubule type, joined where their cells touch, "
+        "member closeness 0.5, at least 10 windows.",
+        ["adjusted Rand index of the cells' types with the bands >= {spa_cells_ari}",
+         "adjusted Rand index of the windows' types (level 1) with the bands >= {spa_windows_ari}",
+         "one region per tubule band, and no other region",
+         "each region: share of its cells in its band >= {spa_region_purity}",
+         "each band: share of its cells in its region >= {spa_region_recall}"],
+        kind="validation", needs=["napari"]),
+    Requirement(
+        "VV-SPA-03", "Spatial hierarchy", "Moving between levels is exact",
+        "Following a selection to another level, showing a level on the image, bringing columns from "
+        "another level and saving the workspace shall give exactly what the levels' memberships say.",
+        "Cytometry workbench: Follow selection to, Show on image (at a level), Columns from levels…, "
+        "Save workspace / Open workspace",
+        "On the levels of VV-SPA-02, against products of the membership matrices computed here.",
+        ["members of the regions (down two levels) = the cells their windows contain",
+         "windows containing the epithelial cells (up) = those with an epithelial member",
+         "on the image, every cell's pixels carry the value of its own window",
+         "a column brought down = the mean over the windows containing each cell",
+         "levels, their tables and memberships reopen identical from a saved workspace"],
+        kind="verification", needs=["napari"]),
 ]
 
 BY_ID = {r.id: r for r in REQUIREMENTS}

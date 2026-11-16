@@ -6,7 +6,7 @@ on them (the same functions the panels call), compares the results with the trut
 standard metrics, and writes a report that explains why the tool can be trusted, or where it
 cannot.
 
-- **Requirements:** [requirements.md](requirements.md). There are 22, each tied to a feature
+- **Requirements:** [requirements.md](requirements.md). There are 25, each tied to a feature
   of the tool, with numeric acceptance criteria.
 - **Code:** `src/ibif_napari/vv/`, with the command `ibif-napari-vv`.
 - **Tests of the suite itself:** `tests/test_vv.py`.

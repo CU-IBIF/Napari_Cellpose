@@ -1718,3 +1718,96 @@ def test_models_apply_to_the_level_they_were_trained_on(qtbot, tmp_path, monkeyp
     qtbot.addWidget(dialog)
     offered = [dialog.start_from.itemText(i) for i in range(dialog.start_from.count())]
     assert "fine-tune cell types" in offered and "fine-tune window types" not in offered
+
+
+# ---- the hierarchy map (H4b) -----------------------------------------------------------------
+
+
+def _two_levels(s):
+    """Neighbourhoods of the tiled cells, their windows, and regions of those windows."""
+    settings = {"classes": "phenotype", "class_label": "P", "method": "radius", "radius": 6.0, "k": 10,
+                "n_types": 2, "permutations": 0, "seed": 0}
+    s.add_neighbourhoods("NB", settings, s.neighbourhood_job(settings)())
+    s.make_windows_level("NB", "W", select=True)
+    level_settings = {**settings, "classes": cy.LEVEL_TYPE, "class_label": "types"}
+    s.add_neighbourhoods("NB2", level_settings, s.neighbourhood_job(level_settings)())
+    s.make_regions_level("NB2", "R", touching=True, select=False)
+    s.set_level("Objects")
+
+
+def test_hierarchy_map_shows_and_navigates_the_levels(qtbot, tmp_path):
+    from ibif_napari._cyto_map import COL_LEVEL, COL_SELECTION, type_mix
+    from ibif_napari._cyto_workbench import Workbench
+
+    v, s = _tiled_scene()
+    bench = Workbench(v)
+    qtbot.addWidget(bench)
+    hmap = bench.hierarchy_map
+    assert not hmap.isVisibleTo(bench) and not bench.map_btn.isChecked()  # one level: no map
+    _two_levels(s)
+    assert hmap.isVisibleTo(bench) and bench.map_btn.isChecked()
+    items = hmap.items
+    assert list(items) == ["Objects", "W", "R"]
+    assert items["W"].parent() is items["Objects"] and items["R"].parent() is items["W"]
+    assert items["W"].text(COL_LEVEL).startswith("◆") and items["R"].text(COL_LEVEL).startswith("▣")
+    assert items["W"].text(1) == "16" and "windows · r 6" in items["W"].child(0).text(0)
+    assert type_mix(s.root) and abs(sum(f for f, _ in type_mix(s.root)) - 1) < 1e-9
+    # The Selection column follows what is shown: all 16 cells -> every window, every region.
+    assert items["Objects"].text(COL_SELECTION) == "16 shown"
+    assert items["W"].text(COL_SELECTION) == "16" and items["R"].text(COL_SELECTION) == str(len(s.level("R").table))
+    bench.set_population("phenotype", "T")
+    assert hmap.items["Objects"].text(COL_SELECTION) == "8 shown"
+    # Click a level to work on it; double-click a count to follow the shown objects there.
+    hmap._clicked(hmap.items["W"], COL_LEVEL)
+    assert s.current_level == "W" and bench.level_box.currentData() == "W"
+    hmap._clicked(hmap.items["Objects"], COL_LEVEL)
+    bench.set_population("phenotype", "T")
+    hmap._double_clicked(hmap.items["R"], COL_SELECTION)
+    assert s.current_level == "R" and bench.current_population()[0] == "selection"
+    # Export, rename, delete.
+    s.set_level("Objects")
+    path = hmap.export("W", tmp_path / "w.csv")
+    assert pd.read_csv(path).shape[0] == 16
+    assert hmap.rename("W", "Windows") and s.level_tree() == [(0, "Objects"), (1, "Windows"), (2, "R")]
+    assert not hmap.rename("Objects", "Cells")
+    bench.map_btn.setChecked(False)  # hidden on request, and stays hidden
+    s.current.changed()
+    assert not hmap.isVisibleTo(bench)
+    bench.map_btn.setChecked(True)
+    assert hmap.delete("Windows", confirm=False) == ["Windows", "R"] and s.level_names() == ["Objects"]
+
+
+def test_a_level_is_out_of_date_when_its_parent_changes_and_can_be_made_again(qtbot):
+    from ibif_napari._cyto_workbench import Workbench
+
+    v, s = _tiled_scene()
+    _two_levels(s)
+    assert s.staleness("W") == "" and s.staleness("R") == ""
+    # The cells' classes change: the windows were built from the old ones.
+    s.edit_phenotype("T", rule="`CD3 mean` > 1e9")
+    assert "changed since it was built" in s.staleness("W")
+    assert s.staleness("R") == "W is out of date"
+    bench = Workbench(v)
+    qtbot.addWidget(bench)
+    assert "(out of date)" in bench.hierarchy_map.items["W"].text(0)
+    # The types it was built from are stale too: run the neighbourhoods again, then rebuild.
+    settings = dict(s.analyses["NB"])
+    s.remove_analysis("NB")
+    assert "was deleted" in s.staleness("W")
+    with pytest.raises(ValueError, match="deleted"):
+        s.rebuild_level("W")
+    s.add_neighbourhoods("NB", settings, s.neighbourhood_job(settings)())
+    state = bench.hierarchy_map.rebuild("W", confirm=False)
+    assert state is not None and s.current_level == "W" and s.staleness("W") == ""
+    assert s.level_names() == ["Objects", "W"]  # what was built on the old windows is gone
+    assert "fraction T" not in s.table.columns and (s.table["fraction Other"] == 1).all()  # new classes
+
+
+def test_levels_are_skipped_not_fatal_when_their_objects_are_not_restored(tmp_path):
+    v, s = _typed_scene()
+    s.add_level("NH 1", _level_table(s))
+    folder, _ = _workspace.save_workspace(v, tmp_path / "w")
+    w = ViewerModel()  # the measurement table is not there: nothing to build the levels on
+    notes = cy._load(w, folder, json.loads((folder / "workspace.json").read_text())["extensions"]["cytometry"])
+    assert any("spatial levels were not restored" in n and "NH 1" in n for n in notes)
+    assert cy.state_of(w).level_names() == ["Objects"]

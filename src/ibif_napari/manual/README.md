@@ -866,6 +866,61 @@ T*), to gate, colour by and use in rules.
 
 **Colour the plot by type** and **Show types on image** show where the types are.
 
+Neighbourhoods **overlap**: one is drawn around every object, so an object is in its own and
+in every neighbour's. Besides the type of its own neighbourhood, each object gets how many it
+is a member of (*memberships*) and their most common type (*member neighbourhood*).
+**Windows around** and **Counting** restrict which objects get a neighbourhood and which are
+counted in one (for example, neighbourhoods only around tubule cells, counting every cell
+around them).
+
+### 10.6.1 Spatial levels: neighbourhoods as objects
+
+A neighbourhood is an object too. It has members, a place, and measurements of its own,
+such as its composition. So it can be gated, clustered, classified and built on again, to any
+depth: cells → their neighbourhoods → neighbourhoods of those neighbourhoods, and so on.
+
+![The workbench at a spatial level, with the hierarchy map](images/17_workbench_levels.png)
+
+- **Make a level from this** (Neighbourhoods tab) turns the shown result's windows into the
+  objects of a new **spatial level**. They come with their composition (*fraction <class>*),
+  their size (*n objects*) and the type of the object each is around (*neighbourhood type*).
+  Every tab now works on them. At the new level, *Neighbourhood types (from the level below)*
+  are classes, so a neighbourhood analysis there finds kinds of neighbourhood of
+  neighbourhoods, and **Make a level from this** builds the next level up.
+- **Make regions…** merges contiguous objects of the same type into one **region**, a
+  functional unit such as a tubule or a glomerulus. Regions don't overlap. Objects are joined
+  where their masks touch (above the segmentation: windows whose centre objects touch, regions
+  whose members touch), or within a distance you give. For windows, **Member closeness**
+  (0–1) joins two only when their members sit close to each other's, so two tubules side by
+  side stay apart. **Smallest region** drops fragments.
+
+  Use windows to see *change*, such as an infiltrate's front and the tissue behind it. Use
+  regions to count and measure *units*.
+- **Level** (top of the workbench) chooses the level every tab works on. Each level keeps its
+  own gates, phenotypes, clusterings, classifications and plot settings, and all of them are
+  saved with the workspace.
+- **The hierarchy map** (**Map**, shown once there is a spatial level) is the whole hierarchy
+  as a tree:
+  - Each level shows its kind (● segmentation, ◆ windows, ▣ regions), its number of objects,
+    a bar of its type mix and how it was built. Click a level to work on it.
+  - The **Selection** column follows the objects shown on the plot through the hierarchy: at
+    every other level, how many objects are related to them (their members below, the objects
+    containing them above). Double-click a count to go there with those objects shown.
+  - Right-click a level to rename it, export its table, delete it with what is built on it,
+    or make it again.
+  - A level whose parent changed after it was built (other phenotypes, a re-run neighbourhood
+    analysis) is marked **out of date** in red, with the reason. Nothing is rebuilt until you
+    choose **Make again from its parent**.
+- **Follow selection to** takes the shown objects to another level as a *selection*. You can
+  show it, gate within it, make it a phenotype, or delete it from the gate list.
+- **Columns from levels…** brings another level's measurements onto these objects. From a
+  level built on them, it takes each object's own window's value, or the mean (the most common
+  type) over the windows or regions containing it. From the level below, it takes the mean
+  over the members.
+- **On the image**, a level is shown through the segmented objects: each object takes the
+  value of its own window, or of its region. Surface distances and contacts (Spatial tab) need
+  masks, so they are measured on the segmented objects only.
+
 ### 10.7 Classification: learning cell types from examples
 
 The **Classification** tab learns cell types from objects you have already typed, and
@@ -890,6 +945,12 @@ predicts them for every object, in this image or the next one.
 microscope, instead of training from scratch. Models are saved in your model library
 (`.ibif-napari/models` in your home folder); a facility can share models by putting
 them in a common folder and using **Browse…**.
+
+**A model is for the kind of object it was trained on.** At a spatial level (10.6.1), the
+**Model** list greys out the models that do not fit it, and says why. For example, a model
+trained on cells is not offered for neighbourhood windows, and an image-crop model such as
+NephNet3D (nuclei) is only offered for the segmented objects. To classify windows or
+regions, train a model at that level, with that level's phenotypes as labels.
 
 ### 10.8 Trajectories: lineages through cell types and neighbourhoods
 

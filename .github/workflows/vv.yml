@@ -23,6 +23,8 @@ on:
       - "src/ibif_napari/_czi.py"
       - "src/ibif_napari/_lif.py"
       - "src/ibif_napari/_workspace.py"
+      - "src/ibif_napari/_cytometry.py"
+      - "src/ibif_napari/_cyto_levels.py"
       - ".github/workflows/vv.yml"
 
 jobs:
