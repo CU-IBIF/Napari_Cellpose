@@ -25,6 +25,8 @@ from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
     QHBoxLayout,
@@ -58,6 +60,7 @@ class _AnalysisTab(QWidget):
 
     kind = ""
     base_name = ""
+    include_neighbourhoods = False  # offer neighbourhood types as classes (the Trajectory tab)
 
     def __init__(self, bench):
         super().__init__()
@@ -119,7 +122,7 @@ class _AnalysisTab(QWidget):
         self.classes.blockSignals(True)
         self.classes.clear()
         if state.table is not None and not state.broken_phenotypes():
-            for label, key in state.class_choices():
+            for label, key in state.class_choices(neighbourhoods=self.include_neighbourhoods):
                 self.classes.addItem(label, key)
         index = self.classes.findData(keep)
         self.classes.setCurrentIndex(max(index, 0) if self.classes.count() else -1)
@@ -152,8 +155,13 @@ class _AnalysisTab(QWidget):
         if key is None:
             return []
         values = {c for c in self.state.classes(key) if c is not None}
-        return sorted(values, key=lambda v: (v.startswith("cluster "), int(v[8:]) if v.startswith("cluster ")
-                                             and v[8:].isdigit() else 0, v))
+        def order(v):
+            for prefix in ("cluster ", "type "):
+                if v.startswith(prefix) and v[len(prefix):].isdigit():
+                    return (True, int(v[len(prefix):]), v)
+            return (False, 0, v)
+
+        return sorted(values, key=order)
 
     # ---- running ------------------------------------------------------------------------
 
@@ -375,6 +383,15 @@ class NeighbourhoodTab(_AnalysisTab):
         self.seed = QSpinBox()
         self.seed.setRange(0, 1_000_000)
         self.form.addRow("Seed", self.seed)
+        self.seed_pop = QComboBox()
+        self.seed_pop.setToolTip("Which objects get a neighbourhood of their own (a window around them). "
+                                 "The others have no type of their own but still count in their "
+                                 "neighbours' windows.")
+        self.form.addRow("Windows around", self.seed_pop)
+        self.member_pop = QComboBox()
+        self.member_pop.setToolTip("Which objects are counted in a window (the object a window is around "
+                                   "always is)")
+        self.form.addRow("Counting", self.member_pop)
         self._enable()
 
     def _enable(self, *_):
@@ -402,13 +419,47 @@ class NeighbourhoodTab(_AnalysisTab):
         for b in (self.plot_btn, self.image_btn, self.delete_btn):
             row.addWidget(b)
         self.results.addLayout(row)
+        row = QHBoxLayout()
+        self.level_btn = QPushButton("Make a level from this")
+        self.level_btn.setToolTip(
+            "A new spatial level whose objects are these neighbourhoods (one window around each "
+            "object, overlapping), with their composition and type: gate, cluster and build on them "
+            "again, as on the objects")
+        self.level_btn.clicked.connect(lambda _=False: self.make_level())
+        self.regions_btn = QPushButton("Make regions…")
+        self.regions_btn.setToolTip(
+            "A new spatial level of regions: contiguous objects of the same neighbourhood type merged "
+            "into one functional unit (a tubule, a glomerulus), without overlap")
+        self.regions_btn.clicked.connect(lambda _=False: self.make_regions())
+        row.addWidget(self.level_btn)
+        row.addWidget(self.regions_btn)
+        self.results.addLayout(row)
 
     def settings(self):
         out = super().settings()
         out.update(method=self.method.currentData(), radius=self.radius.value(), k=self.k.value(),
                    n_types=self.n_types.value(), permutations=self.permutations.value(),
                    seed=self.seed.value())
+        for which, box in (("seeds", self.seed_pop), ("members", self.member_pop)):
+            key = box.currentData()
+            if key and key != "all":
+                out[which] = key.split("\t", 1)
         return out
+
+    def refresh(self):
+        for box in (self.seed_pop, self.member_pop):
+            keep = box.currentData()
+            box.blockSignals(True)
+            box.clear()
+            box.addItem("All objects", "all")
+            if self.state.table is not None:
+                for kind, key, label in self.state.populations():
+                    if kind != "all":
+                        box.addItem(label.strip(), f"{kind}\t{key}")
+            index = box.findData(keep)
+            box.setCurrentIndex(max(index, 0))
+            box.blockSignals(False)
+        super().refresh()
 
     def make_job(self, settings):
         return self.state.neighbourhood_job(settings)
@@ -419,7 +470,7 @@ class NeighbourhoodTab(_AnalysisTab):
     def show_analysis(self, name):
         state = self.state
         has = bool(name) and name in state.analyses
-        for b in (self.plot_btn, self.image_btn, self.delete_btn):
+        for b in (self.plot_btn, self.image_btn, self.delete_btn, self.level_btn, self.regions_btn):
             b.setEnabled(has)
         if not has:
             self.info.setText("Find neighbourhood types: groups of objects with the same mix of classes "
@@ -433,7 +484,8 @@ class NeighbourhoodTab(_AnalysisTab):
         self.info.setText(f"<b>{name}</b>: {info['n_objects']:,} objects by {info.get('class_label', '')}; "
                           f"each object and the objects {how}; {len(sizes)} types "
                           f"(column <i>{info['columns']['type']}</i>)"
-                          + (f" ({info['seconds']:.1f} s)" if "seconds" in info else "") + ".")
+                          + (f" ({info['seconds']:.1f} s)" if "seconds" in info else "") + "."
+                          + self._overlap_text(name, info))
         view = self.view.currentIndex()
         counts = sizes.to_frame("objects")
         if view == 0:
@@ -462,11 +514,64 @@ class NeighbourhoodTab(_AnalysisTab):
             self.heatmap.show(grid, row_label="class (centre)", value_label="z-score (neighbours vs. chance)",
                               limits=(-5, 5), color_rows=False, annotate=True)
 
+    def _overlap_text(self, name, info):
+        """Neighbourhoods overlap: how many each object is a member of."""
+        col = f"{name} memberships"
+        if not info["columns"].get("member_type") or col not in self.state.features():
+            return ""
+        n = self.state.column(col)
+        return (f" Neighbourhoods overlap: each object is a member of {int(n.min())}-{int(n.max())} "
+                f"(median {np.median(n):g}); <i>{info['columns']['member_type']}</i> is the most "
+                f"common type among them.")
+
     def colour_plot(self):
         name = self.analysis.currentText()
         if name in self.state.analyses:
             self.bench.color_by.setCurrentText(self.state.analyses[name]["columns"]["type"])
             self.bench.tabs.setCurrentIndex(0)
+
+    # ---- spatial levels -------------------------------------------------------------------
+
+    def make_level(self, name=None):
+        """Make a windows level from the shown result (asks for a name unless given)."""
+        levels, analysis = self.state, self.analysis.currentText()
+        if analysis not in levels.analyses:
+            return None
+        if name is None:
+            from qtpy.QtWidgets import QInputDialog
+
+            default = levels.unique_level_name(f"{analysis} windows")
+            name, ok = QInputDialog.getText(self, "Make a level", "Name of the new level:", text=default)
+            if not ok:
+                return None
+        try:
+            state = levels.make_windows_level(analysis, name.strip() or None)
+        except ValueError as e:
+            self.status.setText(str(e))
+            return None
+        self.status.setText(f"Level {state.source} made: {len(state.table):,} windows. Every tab now works "
+                            "on them; choose the level at the top to go back.")
+        return state
+
+    def make_regions(self, name=None, **options):
+        """Make a regions level from the shown result's types: asks for the name and
+        options in a dialog unless `name` is given (then `options` are passed on:
+        values, touching, d, tau, min_size)."""
+        levels, analysis = self.state, self.analysis.currentText()
+        if analysis not in levels.analyses:
+            return None
+        if name is None:
+            dialog = RegionsDialog(self, levels, analysis)
+            if not dialog.exec_():
+                return None
+            name, options = dialog.result_options()
+        try:
+            state = levels.make_regions_level(analysis, name or None, **options)
+        except ValueError as e:
+            self.status.setText(str(e))
+            return None
+        self.status.setText(f"Level {state.source} made: {len(state.table):,} regions.")
+        return state
 
     def show_on_image(self):
         name = self.analysis.currentText()
@@ -481,4 +586,56 @@ class NeighbourhoodTab(_AnalysisTab):
         return layer
 
 
-__all__ = ["SpatialTab", "NeighbourhoodTab", "MEASURES", "VIEWS"]
+class RegionsDialog(QDialog):
+    """Options for making regions from a neighbourhood result's types."""
+
+    def __init__(self, parent, levels, analysis):
+        super().__init__(parent)
+        self.setWindowTitle("Make regions")
+        form = QFormLayout(self)
+        self.name = QLineEdit(levels.unique_level_name(f"{analysis} regions"))
+        form.addRow("Name", self.name)
+        self.types = QListWidget()
+        self.types.setToolTip("Make regions of these neighbourhood types")
+        types = levels.column(levels.analyses[analysis]["columns"]["type"])
+        for t in sorted({int(v) for v in types if v > 0}):
+            item = QListWidgetItem(f"type {t}")
+            item.setData(Qt.UserRole, t)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked)
+            self.types.addItem(item)
+        form.addRow("Types", self.types)
+        self.touching = QCheckBox("Join objects that touch")
+        self.touching.setChecked(True)
+        self.touching.setToolTip("Touching masks (segmented objects); above them, windows whose centre "
+                                 "objects touch, or regions whose members touch")
+        form.addRow(self.touching)
+        self.d = QDoubleSpinBox()
+        self.d.setRange(0, 10000)
+        self.d.setToolTip("Also join objects whose centres are within this distance (0: touching only)")
+        form.addRow("Or within", self.d)
+        self.tau = QDoubleSpinBox()
+        self.tau.setRange(0, 1)
+        self.tau.setSingleStep(0.05)
+        self.tau.setValue(0.5)
+        self.tau.setToolTip("For windows: join two only when their members sit this close to each "
+                            "other's (0-1; 0 joins every candidate). Keeps side-by-side structures apart.")
+        form.addRow("Member closeness", self.tau)
+        self.min_size = QSpinBox()
+        self.min_size.setRange(1, 100000)
+        self.min_size.setToolTip("Drop regions of fewer objects")
+        form.addRow("Smallest region", self.min_size)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+    def result_options(self):
+        values = [self.types.item(i).data(Qt.UserRole) for i in range(self.types.count())
+                  if self.types.item(i).checkState() == Qt.Checked]
+        return self.name.text().strip(), {"values": values or None, "touching": self.touching.isChecked(),
+                                          "d": self.d.value(), "tau": self.tau.value(),
+                                          "min_size": self.min_size.value()}
+
+
+__all__ = ["SpatialTab", "NeighbourhoodTab", "RegionsDialog", "MEASURES", "VIEWS"]

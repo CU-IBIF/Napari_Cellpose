@@ -21,6 +21,42 @@ vtea-core, so VTEA and IBIF napari share them.
    objects in use again updates them and keeps the gates, phenotypes and clusterings.
 3. **Open the Cytometry workbench.** It is a separate window, so the plot can be large
    next to the image. It stays above napari and closes with it.
+   - **Level** (at the top) chooses which objects every tab works on: the segmented
+     objects, or a spatial level built on them (neighbourhood windows or regions, at
+     any depth; *Spatial level 1* is built on the objects, *Spatial level 2* on level 1,
+     and so on). Each level has its own gates, phenotypes, clusterings, spatial
+     features and classifications, its own plot set-up, and is saved with the
+     workspace. The path beside it shows what the level is built on. With only the
+     segmented objects, the selector is greyed out.
+   - **Map** shows the **hierarchy map**, docked on the left once there is a spatial level:
+     every level as a tree (● segmentation, ◆ windows, ▣ regions) with its number of
+     objects, its type mix and how it was built. Click a level to work on it. The
+     **Selection** column counts, at every other level, the objects related to the ones
+     shown (members below, containers above); double-click a count to go there with them.
+     Right-click to rename, export, delete, or make an *out of date* level again: a level
+     turns red when its parent's objects, classes or types changed after it was built.
+   - **Making a level.** On the **Neighbourhoods** tab, run a neighbourhood analysis,
+     then **Make a level from this**: its windows (one around each object, overlapping)
+     become the objects of a new level, with their composition (`fraction <class>`),
+     size and the neighbourhood type of the object each is around (`neighbourhood
+     type`). **Make regions…** instead merges contiguous objects of the same type into
+     regions (functional units, no overlap): objects whose masks touch (above the
+     segmentation: windows whose centre objects touch, regions whose members touch),
+     or whose centres are within a distance; for windows, only when their members sit
+     close to each other's (*Member closeness*, 0–1), so side-by-side structures stay
+     apart. At the new level, *Neighbourhood types (from the level below)* are classes
+     to build on again. **Windows around** / **Counting** restrict which objects get a
+     window and which are counted in one (default: all).
+   - **On the image**, a level is shown through the segmented objects: each object
+     takes the value of its own window, or of its region. Surface distances and
+     contacts (Spatial tab) need masks, so they are measured on the segmented objects.
+   - **Follow selection to** takes the objects shown (Show) to another level: the
+     members they are made of below, or the objects containing them above. It appears
+     there as a *selection*: show it, gate within it, make it a phenotype, or delete it
+     in the gate list.
+   - **Columns from levels…** brings measurements of another level onto these objects:
+     from the windows or regions containing each (their mean, the most common type, or
+     its own window's), or summarised over each one's members.
    - **Show** chooses which objects are plotted: all of them, a gate, an image gate or
      a phenotype. A gate you draw now is drawn **within** them. Within a gate, the new
      gate is a subgate; within a phenotype, it only ever contains that phenotype's
@@ -155,12 +191,83 @@ vtea-core, so VTEA and IBIF napari share them.
      class**, **Show classes on image**, and **Make phenotypes** (rename or merge
      classes, within a parent, only above a confidence). The classes can also be what
      the Spatial and Neighbourhoods tabs class objects by.
+   - **A model applies to the kind of object it was trained on.** Its card records
+     what it reads (measurements, image crops around masks, or the cells' neighbour
+     graph) and the level it was trained at. The **Model** list shows every model but
+     greys out those that do not fit the level being analysed, with the reason in its
+     tooltip and on the card: a model trained on cells is not offered for
+     neighbourhood windows, one trained on windows not for cells, and an image-crop
+     model such as NephNet3D (nuclei) or a cell-graph model such as STELLAR only on
+     the segmented objects. Train a model *at* a spatial level (with that level's
+     phenotypes as labels) to classify its windows or regions. A model used at another
+     depth than it was trained at (spatial level 2 with a level-1 model) is allowed,
+     with a caution to check its features mean the same there. **Start from** offers
+     only models for the current level. Cellular classifications reach the levels
+     above as classes the neighbourhoods are measured over.
    - The first model family is a generic ANN (a multilayer perceptron over the
      measurements, CPU only). Models are folders of JSON and plain arrays, never
      pickles, so a shared library is safe to open. Engine: vtea-core
      `classification`. NephNet3D and STELLAR follow (see
      [classification-plan.md](classification-plan.md)).
-8. **Make phenotypes.** Selecting phenotypes in the list shows their objects on the
+8. **Follow lineages through the types** (the **Trajectory** tab), once objects have
+   types:
+   - **Objects**: all, a gate, or a phenotype, e.g. only the proximal tubule cells.
+     **Classes**: phenotypes, clusters, a classification's classes, or a neighbourhood
+     analysis's **types**. A trajectory of neighbourhood types follows how one niche
+     turns into another; the neighbourhoods' composition is ticked as its features.
+   - **Space**: PCA of the scaled features (**Components**), or a clustering's map
+     (UMAP / t-SNE). **Start**: the class at pseudotime 0, chosen from biology (the
+     healthy type, or a candidate transitional state). **Ends** (optional): classes
+     that must end lineages.
+   - **Distance**:
+     - Slingshot's covariance-scaled distance (the default). On simulated
+       trajectories it found the topology at least as often as Euclidean, and found
+       trifurcations where Euclidean never did.
+     - Or between class means (Euclidean).
+     - With either, a class should cover each branch point. If the first classes of
+       two branches are joined to each other rather than to the trunk, re-cluster or
+       merge classes there.
+   - **Knots** (tradeSeq, 6 by default): more follow short-lived changes; too few can
+     bend a curve's ends.
+   - **Engine**:
+     - vtea-core's ports of slingshot and tradeSeq (the default);
+     - or the R packages themselves (Bioconductor slingshot + tradeSeq through
+       Rscript), offered when R with both is installed (`VTEA_RSCRIPT` points to an
+       Rscript off the PATH).
+   - **Also follow** (optional): a second classing whose fractions are followed along
+     pseudotime. For example, neighbourhood types along a cell-type trajectory, or cell
+     types along a neighbourhood trajectory.
+   - **Run** (background). The classes are joined into a minimum spanning tree rooted
+     at the start, with one lineage per leaf (*t1*, *t2*, …). Each lineage is fitted
+     with a principal curve; lineages that share their first classes are shrunk onto
+     a common trunk (Slingshot; Street et al. 2018). Each object gets a pseudotime per
+     lineage and a weight. Then a Gaussian GAM per feature along the lineages, and its
+     Wald tests (tradeSeq; Van den Berge et al. 2020):
+     - association: does it change along a lineage?
+     - start vs end;
+     - different ends between lineages;
+     - different patterns between lineages.
+
+     Each test is run globally and per lineage or pair, with BH q-values.
+   - Columns: `<name> pseudotime` (weighted mean over the object's lineages),
+     `<name> lineage` (main lineage, 1 = t1), `<name> pseudotime t<j>` (empty off the
+     lineage), and `<name> PC 1/2` when the space was PCA.
+   - **Show**:
+     - lineages on the map (by class, with the tree and the curves);
+     - pseudotime on the map;
+     - a feature along pseudotime per lineage: the GAM's fitted curve and 95% band over
+       the binned means ± SEM of the z-scored feature (the "pseudotime spectrum" of
+       Asghari et al. 2025, figs. 5 and 6);
+     - every feature along one lineage (heat map);
+     - which features change: −log10 q of each tradeSeq test (rows: test and lineage /
+       pair; columns: features);
+     - classes, and the followed classes, along pseudotime (stacked fractions).
+   - **Colour the plot by pseudotime**, **Show pseudotime on image**. Engine: vtea-core
+     `trajectory` (`slingshot`, `fit_gam` and the tests, `feature_trends`,
+     `composition_along`, `r_engine`). See vtea-python `docs/TRAJECTORIES.md` for what
+     is ported and the validation: simulations with a known truth, and parity with R by
+     a CI workflow that has not run yet.
+9. **Make phenotypes.** Selecting phenotypes in the list shows their objects on the
    image, as selecting gates does: Ctrl- or Shift-click several, each is shown in its
    colour and objects in more than one in white. Select a gate and click **Make phenotype…**, choosing the
    phenotype it belongs **within**. Or click **Add…** to write a rule yourself, for
@@ -180,7 +287,7 @@ vtea-core, so VTEA and IBIF napari share them.
    one level are exclusive (the first that matches wins). A phenotype with an empty
    rule is "the rest of its parent": everything in the parent that an earlier sibling
    did not claim (e.g. *Other T*).
-9. **Use the result.**
+10. **Use the result.**
    - **Show phenotypes on image** (workbench: **Show on image**) colours every object by
      its phenotype, either the deepest (most specific) one or the one at a chosen level
      of the hierarchy.
@@ -200,7 +307,8 @@ as lists of objects, so the same tree can type the next acquisition.
 
 The section is being built in stages. **Phase 1** (gating, subgating, image gates and
 the phenotype hierarchy), **Phase 2** (maps and clustering), **Phase 3** (spatial
-features) and **Phase 4** (neighbourhoods) are done. The later phases use the same object table and the
+features), **Phase 4** (neighbourhoods) and **Phase 6** (trajectories, one dataset) are
+done; Phase 5 is in progress. The later phases use the same object table and the
 same phenotype tree. The larger tools get their own tabs in the workbench rather than
 crowding the section.
 
@@ -211,6 +319,9 @@ crowding the section.
 | 3 ✅ | **Spatial features per object**, once some identities are known. Distance to the nearest object of each phenotype, by centroid or by **surface** (exact distance between masks, in µm, 3D included). Number and fraction of each phenotype within a radius. Contacts (touching masks). These features can be gated and clustered like any measurement, to split types further (e.g. CD8 T cells touching tumour cells). | vtea-core `spatial` (new) |
 | 4 ✅ | **Neighbourhood analysis.** Cellular neighbourhoods: composition of each cell's *k* nearest neighbours or of the cells within a radius, clustered into neighbourhood types (the CODEX / Schürch–Nolan approach). Cell-type × neighbourhood enrichment, and pairwise neighbourhood enrichment with permutation z-scores. Neighbourhood maps on the image. Neighbourhood features reflected back onto cells for gating. | vtea-core `neighborhoods` (extended) |
 | 5 (in progress: 5.0–5.2 done) | **Supervised object classification**: a Classification tab (apply a model; class and confidence per object; make phenotypes) and a Training workbench (labels from phenotypes, gates or clicked objects; train or fine-tune; validate; model library). First models: a generic ANN on measurements, **NephNet3D** on 3D nuclear crops (Woloshuk et al. 2021), and **STELLAR** reference-based annotation (Brbić et al. 2022). Training locally, on the facility GPU server or a cluster. See [classification-plan.md](classification-plan.md). | vtea-core `classification` (extended) |
+| 6 ✅ | **Trajectories** of cell types and neighbourhood types in one dataset: lineages from a chosen start class and pseudotime (Slingshot), a GAM per feature along the lineages and its tests (tradeSeq: association, start vs end, different ends, different patterns), class and neighbourhood-type fractions along pseudotime. Ports in vtea-core, validated on simulations; or the R packages when installed. After Asghari et al., *Sci Adv* 2025, figs. 5–6. | vtea-core `trajectory` (new) |
+| Next | **Spatial hierarchy**: neighbourhoods as objects, built again on themselves at any depth; one workbench with a level selector and the same tabs at every level; expanded neighbourhood features; level-aware classification. See [spatial-hierarchy-plan.md](spatial-hierarchy-plan.md). | vtea-core `hierarchy` (new) |
+| 7 (planned) | **Atlas / cohort analysis**: a pipeline built and checked here (phenotype rules or a classification model, neighbourhood definition, trajectory settings) frozen and applied unchanged to many datasets; a shared reference space; lineages fitted once and every dataset projected onto them; per-sample summaries and sample-level statistics across conditions. See [trajectory-atlas-plan.md](trajectory-atlas-plan.md). | vtea-core (headless cohort workflow) |
 
 ### Notes on the methods
 
@@ -223,3 +334,28 @@ crowding the section.
   - Its code is 2D, but the graph only needs centroids, so 3D works by giving it Z.
   - Its pinned dependencies are old (PyTorch 1.9, PyG 2.0), so it needs a port to
     current versions.
+
+### Neighbourhood analysis with VTEA in the kidney
+
+The Neighbourhoods tab follows the cell-centric neighbourhood analysis our group has
+published with VTEA (the "spatial by cell" method; composition as class sums and
+fractions; neighbourhoods clustered into niches):
+
+- Winfree S, McNutt AT, Khochare S, et al. Integrated cytometry with machine learning
+  applied to high-content imaging of human kidney tissue for in situ cell
+  classification and neighborhood analysis. *Laboratory Investigation* 103(6), 100104
+  (2023). doi:10.1016/j.labinv.2023.100104. VTEA tissue cytometry with NephNet3D
+  classification of kidney cell types from a nuclear stain, and neighbourhood analysis
+  of the classified cells in situ.
+- Lake BB, Menon R, Winfree S, et al. An atlas of healthy and injured cell states and
+  niches in the human kidney. *Nature* 619, 585–594 (2023).
+  doi:10.1038/s41586-023-05769-3. Injury neighbourhoods located by spatial
+  transcriptomics, and large-scale 3D imaging analysis of about 1.2 million
+  neighbourhoods linking them to active immune responses.
+- Asghari M, Sabo AR, Barwinska D, et al. Integration of spatial protein imaging and
+  transcriptomics in the human kidney tracks the regenerative potential of proximal
+  tubules. *Science Advances* 11(33), eadv8918 (2025). doi:10.1126/sciadv.adv8918.
+  Cell-centric neighbourhoods built with VTEA's "spatial by cell" method (55 µm
+  diameter, matched to the Visium spot), described by class sums and fractions,
+  clustered with Louvain into 19 niches, compared between reference and disease
+  tissue by odds ratio.

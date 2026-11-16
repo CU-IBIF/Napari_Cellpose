@@ -303,7 +303,14 @@ The **model card** is what makes a model reusable and reviewable:
 - training data: datasets / workspaces, number of objects per class, how labels were
   made (phenotypes, gates, clicked), the split;
 - validation: balanced accuracy, per-class precision / recall, confusion matrix;
-- what it was fine-tuned from, if anything; who trained it and when; free notes.
+- what it was fine-tuned from, if anything; who trained it and when; free notes;
+- **the level it applies to** (spatial hierarchy): `inputs["kind"]` says what it reads
+  (`features`, `crops`, `graph`; from the family when absent), and `training["level"]`
+  the level it was trained at (`objects`, `windows` or `regions`, its depth and how it
+  was built). Crop and graph models (NephNet3D, STELLAR) need segmented objects; a
+  features model applies to the kind of level it was trained on. Cards written before
+  levels existed count as trained on segmented objects. See
+  [spatial-hierarchy-plan.md](spatial-hierarchy-plan.md) §6.
 
 The **model library** is a folder (per user, plus an optional shared facility folder
 on the server) listed in the Classification tab. Models are saved with the workspace

@@ -1007,6 +1007,16 @@ def test_neighbourhood_tab_types_and_enrichment(qtbot):
     assert (types[t] == left_type).mean() > 0.6 and (types[~t] != left_type).mean() > 0.6
     frac = s.column("Neighbourhoods 1 fraction T")
     assert frac[t].mean() > frac[~t].mean()
+    # Neighbourhoods overlap: one is drawn around every cell, so each cell is a member
+    # of its own and of every neighbour's within the radius (3 to 8 neighbours here),
+    # and the most common type among them is kept as well as its own.
+    memberships = s.column("Neighbourhoods 1 memberships")
+    assert memberships.min() == 4 and memberships.max() == 9
+    assert info["columns"]["member_type"] == "Neighbourhoods 1 member neighbourhood"
+    member = s.column("Neighbourhoods 1 member neighbourhood")
+    assert set(member) <= {1, 2} and (member == types).mean() > 0.6
+    assert "Neighbourhoods 1 memberships" in s.measured_features()
+    assert "overlap" in tab.info.text()
     profile = s.analysis_table("Neighbourhoods 1", "profile")
     assert set(profile.columns) == {"T", "Other"} and len(profile) == 2
     pairs = s.analysis_table("Neighbourhoods 1", "pairs").set_index(["class", "neighbor"])
@@ -1134,6 +1144,671 @@ def test_classification_is_saved_and_shown_on_the_image(qtbot, tmp_path, monkeyp
     assert restored.class_names("Classes 1 class") == {1: "Other", 2: "T"}
 
 
+# ---- levels of the spatial hierarchy -------------------------------------------------------
+
+
+def _level_table(s, rng_seed=0):
+    """A stand-in for a level built on the cells: one object per cell (a window around
+    it), at the cell's centre, with a composition-like feature."""
+    rng = np.random.default_rng(rng_seed)
+    cols = s.root.centroid_columns()
+    t = s.root.mask("phenotype", "T").astype(float)
+    return pd.DataFrame({"object_id": np.arange(1, len(t) + 1),
+                         "centroid Y (µm)": s.root.table[cols["Y"]].to_numpy(),
+                         "centroid X (µm)": s.root.table[cols["X"]].to_numpy(),
+                         "fraction T": np.clip(t + rng.normal(0, 0.1, len(t)), 0, 1),
+                         "n objects": rng.integers(3, 9, len(t)).astype(float)})
+
+
+def test_levels_each_have_their_own_analysis():
+    v, s = _typed_scene()
+    assert isinstance(s, cy.Levels) and s.current_level == cy.ROOT_LEVEL and s.root is s.current
+    assert s.level_tree() == [(0, "Objects")] and s.level_label("Objects") == "Objects (cells): segmentation"
+    w = s.add_level("Neighbourhoods 1", _level_table(s), provenance={"radius": 15})
+    assert s.current_level == "Objects" and len(s.tree) == 2  # still the cells' phenotypes
+    s.set_level("Neighbourhoods 1")
+    assert s.current is w and len(s.table) == 24 and "fraction T" in s.features()
+    assert len(s.tree) == 0 and s.layer_name is None
+    s.add_phenotype("T-rich", "`fraction T` > 0.5")
+    g = s.add_gate("crowded", "n objects", "fraction T", [[5, -1], [10, -1], [10, 2], [5, 2]])
+    assert s.mask("phenotype", "T-rich").sum() >= 1 and s.mask("gate", g.id).any()
+    s.set_level("Objects")
+    assert len(s.tree) == 2 and "T-rich" not in [n.name for n in s.tree]
+    with pytest.raises(KeyError):
+        s.gates.get(g.id)  # the level's gate is not the cells'
+    s.add_level("Windows 2", _level_table(s, 1), parent="Neighbourhoods 1")
+    assert s.level_tree() == [(0, "Objects"), (1, "Neighbourhoods 1"), (2, "Windows 2")]
+    assert s.level_info("Windows 2")["depth"] == 2 and s.level_info("Windows 2")["objects"] == 24
+    assert s.level_label("Windows 2") == "Spatial level 2: Windows 2 (windows on Neighbourhoods 1)"
+    with pytest.raises(ValueError, match="already"):
+        s.add_level("Windows 2", _level_table(s))
+    with pytest.raises(ValueError, match="root"):
+        s.remove_level("Objects")
+    s.set_level("Windows 2")
+    assert s.remove_level("Neighbourhoods 1") == ["Neighbourhoods 1", "Windows 2"]
+    assert s.current_level == "Objects" and s.level_names() == ["Objects"]
+
+
+def test_one_list_of_listeners_hears_every_level():
+    v, s = _typed_scene()
+    heard = []
+    cy.root_of(v).listen(lambda: heard.append(s.current_level))
+    s.add_level("NH", _level_table(s), select=True)
+    s.current.changed()
+    assert heard[-2:] == ["NH", "NH"]
+
+
+def test_workbench_level_selector(qtbot):
+    from ibif_napari._cyto_workbench import Workbench
+
+    v, s = _typed_scene()
+    bench = Workbench(v)
+    qtbot.addWidget(bench)
+    assert bench.level_box.count() == 1 and not bench.level_box.isEnabled()
+    bench.x_col.setCurrentText("CD3 mean")
+    s.add_level("NH 1", _level_table(s))
+    assert bench.level_box.count() == 2 and bench.level_box.isEnabled()
+    bench.level_box.setCurrentIndex(1)  # the user picks the level
+    assert s.current_level == "NH 1" and bench.level_path.text() == "Objects › NH 1"
+    assert "spatial level 1" in bench.windowTitle()
+    assert bench.x_col.findText("fraction T") >= 0 and bench.x_col.findText("CD3 mean") < 0
+    # every tab works on this level's objects
+    bench.x_col.setCurrentText("n objects")
+    bench.y_col.setCurrentText("fraction T")
+    gate = bench.add_gate("rich", [[0, 0.5], [20, 0.5], [20, 2], [0, 2]])
+    assert gate is not None and s.mask("gate", gate.id).sum() >= 1
+    bench.clustering.refresh()
+    assert bench.clustering.features.count() >= 2
+    bench.set_level("Objects")
+    assert bench.x_col.currentText() == "CD3 mean"  # the cells' plot set-up comes back
+    assert bench.level_box.currentData() == "Objects" and bench.windowTitle() == "Cytometry workbench"
+
+
+def test_levels_are_saved_with_the_workspace(tmp_path):
+    v, s = _typed_scene()
+    s.add_level("NH 1", _level_table(s), provenance={"radius": 15.0})
+    s.add_level("NH 2", _level_table(s, 1), parent="NH 1", kind="regions")
+    s.set_level("NH 1")
+    s.add_phenotype("T-rich", "`fraction T` > 0.5")
+    rows = np.arange(len(s.table))
+    s.add_analysis("Clusters", {"features": ["fraction T"]}, rows, labels=(s.column("fraction T") > 0.5) + 1)
+    expected = s.typed_table()
+    folder, notes = _workspace.save_workspace(v, tmp_path / "w")
+    assert notes == []
+    data = json.loads((folder / "workspace.json").read_text())["extensions"]["cytometry"]
+    assert data["version"] == 2 and [e["name"] for e in data["levels"]] == ["NH 1", "NH 2"]
+    w = ViewerModel()
+    assert _workspace.load_workspace(w, folder) == []
+    r = cy.state_of(w)
+    assert r.level_tree() == [(0, "Objects"), (1, "NH 1"), (2, "NH 2")] and r.current_level == "NH 1"
+    assert r.level_info("NH 2")["kind"] == "regions" and r.level_info("NH 1")["provenance"] == {"radius": 15.0}
+    pd.testing.assert_frame_equal(r.typed_table(), expected, check_dtype=False)
+    assert "Clusters" in r.analyses and (r.clusters("Clusters") > 0).all()
+    assert len(r.root.tree) == 2  # the cells' own analysis is back too
+
+
+def _tiled_scene():
+    """One frame of 2 x 8 touching square cells (10 x 10 px, 0.5 µm): the left half
+    bright in CD3 (T), the right half not (Other)."""
+    v = ViewerModel()
+    labels = np.zeros((20, 80), np.uint16)
+    cd3 = np.full(labels.shape, 10.0)
+    k = 0
+    for r in range(2):
+        for c in range(8):
+            k += 1
+            labels[r * 10:(r + 1) * 10, c * 10:(c + 1) * 10] = k
+            if c < 4:
+                cd3[r * 10:(r + 1) * 10, c * 10:(c + 1) * 10] = 500
+    meta = {"ibif_axes": "YX", "ibif_voxel_um": {"Y": 0.5, "X": 0.5}}
+    common = dict(scale=(0.5, 0.5), metadata=meta)
+    image = v.add_image(cd3, name="CD3", **common)
+    layer = v.add_labels(labels, name="cells", **common)
+    table = _measure.measure_layer(v, layer, [image])
+    _measure.remember(v, {"cells": table})
+    s = cy.state_of(v)
+    s.set_table("cells", table, "cells")
+    s.add_phenotype("T", "`CD3 mean` > 100")
+    s.add_phenotype("Other", "")
+    return v, s
+
+
+def test_make_levels_build_on_them_and_show_them(qtbot):
+    from ibif_napari._cyto_workbench import Workbench
+
+    v, s = _typed_scene()
+    bench = Workbench(v)
+    qtbot.addWidget(bench)
+    tab = bench.neighbourhoods
+    tab.radius.setValue(15.0)
+    tab.n_types.setValue(2)
+    tab.permutations.setValue(0)
+    assert tab.run(wait=True) is not None
+    cell_types = s.column("Neighbourhoods 1 neighbourhood")
+    level = tab.make_level("NH 1")
+    assert level is not None and s.current_level == "NH 1" and len(s.table) == 24
+    assert {"fraction T", "fraction Other", "n objects", "neighbourhood type", "T"} <= set(s.table.columns)
+    np.testing.assert_array_equal(s.table["neighbourhood type"], cell_types)  # each window, its seed's type
+    assert bench.level_box.count() == 2 and "NH 1" in bench.level_path.text()
+    # The level is analysed like the cells: its windows' types are classes to build on.
+    assert ("Neighbourhoods types (from the level below)" not in dict(s.class_choices())
+            and cy.LEVEL_TYPE in dict(s.class_choices()).values())
+    tab.refresh()
+    tab.classes.setCurrentIndex(tab.classes.findData(cy.LEVEL_TYPE))
+    tab.radius.setValue(25.0)
+    assert tab.run(wait=True) is not None
+    on_image = tab.show_on_image()  # a level is painted through the cells
+    assert on_image.data.shape == v.layers["cells"].data.shape
+    assert set(np.unique(on_image.data)) <= {0, 1, 2} and on_image.data.any()
+    level2 = tab.make_level("NH 2")
+    assert s.level_tree() == [(0, "Objects"), (1, "NH 1"), (2, "NH 2")] and len(level2.table) == 24
+    # The cells' surface measures need masks: a level says so.
+    bench.spatial.refresh()
+    with pytest.raises(ValueError, match="masks"):
+        s.label_blocks()
+
+
+def test_neighbourhoods_around_a_population(qtbot):
+    from ibif_napari._cyto_workbench import Workbench
+
+    v, s = _typed_scene()
+    bench = Workbench(v)
+    qtbot.addWidget(bench)
+    tab = bench.neighbourhoods
+    tab.radius.setValue(15.0)
+    tab.n_types.setValue(2)
+    tab.permutations.setValue(0)
+    tab.seed_pop.setCurrentIndex(tab.seed_pop.findData("phenotype\tT"))
+    info = tab.run(wait=True)
+    assert info["seeds"] == ["phenotype", "T"]
+    t = s.mask("phenotype", "T")
+    types = s.column("Neighbourhoods 1 neighbourhood")
+    assert (types[t] > 0).all() and (types[~t] == 0).all()
+    assert (s.column("Neighbourhoods 1 memberships")[~t] >= 0).all()
+    level = tab.make_level("Around T")
+    assert len(level.table) == int(t.sum())
+
+
+def test_regions_follow_touching_masks_and_selections_follow_levels(qtbot):
+    from ibif_napari._cyto_workbench import Workbench
+
+    v, s = _tiled_scene()
+    bench = Workbench(v)
+    qtbot.addWidget(bench)
+    tab = bench.neighbourhoods
+    tab.radius.setValue(6.0)  # a cell and its side neighbours (5 µm apart)
+    tab.n_types.setValue(2)
+    tab.permutations.setValue(0)
+    tab.run(wait=True)
+    regions = tab.make_regions("Units", values=None, touching=True, d=0.0, tau=0.5, min_size=1)
+    assert regions is not None and s.current_level == "Units"
+    sizes = sorted(s.table["n objects"])
+    assert sum(sizes) == 16 and len(sizes) >= 2  # the T half and the Other half, at least
+    # Regions are painted through their cells, each cell its region's value.
+    s.add_phenotype("big", "`n objects` >= 4")
+    layer = s.show_population("phenotype", "big")
+    assert layer.data.shape == v.layers["cells"].data.shape and layer.data.any()
+    # Follow the big regions down to their cells: a phenotype there.
+    bench.set_population("phenotype", "big")
+    name = bench.follow_selection("Objects")
+    assert s.current_level == "Objects" and name.startswith("members of big (Units)")
+    big_cells = s.mask("selection", name).sum()
+    assert bench.current_population() == ("selection", name)
+    s.phenotype_from("selection", name, "in big regions")  # a selection can become a phenotype
+    assert big_cells == int(s.level("Units").table.loc[s.level("Units").table["n objects"] >= 4,
+                                                        "n objects"].sum())
+    # and back up: the regions containing the T cells
+    bench.set_population("phenotype", "T")
+    up = bench.follow_selection("Units")
+    assert s.current_level == "Units" and s.mask("selection", up).sum() >= 1
+    # Columns from another level: the size of each cell's region, onto the cells.
+    bench.set_level("Objects")
+    new = bench.bring_columns("Units", ["n objects"], "mean")
+    assert new == ["n objects (Units)"] and np.nansum(s.column(new[0])) > 0
+    up_cols = bench.state.bring_columns("Objects", ["CD3 mean"], "Units")
+    assert up_cols == ["CD3 mean (Objects)"] and len(s.level("Units").column(up_cols[0])) == len(sizes)
+
+
+def test_built_levels_are_saved_with_their_members(tmp_path):
+    from ibif_napari import _cyto_levels
+
+    v, s = _typed_scene()
+    s.neighbourhood_job  # noqa: B018 - the job is run below through the state
+    settings = {"classes": "phenotype", "class_label": "Phenotypes", "method": "radius", "radius": 15.0,
+                "k": 10, "n_types": 2, "permutations": 0, "seed": 0}
+    s.add_neighbourhoods("NB", settings, s.neighbourhood_job(settings)())
+    s.make_windows_level("NB", "W")
+    folder, notes = _workspace.save_workspace(v, tmp_path / "w")
+    assert notes == []
+    w = ViewerModel()
+    _workspace.load_workspace(w, folder)
+    r = cy.state_of(w)
+    assert r.level_names() == ["Objects", "W"]
+    geometry = r._info["W"]["geometry"]
+    assert geometry is not None and geometry["membership"].shape == (24, 24)
+    assert (_cyto_levels.own_rows(r, "W") == np.arange(24)).all()
+
+
+def test_a_selection_from_another_level_is_a_population(qtbot):
+    from ibif_napari._cyto_workbench import Workbench
+
+    v, s = _tiled_scene()
+    settings = {"classes": "phenotype", "class_label": "P", "method": "radius", "radius": 6.0, "k": 10,
+                "n_types": 2, "permutations": 0, "seed": 0}
+    s.add_neighbourhoods("NB", settings, s.neighbourhood_job(settings)())
+    s.make_regions_level("NB", "Units")
+    bench = Workbench(v)
+    qtbot.addWidget(bench)
+    name = bench.follow_selection("Objects")  # all the regions, down to their cells
+    assert ("selection", name, f"Selection: {name}") in s.populations()
+    g = bench.add_gate("bright", [[0, 0], [1e5, 0], [1e5, 1e5], [0, 1e5]])  # a gate within it
+    assert s.scope[("gate", g.id)] == ("selection", name)
+    s.set_gate_color("selection", name, "#123456")
+    assert s.population_color("selection", name) == "#123456"
+    with pytest.raises(ValueError, match="keeps"):
+        s.rename_gate("selection", name, "x")
+    bench._fill_gates()
+    assert any(bench.gate_tree.topLevelItem(i).data(0, Qt.UserRole) == ("selection", name)
+               for i in range(bench.gate_tree.topLevelItemCount()))
+    s.remove_gate("selection", name)
+    assert name not in s.selections() and ("gate", g.id) not in s.order
+
+
+def repair_scene(n=150, seed=0):
+    """A proximal tubule repair continuum (as in Asghari et al. 2025): healthy PT
+    (LRP2 high) -> transitional (THY1+PROM1+) -> either THY1+ or PROM1+, as phenotypes
+    from a 'truth' column. Laid out in space along the same Y: healthy on the left, the
+    THY1 branch top right, the PROM1 branch bottom right, with immune cells (CD45)
+    mixed into the PROM1 branch. The transitional cells straddle the branch point (as a
+    clustering puts one cluster there), so the cluster tree can find it."""
+    rng = np.random.default_rng(seed)
+    parts = []
+    # (name, code, progress from, to, branch: 0 trunk, 1 THY1, 2 PROM1)
+    for name, code, a, b, br in (("Healthy PT", 0, 0.0, 0.3, 0), ("Transitional", 1, 0.3, 0.62, 0),
+                                 ("THY1+ PT", 2, 0.62, 0.85, 1), ("PROM1+ PT", 3, 0.62, 0.85, 2)):
+        p = rng.uniform(a, b, n)
+        # Past the branch point (0.55) the transitional cells are on either branch.
+        br = np.where(p > 0.55, rng.integers(1, 3, n), 0) if code == 1 else np.full(n, br)
+        late = np.clip((p - 0.55) / 0.3, 0, 1)
+        trunk = np.clip(p / 0.55, 0, 1)
+        thy1 = 50 + 300 * trunk * (br != 2) + 500 * late * (br == 1) - 150 * late * (br == 2)
+        prom1 = 50 + 300 * trunk * (br != 1) + 500 * late * (br == 2) - 150 * late * (br == 1)
+        x = 200 * p + rng.normal(0, 3, n)
+        y = np.where(br == 1, 100 * late, np.where(br == 2, -100 * late, 0)) + rng.normal(0, 3, n)
+        parts.append(pd.DataFrame({
+            "LRP2 mean": (800 - 700 * p) * rng.lognormal(0, 0.1, n),
+            "THY1 mean": np.maximum(thy1, 10) * rng.lognormal(0, 0.1, n),
+            "PROM1 mean": np.maximum(prom1, 10) * rng.lognormal(0, 0.1, n),
+            "centroid Y (µm)": y, "centroid X (µm)": x, "truth": code, "progress": p, "branch": br}))
+    immune = pd.DataFrame({"LRP2 mean": rng.lognormal(3, 0.1, n // 2), "THY1 mean": rng.lognormal(3, 0.1, n // 2),
+                           "PROM1 mean": rng.lognormal(3, 0.1, n // 2),
+                           "centroid Y (µm)": -100 * rng.uniform(0.5, 1, n // 2),
+                           "centroid X (µm)": 200 * rng.uniform(0.75, 1, n // 2), "truth": 4,
+                           "progress": np.nan, "branch": -1})
+    table = pd.concat(parts + [immune], ignore_index=True)
+    table.insert(0, "label", np.arange(1, len(table) + 1))
+    s = cy.state_of(ViewerModel())
+    s.set_table("cells", table, "cells")
+    s.add_phenotype("PT", "truth < 4", color="#2ca02c")
+    for code, name, color in ((0, "Healthy PT", "#1f77b4"), (1, "Transitional", "#ff7f0e"),
+                              (2, "THY1+ PT", "#d62728"), (3, "PROM1+ PT", "#9467bd")):
+        s.add_phenotype(name, f"truth == {code}", parent="PT", color=color)
+    s.add_phenotype("Immune", "truth == 4", color="#7f7f7f")
+    return s, table
+
+
+def test_trajectory_tab_finds_the_repair_lineages(qtbot, tmp_path):
+    from ibif_napari._cyto_trajectory import VIEWS
+    from ibif_napari._cyto_workbench import Workbench
+
+    s, table = repair_scene()
+    bench = Workbench(s.viewer)
+    qtbot.addWidget(bench)
+    tab = bench.trajectory
+    assert bench.tabs.tabText(bench.tabs.count() - 1) == "Trajectory"
+    assert tab.checked_features() == ["LRP2 mean", "THY1 mean", "PROM1 mean"]
+    tab.population.setCurrentIndex(tab.population.findData("phenotype\tPT"))
+    assert tab.population.currentText() == "Phenotype: PT"
+    tab.classes.setCurrentIndex(tab.classes.findData("phenotype"))
+    starts = [tab.start.itemText(i) for i in range(tab.start.count())]
+    assert "Healthy PT" in starts and "Immune" not in starts  # only the classes of the objects chosen
+    tab.start.setCurrentText("Healthy PT")
+    info = tab.run(wait=True)
+    assert info is not None and info["kind"] == "trajectory", tab.status.text()
+    st = info["structure"]
+    assert sorted(map(tuple, st["lineages"])) == [("Healthy PT", "Transitional", "PROM1+ PT"),
+                                                ("Healthy PT", "Transitional", "THY1+ PT")]
+    assert info["n_objects"] == 4 * 150  # PT only: the immune cells are not in it
+    t = s.column("Trajectory 1 pseudotime")
+    assert np.isnan(t[table["truth"] == 4]).all()
+    pt = table["truth"].to_numpy() < 4
+    rho = pd.Series(t[pt]).corr(table["progress"][pt], method="spearman")
+    assert rho > 0.9
+    # Each branch's cells are on their own lineage.
+    lineage = s.column("Trajectory 1 lineage").astype(int)
+    thy1_lin = 1 + next(j for j, lin in enumerate(st["lineages"]) if lin[-1] == "THY1+ PT")
+    assert (lineage[table["truth"] == 2] == thy1_lin).mean() > 0.95
+    assert (lineage[table["truth"] == 3] != thy1_lin).mean() > 0.95
+    # THY1 rises along the THY1 lineage, PROM1 along the other.
+    # tradeSeq: THY1 and PROM1 change along their lineages and end differently.
+    tests = s.analysis_table("Trajectory 1", "tests").set_index(["test", "scope", "feature"])
+    thy1_name = f"t{thy1_lin}"
+    prom1_name = "t2" if thy1_name == "t1" else "t1"
+    assert set(tests.index.get_level_values("test")) == {"association", "start_vs_end", "diff_end", "pattern"}
+    assert tests.loc[("association", thy1_name, "THY1 mean"), "q"] < 1e-6
+    assert tests.loc[("association", prom1_name, "PROM1 mean"), "q"] < 1e-6
+    for feature in ("THY1 mean", "PROM1 mean"):
+        assert tests.loc[("diff_end", "global", feature), "q"] < 1e-6
+        assert tests.loc[("pattern", "global", feature), "q"] < 1e-6
+    curves = s.analysis_table("Trajectory 1", "smoothers")
+    thy1 = curves[(curves["feature"] == "THY1 mean") & (curves["lineage"] == thy1_name)]["fit"].to_numpy()
+    assert thy1[-1] > thy1[0] + 1  # the fitted THY1 curve rises along the THY1 lineage (z-scores)
+    # The columns are like any other: in rules, colour the plot, the map.
+    assert "Trajectory 1 pseudotime" in s.measured_features() and "Trajectory 1 PC 1" in s.features()
+    assert s.rule_count("`Trajectory 1 pseudotime` >= 0")[0] == 600
+    for k in range(len(VIEWS)):  # every view draws
+        tab.view.setCurrentIndex(k)
+        widget = tab.stack.currentWidget()
+        assert widget.figure.axes, VIEWS[k]
+    tab.colour_plot()
+    assert bench.color_by.currentText() == "Trajectory 1 pseudotime"
+    assert bench.x_col.currentText() == "Trajectory 1 PC 1"
+    bench.color_by.setCurrentText("Trajectory 1 lineage")
+    assert {text.get_text() for text in bench.plot.axes.get_legend().get_texts()} >= {"t1", "t2"}
+    # Saved and restored with the workspace (no image needed for the tables).
+    data = json.loads(json.dumps(s.to_dict()))
+    assert data["analyses"]["Trajectory 1"]["structure"]["start"] == "Healthy PT"
+    s.save_derived(tmp_path)
+    s2 = cy.state_of(ViewerModel())
+    s2.load_dict(data, {"cells": table}, tmp_path / "cytometry" / "derived.csv")
+    np.testing.assert_allclose(s2.column("Trajectory 1 pseudotime"), t)
+    assert s2.analysis_table("Trajectory 1", "trends").shape == s.analysis_table("Trajectory 1", "trends").shape
+    tab.delete()
+    assert not s.analyses_of("trajectory")
+
+
+def test_trajectory_of_neighbourhood_types_and_following_cell_types(qtbot):
+    from ibif_napari._cyto_workbench import Workbench
+
+    s, table = repair_scene()
+    bench = Workbench(s.viewer)
+    qtbot.addWidget(bench)
+    hoods = bench.neighbourhoods
+    hoods.radius.setValue(25.0)
+    hoods.n_types.setValue(4)
+    hoods.permutations.setValue(0)
+    assert hoods.run(wait=True) is not None
+    tab = bench.trajectory
+    key = s.analyses["Neighbourhoods 1"]["columns"]["type"]
+    index = tab.classes.findData(key)
+    assert index >= 0 and tab.classes.itemText(index) == "Neighbourhoods 1 types"
+    assert bench.spatial.classes.findData(key) < 0  # only the Trajectory tab offers them
+    tab.classes.setCurrentIndex(index)
+    # Classed by neighbourhood types: the composition is ticked, not the intensities.
+    assert set(tab.checked_features()) == set(s.analyses["Neighbourhoods 1"]["columns"]["features"])
+    # Start from the neighbourhood type of the healthy cells.
+    types = s.column(key).astype(int)
+    healthy = np.bincount(types[table["truth"] == 0]).argmax()
+    tab.start.setCurrentText(f"type {healthy}")
+    tab.track.setCurrentIndex(tab.track.findData("phenotype"))
+    info = tab.run(wait=True)
+    assert info is not None, tab.status.text()
+    assert info["structure"]["start"] == f"type {healthy}" and len(info["structure"]["lineages"]) >= 1
+    # Healthy PT cells are early in neighbourhood pseudotime, the branches late.
+    t = s.column(f"{info['columns']['pseudotime']}")
+    truth = table["truth"].to_numpy()
+    assert np.nanmedian(t[truth == 0]) < np.nanmedian(t[truth >= 2])
+    tracked = s.analysis_table("Trajectory 1", "tracked")
+    assert {"Healthy PT", "Immune"} <= set(tracked["class"])
+    first = tracked[(tracked["lineage"] == "t1") & (tracked["bin"] == 0)].set_index("class")["fraction"]
+    assert first["Healthy PT"] > 0.5
+    tab.view.setCurrentIndex(6)
+    assert tab.plot.figure.axes
+    # Switching back to cell types ticks the intensities again.
+    tab.classes.setCurrentIndex(tab.classes.findData("phenotype"))
+    assert tab.checked_features() == ["LRP2 mean", "THY1 mean", "PROM1 mean"]
+
+
+def test_trajectory_needs_a_start_with_objects(qtbot):
+    s, table = repair_scene(n=30)
+    job_settings = {"population": ["all", None], "classes": "phenotype", "features": ["LRP2 mean"],
+                    "start": "Nope"}
+    with pytest.raises(ValueError, match="start"):
+        s.trajectory_job(job_settings)
+    with pytest.raises(ValueError, match="feature"):
+        s.trajectory_job({**job_settings, "features": []})
+
+
+def test_trajectory_pseudotime_on_the_image(qtbot):
+    from ibif_napari._cyto_workbench import Workbench
+
+    v, s = _typed_scene()
+    bench = Workbench(v)
+    qtbot.addWidget(bench)
+    tab = bench.trajectory
+    tab.check_features("all")
+    tab.start.setCurrentText("T")
+    info = tab.run(wait=True)
+    assert info is not None, tab.status.text()
+    assert info["structure"]["lineages"] == [["T", "Other"]]
+    t = s.column("Trajectory 1 pseudotime")
+    assert np.nanmedian(t[s.mask("phenotype", "T")]) < np.nanmedian(t[~s.mask("phenotype", "T")])
+    layer = tab.show_on_image()
+    assert layer is not None and layer.name == "cells Trajectory 1"
+    assert set(np.unique(layer.data)) - {0} <= set(range(1, 11)) and layer.data.max() > 1
+
+
+def test_trajectory_r_engine_is_used_when_chosen(qtbot, monkeypatch):
+    """With the R engine, the trajectory and the tradeSeq tests come from
+    vtea-core's r_engine (here stand-ins that run the Python ports and note the
+    call); without R the choice is greyed out."""
+    from vtea_core.trajectory import r_engine, slingshot
+
+    from ibif_napari._cyto_workbench import Workbench
+
+    calls = []
+
+    def fake_slingshot_r(points, labels, start, **kw):
+        calls.append("slingshot")
+        return slingshot(points, labels, start, ends=kw.get("ends"), distance=kw.get("distance", "slingshot"))
+
+    def fake_tradeseq_r(pt, w, values, **kw):
+        calls.append("tradeSeq")
+        n = values.shape[1]
+        table = pd.DataFrame({"waldStat": np.ones(n), "df": 2, "pvalue": 0.5, "waldStat_1": 1.0, "df_1": 1,
+                              "pvalue_1": 0.5}, index=values.columns)
+        return {"association": table, "start_vs_end": table}
+
+    monkeypatch.setattr(r_engine, "slingshot_r", fake_slingshot_r)
+    monkeypatch.setattr(r_engine, "tradeseq_r", fake_tradeseq_r)
+    s, table = repair_scene(n=60)
+    bench = Workbench(s.viewer)
+    qtbot.addWidget(bench)
+    tab = bench.trajectory
+    has_r = r_engine.r_available("slingshot", "tradeSeq")
+    assert tab.engine.model().item(1).isEnabled() == has_r
+    tab.population.setCurrentIndex(tab.population.findData("phenotype\tPT"))
+    tab.start.setCurrentText("Healthy PT")
+    tab.engine.setCurrentIndex(1)
+    info = tab.run(wait=True)
+    assert info is not None and info["engine"] == "r", tab.status.text()
+    assert calls == ["slingshot", "tradeSeq"]
+    tests = s.analysis_table("Trajectory 1", "tests")
+    assert set(tests["scope"]) == {"global", "t1"} and "smoothers" not in info["tables"]
+    tab.view.setCurrentIndex(2)  # the feature view without GAM curves: the binned means
+    assert tab.plot.figure.axes
+
+
+# ---- classification at each level (H5) -----------------------------------------------------
+
+
+def _write_card(folder, family, inputs):
+    """A model folder with only its card: enough for the library to list it."""
+    folder.mkdir(parents=True)
+    card = {"family": family, "classes": ["a", "b"], "inputs": inputs}
+    (folder / "card.json").write_text(json.dumps(card))
+    (folder / "config.json").write_text(json.dumps({"family": family, "classes": ["a", "b"]}))
+
+
+def test_models_apply_to_the_level_they_were_trained_on(qtbot, tmp_path, monkeypatch):
+    from vtea_core.classification import read_card
+
+    from ibif_napari._cyto_classify import fits_level, model_needs
+    from ibif_napari._cyto_workbench import Workbench
+
+    monkeypatch.setenv("IBIF_NAPARI_MODELS", str(tmp_path / "models"))
+    s, truth = _truth_state()
+    bench = Workbench(s.viewer)
+    qtbot.addWidget(bench)
+    tab = bench.classification
+    # A model trained on the cells records that it is for segmented objects.
+    trainer = tab.train_dialog()
+    qtbot.addWidget(trainer)
+    s.label_from_classes("phenotype")
+    trainer.check_features("names", ["CD3 mean", "CD8 mean", "CD4 mean"])
+    trainer.train(wait=True)
+    cells_model = trainer.save("cell types")
+    card = read_card(cells_model)
+    assert card.inputs["kind"] == "features" and card.training["level"]["kind"] == "objects"
+    assert model_needs(card) == {"input_kind": "features", "level_kind": "objects", "depth": 0}
+    # NephNet3D reads image crops around masks: segmented objects only.
+    _write_card(tmp_path / "models" / "nuclei", "nephnet3d", {"kind": "crops", "channels": ["DAPI"]})
+    # A card from before levels were recorded: trained on segmented objects.
+    _write_card(tmp_path / "models" / "old", "ann", {"kind": "features", "features": ["CD3 mean"]})
+    tab.refresh()
+    names = [tab.model.itemText(i) for i in range(tab.model.count())]
+    assert all(tab.model.model().item(i).isEnabled() for i in range(tab.model.count())), names
+    # At a level of neighbourhood windows none of them applies, and each says why.
+    rng = np.random.default_rng(0)
+    level = pd.DataFrame({"object_id": np.arange(1, 201), "centroid Y (µm)": rng.uniform(0, 100, 200),
+                          "centroid X (µm)": rng.uniform(0, 100, 200),
+                          "fraction T": np.r_[rng.uniform(0.6, 1, 100), rng.uniform(0, 0.4, 100)],
+                          "n objects": rng.integers(3, 12, 200).astype(float)})
+    s.add_level("Windows", level, select=True)
+    tab.refresh()
+    enabled = {tab.model.itemText(i): tab.model.model().item(i).isEnabled() for i in range(tab.model.count())}
+    assert enabled == {"cell types": False, "nuclei": False, "old": False}
+    i = tab.model.findText("nuclei")
+    assert "image crops" in tab.model.itemData(i, Qt.ToolTipRole)
+    ok, why = fits_level(read_card(tmp_path / "models" / "cell types"), s)
+    assert not ok and "trained on segmented objects" in why and "neighbourhood windows" in why
+    tab.model.setCurrentIndex(tab.model.findText("cell types"))
+    assert not tab.run_btn.isEnabled() and "Not for this level" in tab.card.text()
+    assert tab.run() is None and "not for this level" in tab.status.text()
+    # A model trained on the windows is for windows - and not for the cells.
+    s.add_phenotype("T-rich", "`fraction T` > 0.5")
+    s.add_phenotype("other windows", "")
+    s.label_from_classes("phenotype")  # the windows' own training set
+    trainer.check_features("names", ["fraction T", "n objects"])
+    trainer.train(wait=True)
+    windows_model = trainer.save("window types")
+    card = read_card(windows_model)
+    assert card.training["level"] == {"kind": "windows", "depth": 1, "name": "Windows", "built": {}}
+    tab.refresh()
+    assert tab.model.currentText() == "window types" and tab.run_btn.isEnabled()
+    assert tab.run() is not None
+    s.set_level("Objects")
+    tab.refresh()
+    enabled = {tab.model.itemText(i): tab.model.model().item(i).isEnabled() for i in range(tab.model.count())}
+    assert enabled == {"cell types": True, "nuclei": True, "old": True, "window types": False}
+    # Fine-tuning offers only models for this level.
+    trainer.refresh()
+    offered = [trainer.start_from.itemText(i) for i in range(trainer.start_from.count())]
+    assert "fine-tune cell types" in offered and "fine-tune window types" not in offered
+
+
+# ---- the hierarchy map (H4b) -----------------------------------------------------------------
+
+
+def _two_levels(s):
+    """Neighbourhoods of the tiled cells, their windows, and regions of those windows."""
+    settings = {"classes": "phenotype", "class_label": "P", "method": "radius", "radius": 6.0, "k": 10,
+                "n_types": 2, "permutations": 0, "seed": 0}
+    s.add_neighbourhoods("NB", settings, s.neighbourhood_job(settings)())
+    s.make_windows_level("NB", "W", select=True)
+    level_settings = {**settings, "classes": cy.LEVEL_TYPE, "class_label": "types"}
+    s.add_neighbourhoods("NB2", level_settings, s.neighbourhood_job(level_settings)())
+    s.make_regions_level("NB2", "R", touching=True, select=False)
+    s.set_level("Objects")
+
+
+def test_hierarchy_map_shows_and_navigates_the_levels(qtbot, tmp_path):
+    from ibif_napari._cyto_map import COL_LEVEL, COL_SELECTION, type_mix
+    from ibif_napari._cyto_workbench import Workbench
+
+    v, s = _tiled_scene()
+    bench = Workbench(v)
+    qtbot.addWidget(bench)
+    hmap = bench.hierarchy_map
+    assert not hmap.isVisibleTo(bench) and not bench.map_btn.isChecked()  # one level: no map
+    _two_levels(s)
+    assert hmap.isVisibleTo(bench) and bench.map_btn.isChecked()
+    items = hmap.items
+    assert list(items) == ["Objects", "W", "R"]
+    assert items["W"].parent() is items["Objects"] and items["R"].parent() is items["W"]
+    assert items["W"].text(COL_LEVEL).startswith("◆") and items["R"].text(COL_LEVEL).startswith("▣")
+    assert items["W"].text(1) == "16" and "windows · r 6" in items["W"].child(0).text(0)
+    assert type_mix(s.root) and abs(sum(f for f, _ in type_mix(s.root)) - 1) < 1e-9
+    # The Selection column follows what is shown: all 16 cells -> every window, every region.
+    assert items["Objects"].text(COL_SELECTION) == "16 shown"
+    assert items["W"].text(COL_SELECTION) == "16" and items["R"].text(COL_SELECTION) == str(len(s.level("R").table))
+    bench.set_population("phenotype", "T")
+    assert hmap.items["Objects"].text(COL_SELECTION) == "8 shown"
+    # Click a level to work on it; double-click a count to follow the shown objects there.
+    hmap._clicked(hmap.items["W"], COL_LEVEL)
+    assert s.current_level == "W" and bench.level_box.currentData() == "W"
+    hmap._clicked(hmap.items["Objects"], COL_LEVEL)
+    bench.set_population("phenotype", "T")
+    hmap._double_clicked(hmap.items["R"], COL_SELECTION)
+    assert s.current_level == "R" and bench.current_population()[0] == "selection"
+    # Export, rename, delete.
+    s.set_level("Objects")
+    path = hmap.export("W", tmp_path / "w.csv")
+    assert pd.read_csv(path).shape[0] == 16
+    assert hmap.rename("W", "Windows") and s.level_tree() == [(0, "Objects"), (1, "Windows"), (2, "R")]
+    assert not hmap.rename("Objects", "Cells")
+    bench.map_btn.setChecked(False)  # hidden on request, and stays hidden
+    s.current.changed()
+    assert not hmap.isVisibleTo(bench)
+    bench.map_btn.setChecked(True)
+    assert hmap.delete("Windows", confirm=False) == ["Windows", "R"] and s.level_names() == ["Objects"]
+
+
+def test_a_level_is_out_of_date_when_its_parent_changes_and_can_be_made_again(qtbot):
+    from ibif_napari._cyto_workbench import Workbench
+
+    v, s = _tiled_scene()
+    _two_levels(s)
+    assert s.staleness("W") == "" and s.staleness("R") == ""
+    # The cells' classes change: the windows were built from the old ones.
+    s.edit_phenotype("T", rule="`CD3 mean` > 1e9")
+    assert "changed since it was built" in s.staleness("W")
+    assert s.staleness("R") == "W is out of date"
+    bench = Workbench(v)
+    qtbot.addWidget(bench)
+    assert "(out of date)" in bench.hierarchy_map.items["W"].text(0)
+    # The types it was built from are stale too: run the neighbourhoods again, then rebuild.
+    settings = dict(s.analyses["NB"])
+    s.remove_analysis("NB")
+    assert "was deleted" in s.staleness("W")
+    with pytest.raises(ValueError, match="deleted"):
+        s.rebuild_level("W")
+    s.add_neighbourhoods("NB", settings, s.neighbourhood_job(settings)())
+    state = bench.hierarchy_map.rebuild("W", confirm=False)
+    assert state is not None and s.current_level == "W" and s.staleness("W") == ""
+    assert s.level_names() == ["Objects", "W"]  # what was built on the old windows is gone
+    assert "fraction T" not in s.table.columns and (s.table["fraction Other"] == 1).all()  # new classes
+
+
+def test_levels_are_skipped_not_fatal_when_their_objects_are_not_restored(tmp_path):
+    v, s = _typed_scene()
+    s.add_level("NH 1", _level_table(s))
+    folder, _ = _workspace.save_workspace(v, tmp_path / "w")
+    w = ViewerModel()  # the measurement table is not there: nothing to build the levels on
+    notes = cy._load(w, folder, json.loads((folder / "workspace.json").read_text())["extensions"]["cytometry"])
+    assert any("spatial levels were not restored" in n and "NH 1" in n for n in notes)
+    assert cy.state_of(w).level_names() == ["Objects"]
+
 
 def test_workbench_tab_order(qtbot):
     from ibif_napari._cyto_workbench import Workbench
@@ -1142,7 +1817,7 @@ def test_workbench_tab_order(qtbot):
     bench = Workbench(v)
     qtbot.addWidget(bench)
     assert [bench.tabs.tabText(i) for i in range(bench.tabs.count())] == \
-        ["Gating", "Clustering", "Classification", "Spatial", "Neighbourhoods"]
+        ["Gating", "Clustering", "Classification", "Spatial", "Neighbourhoods", "Trajectory"]
 
 
 def test_training_set_labels_from_phenotypes_gates_clicks_and_tables(qtbot, tmp_path):
@@ -1258,3 +1933,19 @@ def test_training_workbench_thumbnails_train_review_save_and_fine_tune(qtbot, tm
     assert second != first and tab.model.currentData() == second
     info = tab.run()
     assert info["classes"] == ["CD8 T", "Other", "T"]
+
+
+def test_a_levels_training_set_is_kept_by_object_id():
+    v, s = _typed_scene()
+    s.add_level("W", _level_table(s), select=True)
+    s.add_phenotype("T-rich", "`fraction T` > 0.5")
+    s.add_phenotype("rest", "")
+    assert s.label_from_classes("phenotype") == 24 and s.object_keys() == ["object_id"]
+    saved = s.current._training_to_dict()
+    assert saved["keys"] == ["object_id"] and len(saved["labels"]) == 24
+    expected = s.training_labels().tolist()
+    s.current._training_from_dict(saved)
+    assert s.training_labels().tolist() == expected
+    assert s.object_id(3) == int(s.table.iloc[3]["object_id"])
+    s.set_level("Objects")
+    assert not s.training  # each level has its own training set

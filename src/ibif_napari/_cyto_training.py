@@ -57,7 +57,7 @@ from qtpy.QtWidgets import (
 )
 
 from . import _cytometry as cy
-from ._cyto_classify import SPLITS, _combo, _html, _metrics_html, _safe, object_data
+from ._cyto_classify import SPLITS, _combo, _html, _metrics_html, _safe, fits_level, level_record, object_data
 
 FAMILIES = {"Generic ANN (measurements)": "ann", "NephNet3D (3D nuclear crops) — coming": None,
             "STELLAR (reference annotation) — coming": None}
@@ -171,7 +171,7 @@ def object_thumbnail(state, image, row, size=THUMB, color=None):
     for c in range(3):
         out[y0:y0 + h, x0:x0 + w, c] = gray.astype(np.uint8)
     labels = state.labels_layer()
-    if color and labels is not None and labels.data.shape[-n:] == data.shape[-n:]:
+    if color and "label" in table.columns and labels is not None and labels.data.shape[-n:] == data.shape[-n:]:
         try:
             lab = np.asarray(labels.data[pos + tuple(sl)])
         except (IndexError, ValueError):
@@ -459,10 +459,11 @@ class TrainingWorkbench(QWidget):
         self.start_from.addItem("(new model)", None)
         for folder in list_models(cy.model_library()):
             try:
-                if read_card(folder).family == "ann":
-                    self.start_from.addItem(f"fine-tune {folder.name}", str(folder))
+                card = read_card(folder)
             except ValueError:
                 continue
+            if card.family == "ann" and fits_level(card, state)[0]:  # only models for this level
+                self.start_from.addItem(f"fine-tune {folder.name}", str(folder))
         self.start_from.setCurrentIndex(max(self.start_from.findData(keep), 0))
         groups = [k for k in ("T", "P") if state.table is not None and k in state.table.columns
                   and state.table[k].nunique() > 1]
@@ -603,7 +604,7 @@ class TrainingWorkbench(QWidget):
     def _object_selected(self, row):
         if self.click.isChecked() and not self._navigating and self.active.currentText():
             if self.state.label_objects([row], self.active.currentText()):
-                self.status.setText(f"Object {int(self.state.table.iloc[row]['label'])} labelled "
+                self.status.setText(f"Object {self.state.object_id(row)} labelled "
                                     f"{self.active.currentText()}.")
 
     # ---- the gallery ------------------------------------------------------------------------
@@ -633,7 +634,7 @@ class TrainingWorkbench(QWidget):
             color = self.state.training_classes.get(cls, "#ffffff")
             item = QListWidgetItem()
             item.setIcon(QIcon(_pixmap(object_thumbnail(self.state, layer, row, THUMB, color))))
-            label = int(self.state.table.iloc[row]["label"])
+            label = self.state.object_id(row)
             tip = f"{cls}: object {label}"
             if self.show_what.currentData() == "wrong" and self.result is not None:
                 k = list(self.result["validation_rows"]).index(row)
@@ -754,8 +755,9 @@ class TrainingWorkbench(QWidget):
         self.draw_curves()
         state, model = self.state, result["model"]
         model.card.colors = {c: state.training_classes[c] for c in model.classes if c in state.training_classes}
+        # What it is for: the kind of objects (and the spatial level) it was trained on.
         model.card.training.update(source=state.source, objects_layer=state.layer_name,
-                                   labels="training set")
+                                   labels="training set", level=level_record(state))
         self.metrics.setText(_metrics_html(result["metrics"], result["history"])
                              + _per_class_html(result["metrics"]))
         new = model.card.training.get("new_classes")

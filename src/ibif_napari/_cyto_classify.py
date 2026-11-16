@@ -14,6 +14,16 @@ set, train or fine-tune a model, check it, and save it with its card to the libr
 Models are vtea-core `classification` model folders: plain arrays and JSON, never a
 pickle, so models shared through a library folder are safe to open. The first family
 is the generic ANN (a multilayer perceptron over measurements, CPU only).
+
+**A model applies to the kind of object it was trained on** (spatial hierarchy, H5).
+Its card records what it reads (`inputs["kind"]`: measurement *features*, image
+*crops* around masks, or a neighbour *graph* of cells; from the family when absent) and
+the level it was trained at (`training["level"]`: segmented objects, neighbourhood
+windows or regions, with the depth and how the level was built). A crop
+or graph model (NephNet3D, STELLAR) needs segmented objects, so it never applies at a
+spatial level; a features model applies to the same kind of level it was trained on.
+The tab lists every model and greys out the ones that do not fit the current level,
+saying why. Cards from before levels were recorded were trained on segmented objects.
 """
 from __future__ import annotations
 
@@ -42,6 +52,67 @@ from qtpy.QtWidgets import (
 from . import _cytometry as cy
 
 SPLITS = {"By object (stratified by class)": "object", "By time point / position": "group"}
+
+# What each model family reads, when its card does not say.
+FAMILY_INPUTS = {"ann": "features", "nephnet3d": "crops", "nephnet": "crops", "cnn": "crops",
+                 "cell3d": "crops", "stellar": "graph"}
+INPUT_KINDS = ("features", "crops", "graph")
+LEVEL_WORDS = {"objects": "segmented objects", "windows": "neighbourhood windows", "regions": "regions"}
+
+
+def model_needs(card):
+    """{"input_kind", "level_kind", "depth"} of a model card: what it reads, and the
+    kind of level (and depth, None if unknown) it applies to."""
+    inputs = card.inputs or {}
+    kind = inputs.get("kind") if inputs.get("kind") in INPUT_KINDS else None
+    kind = kind or FAMILY_INPUTS.get(str(card.family).lower(), "features")
+    level = (card.training or {}).get("level") or {}
+    if kind in ("crops", "graph"):  # read masks / image crops / the cells' graph
+        return {"input_kind": kind, "level_kind": "objects", "depth": 0}
+    # A features model applies where it was trained; before levels were recorded, every
+    # model was trained on segmented objects.
+    return {"input_kind": kind, "level_kind": level.get("kind", "objects"),
+            "depth": level.get("depth", 0 if not level else None)}
+
+
+def level_record(levels):
+    """What a model trained now is trained on: the current level's kind, depth, name
+    and how it was built."""
+    name = levels.current_level
+    info = levels.level_info(name)
+    provenance = {k: v for k, v in (info.get("provenance") or {}).items()
+                  if k in ("builder", "method", "radius", "k", "classes", "types", "d", "tau")}
+    return {"kind": info["kind"], "depth": info["depth"], "name": name, "built": provenance}
+
+
+def fits_level(card, levels):
+    """(applies, why not) of a model card at the current level of `levels`."""
+    needs = model_needs(card)
+    info = levels.level_info(levels.current_level)
+    here = info["kind"]
+    family = card.family if card.family not in ("nephnet3d", "nephnet") else "NephNet3D"
+    if needs["input_kind"] == "crops" and here != "objects":
+        return False, (f"{family} classifies segmented objects from image crops around their masks (nuclei, "
+                       f"for NephNet3D); {LEVEL_WORDS.get(here, here)} have no masks: use it on the "
+                       "segmented objects")
+    if needs["input_kind"] == "graph" and here != "objects":
+        return False, (f"{family} classifies cells from their measurements and their neighbour graph; use "
+                       "it on the segmented objects")
+    if needs["level_kind"] != here:
+        return False, (f"trained on {LEVEL_WORDS.get(needs['level_kind'], needs['level_kind'])}; these are "
+                       f"{LEVEL_WORDS.get(here, here)}, described by other measurements")
+    return True, ""
+
+
+def level_note(card, levels):
+    """A caution (or "") when a features model is used at another depth than it was
+    trained at: the same kind of level, but possibly built differently."""
+    needs = model_needs(card)
+    depth = levels.level_info(levels.current_level)["depth"]
+    if needs["input_kind"] == "features" and needs["depth"] is not None and needs["depth"] != depth:
+        return (f"trained at spatial level {needs['depth']}; this is level {depth}: check its features "
+                "mean the same here")
+    return ""
 
 
 def _combo(min_chars=18):
@@ -179,6 +250,8 @@ class ClassificationTab(QWidget):
         state = self.state
         from ._cyto_workbench import _fill, _pop_key
 
+        from vtea_core.classification import read_card
+
         keep = self.model.currentData()
         self.model.blockSignals(True)
         self.model.clear()
@@ -186,7 +259,20 @@ class ClassificationTab(QWidget):
             self.model.addItem(name, str(folder))
         if self._model_path and self.model.findData(self._model_path) < 0:
             self.model.addItem(Path(self._model_path).name, self._model_path)
+        fitting = []
+        for i in range(self.model.count()):  # every model is listed; those for another level greyed out
+            try:
+                ok, why = fits_level(read_card(self.model.itemData(i)), state)
+            except ValueError:
+                ok, why = True, ""  # shown, and the card says what is wrong with it
+            item = self.model.model().item(i)
+            item.setEnabled(ok)
+            if not ok:
+                self.model.setItemData(i, f"Not for this level: {why}.", Qt.ToolTipRole)
+            fitting.append(ok)
         index = self.model.findData(keep or self._model_path)
+        if index < 0 or not fitting[index]:
+            index = next((i for i, ok in enumerate(fitting) if ok), index)
         self.model.setCurrentIndex(max(index, 0) if self.model.count() else -1)
         self.model.blockSignals(False)
         _fill(self.population, [(label.strip(), _pop_key(kind, key)) for kind, key, label in state.populations()]
@@ -249,9 +335,18 @@ class ClassificationTab(QWidget):
                 self.card.setText(f"<span style='color:#d62728'>{e}</span>")
             else:
                 text = card.summary()
+                needs = model_needs(card)
+                text += (f"<br>For {LEVEL_WORDS.get(needs['level_kind'], needs['level_kind'])}"
+                         + (f" (spatial level {needs['depth']})" if needs["depth"] else "")
+                         + f", from {needs['input_kind']}.")
                 if card.notes:
                     text += f"<br><i>{_html(card.notes)}</i>"
-                if self.state.table is not None:
+                ok, why = fits_level(card, self.state)
+                if not ok:
+                    text += f"<br><span style='color:#d62728'>Not for this level: {_html(why)}.</span>"
+                elif level_note(card, self.state):
+                    text += f"<br><span style='color:#b8860b'>{_html(level_note(card, self.state))}.</span>"
+                if self.state.table is not None and ok:
                     found, missing = model_input_columns(self.state, card.inputs.get("features", []))
                     if missing:
                         text += ("<br><span style='color:#d62728'>This table has no column for: "
@@ -268,7 +363,7 @@ class ClassificationTab(QWidget):
 
     def run(self):
         """Classify the chosen objects with the chosen model. Returns the stored result."""
-        from vtea_core.classification import load_model, model_hash, predictions
+        from vtea_core.classification import load_model, model_hash, predictions, read_card
 
         from ._cyto_workbench import _pop_parse
 
@@ -280,6 +375,9 @@ class ClassificationTab(QWidget):
         started = time.perf_counter()
         try:
             state._check_analysis_name(name)
+            ok, why = fits_level(read_card(folder), state)
+            if not ok:
+                raise ValueError(f"This model is not for this level: {why}.")
             model = load_model(folder)
             population = _pop_parse(self.population.currentData())
             rows = np.flatnonzero(state.mask(*population))
@@ -377,6 +475,8 @@ class ClassificationTab(QWidget):
         from ._cyto_training import open_training
 
         return open_training(self.bench)
+
+
 
 
 def _metrics_html(metrics, history):

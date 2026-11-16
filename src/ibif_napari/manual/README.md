@@ -866,6 +866,61 @@ T*), to gate, colour by and use in rules.
 
 **Colour the plot by type** and **Show types on image** show where the types are.
 
+Neighbourhoods **overlap**: one is drawn around every object, so an object is in its own and
+in every neighbour's. Besides the type of its own neighbourhood, each object gets how many it
+is a member of (*memberships*) and their most common type (*member neighbourhood*).
+**Windows around** and **Counting** restrict which objects get a neighbourhood and which are
+counted in one (for example, neighbourhoods only around tubule cells, counting every cell
+around them).
+
+### 10.6.1 Spatial levels: neighbourhoods as objects
+
+A neighbourhood is an object too. It has members, a place, and measurements of its own,
+such as its composition. So it can be gated, clustered, classified and built on again, to any
+depth: cells → their neighbourhoods → neighbourhoods of those neighbourhoods, and so on.
+
+![The workbench at a spatial level, with the hierarchy map](images/17_workbench_levels.png)
+
+- **Make a level from this** (Neighbourhoods tab) turns the shown result's windows into the
+  objects of a new **spatial level**. They come with their composition (*fraction <class>*),
+  their size (*n objects*) and the type of the object each is around (*neighbourhood type*).
+  Every tab now works on them. At the new level, *Neighbourhood types (from the level below)*
+  are classes, so a neighbourhood analysis there finds kinds of neighbourhood of
+  neighbourhoods, and **Make a level from this** builds the next level up.
+- **Make regions…** merges contiguous objects of the same type into one **region**, a
+  functional unit such as a tubule or a glomerulus. Regions don't overlap. Objects are joined
+  where their masks touch (above the segmentation: windows whose centre objects touch, regions
+  whose members touch), or within a distance you give. For windows, **Member closeness**
+  (0–1) joins two only when their members sit close to each other's, so two tubules side by
+  side stay apart. **Smallest region** drops fragments.
+
+  Use windows to see *change*, such as an infiltrate's front and the tissue behind it. Use
+  regions to count and measure *units*.
+- **Level** (top of the workbench) chooses the level every tab works on. Each level keeps its
+  own gates, phenotypes, clusterings, classifications and plot settings, and all of them are
+  saved with the workspace.
+- **The hierarchy map** (**Map**, shown once there is a spatial level) is the whole hierarchy
+  as a tree:
+  - Each level shows its kind (● segmentation, ◆ windows, ▣ regions), its number of objects,
+    a bar of its type mix and how it was built. Click a level to work on it.
+  - The **Selection** column follows the objects shown on the plot through the hierarchy: at
+    every other level, how many objects are related to them (their members below, the objects
+    containing them above). Double-click a count to go there with those objects shown.
+  - Right-click a level to rename it, export its table, delete it with what is built on it,
+    or make it again.
+  - A level whose parent changed after it was built (other phenotypes, a re-run neighbourhood
+    analysis) is marked **out of date** in red, with the reason. Nothing is rebuilt until you
+    choose **Make again from its parent**.
+- **Follow selection to** takes the shown objects to another level as a *selection*. You can
+  show it, gate within it, make it a phenotype, or delete it from the gate list.
+- **Columns from levels…** brings another level's measurements onto these objects. From a
+  level built on them, it takes each object's own window's value, or the mean (the most common
+  type) over the windows or regions containing it. From the level below, it takes the mean
+  over the members.
+- **On the image**, a level is shown through the segmented objects: each object takes the
+  value of its own window, or of its region. Surface distances and contacts (Spatial tab) need
+  masks, so they are measured on the segmented objects only.
+
 ### 10.7 Classification: learning cell types from examples
 
 The **Classification** tab learns cell types from objects you have already typed, and
@@ -902,6 +957,89 @@ examples, e.g. for a new microscope, instead of training from scratch; examples 
 class add it to the model. Models are saved in your model library
 (`.ibif-napari/models` in your home folder); a facility can share models by putting
 them in a common folder and using **Browse…**.
+
+**A model is for the kind of object it was trained on.** At a spatial level (10.6.1), the
+**Model** list greys out the models that do not fit it, and says why. For example, a model
+trained on cells is not offered for neighbourhood windows, and an image-crop model such as
+NephNet3D (nuclei) is only offered for the segmented objects. To classify windows or
+regions, train a model at that level, with that level's phenotypes as labels.
+
+### 10.8 Trajectories: lineages through cell types and neighbourhoods
+
+Once objects have types, the **Trajectory** tab asks how the types connect. For example,
+it can show which states lie between healthy proximal tubule cells and injured ones, where
+the lineages branch, and which markers change along each branch (Asghari et al. 2025,
+figures 5 and 6). It works on one dataset (the objects in use).
+
+1. Choose the **Objects**: all of them, a gate, or a phenotype. Choose only the cells
+   whose states you are following, e.g. *Phenotype: PT*.
+2. Choose the **Classes**: phenotypes, a clustering's clusters, a classification's
+   classes, or a neighbourhood analysis's **types**. Classed by neighbourhood types, the
+   lineages follow how one kind of neighbourhood turns into another, and the
+   neighbourhoods' composition is ticked as the features.
+3. Tick the **Features** (the mean intensities by default). Then choose the **Space** the
+   lineages are found in: **PCA of the features** (10 components by default), or the map
+   (UMAP, t-SNE) of a clustering run.
+4. Choose the **Start**: the class where pseudotime is 0. Pseudotime has no direction of
+   its own, so choose the start from biology, such as the healthy type or a candidate
+   transitional state. Optionally tick **Ends**: classes that must be the ends of lineages.
+5. Optionally, **Also follow** a second set of classes along pseudotime, e.g. the
+   neighbourhood types along a cell-type trajectory, or the cell types along a
+   neighbourhood trajectory.
+6. Click **Run**. The classes are joined into a tree (each class to its nearest, starting
+   from the start). There is one lineage, *t1*, *t2*, …, from the start to each end of the
+   tree. Each lineage gets a smooth curve through its objects (Slingshot; Street et al.
+   2018). Each object's **pseudotime** is how far along the curve it is. Then each feature
+   gets a smooth curve along each lineage (a GAM with **Knots** knots), and tradeSeq's
+   tests (Van den Berge et al. 2020) ask what changes.
+
+**Show** draws:
+
+- **Lineages on the map**: the objects coloured by class, the tree (dashed) and the
+  lineage curves (arrows from start to end).
+- **Pseudotime on the map**: the objects coloured by pseudotime.
+- **A feature along pseudotime**: the fitted curve of one feature (in standard deviations)
+  along each lineage, with its 95% band, over the mean in bins of pseudotime (points).
+  This is the marker's "pseudotime spectrum".
+- **Features along a lineage**: every feature along one lineage, as a heat map.
+- **Which features change**: the tradeSeq tests, as −log10 of the q-value
+  (Benjamini–Hochberg; 2 means q = 0.01, higher is stronger). One row per test, overall
+  and per lineage or pair of lineages:
+  - **association**: the feature changes along the lineage;
+  - **start vs end**: it differs between the lineage's start and end;
+  - **different ends**: the lineages end at different values;
+  - **different patterns**: the lineages differ anywhere along the way.
+
+  With thousands of objects small changes are significant, so look at the curves too.
+- **Classes along pseudotime** and **Also followed**: the share of each class along each
+  lineage.
+
+Each object gets *Trajectory 1 pseudotime*, *Trajectory 1 lineage* (its main lineage) and
+*Trajectory 1 pseudotime t1*, … as columns of the table. Plot them, gate on them (e.g. late
+pseudotime on t2), use them in rules, and export them. **Colour the plot by pseudotime**
+shows the map on the Gating tab. **Show pseudotime on image** colours the objects from dark
+(early) to yellow (late).
+
+**Distance** sets how far apart two classes are when the tree is built:
+
+- **Slingshot** (the default) scales the distance between class means by how spread out
+  the classes are. On simulated data it found the right tree at least as often as
+  Euclidean.
+- **Euclidean** uses the distance between the class means.
+
+Either way, a class should cover each branch point. If the first classes of two branches
+are joined to each other instead of to the trunk, cluster again (or merge classes there).
+
+**Knots** (6, as tradeSeq): more knots follow short-lived changes. With too few, a narrow
+bump can bend the curve's ends and show up in *start vs end* or *different ends*.
+
+**Engine**: vtea-core's ports of slingshot and tradeSeq, or, when R with the Bioconductor
+packages slingshot and tradeSeq is installed, the R packages themselves.
+
+Running from two different starts, or on each condition separately, is a good check that
+the lineages are real. Trajectories over many datasets together (an atlas or a cohort) are
+planned; see
+[docs/trajectory-atlas-plan.md](https://github.com/CU-IBIF/Napari_Cellpose/blob/main/docs/trajectory-atlas-plan.md).
 
 ## 11. Filament tracing
 
@@ -1203,6 +1341,15 @@ ibif-napari-vv all vv --backend classic
 - Schürch CM, Bhate SS, Barlow GL, et al. Coordinated cellular neighborhoods orchestrate
   antitumoral immunity at the colorectal cancer invasive front. *Cell* 182:1341–1359 (2020).
   [doi:10.1016/j.cell.2020.07.005](https://doi.org/10.1016/j.cell.2020.07.005)
+- Street K, Risso D, Fletcher RB, et al. Slingshot: cell lineage and pseudotime inference for
+  single-cell transcriptomics. *BMC Genomics* 19:477 (2018).
+  [doi:10.1186/s12864-018-4772-0](https://doi.org/10.1186/s12864-018-4772-0)
+- Van den Berge K, Roux de Bézieux H, Street K, et al. Trajectory-based differential
+  expression analysis for single-cell sequencing data. *Nat Commun* 11:1201 (2020).
+  [doi:10.1038/s41467-020-14766-3](https://doi.org/10.1038/s41467-020-14766-3)
+- Asghari M, Sabo AR, Barwinska D, et al. Integration of spatial protein imaging and
+  transcriptomics in the human kidney tracks the regenerative potential of proximal tubules.
+  *Sci Adv* 11:eadv8918 (2025). [doi:10.1126/sciadv.adv8918](https://doi.org/10.1126/sciadv.adv8918)
 - Levine JH, Simonds EF, Bendall SC, et al. Data-driven phenotypic dissection of AML reveals
   progenitor-like cells that correlate with prognosis. *Cell* 162:184–197 (2015).
   [doi:10.1016/j.cell.2015.05.047](https://doi.org/10.1016/j.cell.2015.05.047)
