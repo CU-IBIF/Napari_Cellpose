@@ -692,6 +692,21 @@ the gates and the phenotype hierarchy on the right.*
   Shift-click) to select **several gates**: each is shown in its own colour, and objects in
   more than one of them in white; the status line gives the counts. **Delete** removes every
   selected gate; **Make phenotype…** and **Rename…** work on one.
+- **Double-click a gate** (or select it and click **Plot as drawn**) to go back to the plot it
+  was drawn on: the same X and Y measurements and scales, and the objects it was drawn within
+  (its parent gate, or the phenotype it was limited to). Useful for checking or adjusting a
+  gating strategy step by step.
+- **Gallery…** (also: right-click a gate or phenotype) shows thumbnails of the cells in a gate
+  or phenotype, so you can see what a gate actually selected. Choose up to three image layers
+  under **Channels**, each in its own colour; every thumbnail uses the layer's contrast from
+  the viewer, so they can be compared. Each cell is outlined in the gate's colour (tick
+  **Outline** off, or pick another colour; **Fill** tints the cell). With *Follow the lists*
+  ticked, the gallery shows whichever gate or phenotype you select. **Show** sets how many
+  (the first ones, or a **Random** sample), **Size** and **Around** the thumbnail size and how
+  much of the image around each cell. Hover a thumbnail to enlarge it; click it to go to the
+  cell in the viewer. To collect training examples, select thumbnails (Ctrl- or Shift-click),
+  type or choose a class under **Label as** and click **Selected** (or **All shown**); they
+  join the training set of the Training workbench (section 10.7).
 
 The workbench opens as large as fits on your screen, with a 4:3 plot and the gate and
 phenotype lists beside it at about half the plot's width. Drag the divider between them to
@@ -934,6 +949,8 @@ predicts them for every object, in this image or the next one.
      **Active class**), or tick **Label by clicking** and pick objects in the viewer (the
      objects layer's colour picker) or click points on the Gating plot. **Import…** reads
      a CSV of `label` (and `T` / `P`) and `class`.
+   - Examples can also come from the **Gallery** (section 10.2): select the cells of a gate
+     there and **Label as** a class.
    - **Examples** shows each labelled object's thumbnail with its outline in its class's
      colour. Check them: a wrong example teaches the model a wrong type. Select and
      **Remove label** or **Move to active class**.

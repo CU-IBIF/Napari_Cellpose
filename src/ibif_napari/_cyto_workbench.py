@@ -168,8 +168,13 @@ class Workbench(QWidget):
         self.gate_tree = _tree(["Gate", "Objects", "% of parent"])
         self.gate_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.gate_tree.setToolTip("Select gates to show them on the image; Ctrl- or Shift-click "
-                                  "to show several at once")
+                                  "to show several at once. Double-click a gate to plot what it was "
+                                  "drawn on. Right-click for the gallery.")
         self.gate_tree.itemSelectionChanged.connect(self._gate_selected)
+        self.gate_tree.itemDoubleClicked.connect(self._gate_double_clicked)
+        self.gate_tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.gate_tree.customContextMenuRequested.connect(
+            lambda pos: self._list_menu(self.gate_tree, pos))
         gl.addWidget(self.gate_tree)
         gb = QHBoxLayout()
         self.gate_pheno_btn = _button("Make phenotype…", self.phenotype_from_gate, gb)
@@ -179,6 +184,15 @@ class Workbench(QWidget):
                                        "image; for an image gate also the ring around its objects on the plot")
         self.gate_delete_btn = _button("Delete", self.delete_gate, gb)
         gl.addLayout(gb)
+        gb2 = QHBoxLayout()
+        self.gallery_btn = _button("Gallery…", self.open_gallery, gb2)
+        self.gallery_btn.setToolTip("Thumbnails of the selected gate's or phenotype's objects (or of the "
+                                    "objects shown): check a gate, choose training examples")
+        self.plot_gate_btn = _button("Plot as drawn", self.plot_selected_gate, gb2)
+        self.plot_gate_btn.setToolTip("Show the plot the selected gate was drawn on: its axes, their scales "
+                                      "and the objects it was drawn within (also: double-click the gate)")
+        gb2.addStretch(1)
+        gl.addLayout(gb2)
         right_layout.addWidget(gates_box, 1)
 
         pheno_box = QGroupBox("Phenotypes")
@@ -188,6 +202,9 @@ class Workbench(QWidget):
         self.pheno_tree.setToolTip("Select phenotypes to show their objects on the image; Ctrl- or "
                                    "Shift-click to show several at once. Double-click to edit one.")
         self.pheno_tree.itemDoubleClicked.connect(lambda *_: self.edit_phenotype())
+        self.pheno_tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.pheno_tree.customContextMenuRequested.connect(
+            lambda pos: self._list_menu(self.pheno_tree, pos))
         self.pheno_tree.itemSelectionChanged.connect(self._phenotype_selected)
         pl.addWidget(self.pheno_tree)
         pb = QHBoxLayout()
@@ -810,9 +827,89 @@ class Workbench(QWidget):
         self.gate_rename_btn.setEnabled(len(gates) == 1)
         self.gate_color_btn.setEnabled(len(gates) == 1)
         self.gate_delete_btn.setEnabled(bool(gates))
+        self.plot_gate_btn.setEnabled(len(gates) == 1 and gates[0][0] == "gate")
         if gates and not self._filling:
             self._clear_selection(self.pheno_tree)  # the image shows one list's choice at a time
             self._map_gate(gates)
+            self._gallery_follows(gates)
+
+    # ---- a gate's plot, the gallery ----------------------------------------------------------
+
+    def _gate_double_clicked(self, item, column=0):
+        sel = item.data(0, Qt.UserRole)
+        if sel:
+            self.plot_gate(tuple(sel))
+
+    def plot_selected_gate(self):
+        sel = self._selected_gate()
+        return self.plot_gate(sel) if sel else False
+
+    def plot_gate(self, sel):
+        """Show the plot gate `sel` (kind, key) was drawn on: its X and Y measurements
+        with their scales, and the objects it was drawn within (its parent gate, the
+        phenotype or image gate it was limited to, or all objects). Returns True when
+        the plot shows it."""
+        kind, key = sel
+        state = self.state
+        if kind != "gate":
+            self.status.setText(f"{self._gate_name(sel)} was drawn on the image, not on a plot.")
+            return False
+        gate = state.gates.get(key)
+        boxes = []
+        for name, box, tf in ((gate.x_axis, self.x_col, self.x_tf), (gate.y_axis, self.y_col, self.y_tf)):
+            column, transform, cofactor = cy.split_axis(name)
+            if box.findText(column) < 0:
+                self.status.setText(f"{gate.name} was drawn on {column}, which is not in the table any more.")
+                return False
+            boxes.append((box, column, tf, transform))
+        within = ("gate", gate.parent_id) if gate.parent_id else state.scope.get(("gate", gate.id), ("all", None))
+        widgets = [self.x_col, self.y_col, self.x_tf, self.y_tf, self.population]
+        for w in widgets:
+            w.blockSignals(True)
+        try:
+            for box, column, tf, transform in boxes:
+                box.setCurrentText(column)
+                tf.setCurrentText(transform)
+            index = self.population.findData(_pop_key(*within))
+            self.population.setCurrentIndex(max(index, 0))
+        finally:
+            for w in widgets:
+                w.blockSignals(False)
+        for box in (self.x_col, self.y_col):
+            box.setToolTip(box.currentText())
+        self.tabs.setCurrentIndex(0)
+        self.replot()
+        where = "all objects" if within[0] == "all" else self.population.currentText().strip()
+        self.status.setText(f"{gate.name}: drawn on {gate.x_axis} × {gate.y_axis}, within {where}.")
+        return True
+
+    def open_gallery(self, items=None):
+        """The gallery window, showing `items` [(kind, key)] or the selected gate or
+        phenotype (else the objects shown on the plot)."""
+        from ._cyto_gallery import open_gallery
+
+        window = open_gallery(self)
+        items = items or self.selected_gates() or [("phenotype", n) for n in self.selected_phenotypes()] \
+            or [self.current_population()]
+        window.show_population(*items[0])
+        return window
+
+    def _gallery_follows(self, items):
+        window = getattr(self, "_gallery_window", None)
+        if window is not None:
+            window.follow_selection(items)
+
+    def _list_menu(self, tree, pos):
+        item = tree.itemAt(pos)
+        if item is None:
+            return
+        sel = item.data(0, Qt.UserRole)
+        sel = tuple(sel) if tree is self.gate_tree else ("phenotype", sel)
+        menu = QMenu(self)
+        menu.addAction("Gallery…", lambda: self.open_gallery([sel]))
+        if sel[0] == "gate":
+            menu.addAction("Plot as drawn", lambda: self.plot_gate(sel))
+        menu.exec_(tree.viewport().mapToGlobal(pos))
 
     def _clear_selection(self, tree):
         if tree.selectedItems():
@@ -966,6 +1063,7 @@ class Workbench(QWidget):
             return
         self.status.clear()
         self._map_gate([("phenotype", n) for n in names])
+        self._gallery_follows([("phenotype", n) for n in names])
 
     def _add_phenotype(self, name, rule, parent, color):
         try:

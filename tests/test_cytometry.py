@@ -1949,3 +1949,89 @@ def test_a_levels_training_set_is_kept_by_object_id():
     assert s.object_id(3) == int(s.table.iloc[3]["object_id"])
     s.set_level("Objects")
     assert not s.training  # each level has its own training set
+
+
+def test_double_clicking_a_gate_plots_what_it_was_drawn_on(qtbot):
+    from ibif_napari._cyto_workbench import Workbench
+
+    v, table = scene()
+    s = cy.state_of(v)
+    s.set_table("cells", table, "cells")
+    t = s.add_gate("T", cy.axis_column("CD3 mean", "asinh"), "CD8 mean", [[1, 0], [10, 0], [10, 1e4], [1, 1e4]])
+    sub = s.add_gate("CD8+", "CD3 mean", "CD8 mean", [[0, 100], [1e4, 100], [1e4, 1e4], [0, 1e4]],
+                     population=("gate", t.id))
+    s.add_image_gate("left", [[[0, 0], [0, 20], [30, 20], [30, 0]]])
+    bench = Workbench(v)
+    qtbot.addWidget(bench)
+    bench.x_col.setCurrentText("volume (µm³)")
+    bench.tabs.setCurrentIndex(1)
+    items = {tuple(bench.gate_tree.topLevelItem(i).data(0, Qt.UserRole)): bench.gate_tree.topLevelItem(i)
+             for i in range(bench.gate_tree.topLevelItemCount())}
+    bench._gate_double_clicked(items[("gate", t.id)])
+    assert (bench.x_col.currentText(), bench.x_tf.currentText()) == ("CD3 mean", "asinh")
+    assert (bench.y_col.currentText(), bench.y_tf.currentText()) == ("CD8 mean", "linear")
+    assert bench.current_population() == ("all", None) and bench.tabs.currentIndex() == 0
+    assert [g[2] for g in bench.plot._last["gates"]] == ["T"]  # its outline is on the plot
+    assert "drawn on asinh(CD3 mean/150) × CD8 mean, within all objects" in bench.status.text()
+    # A subgate: drawn within its parent gate.
+    bench.select_gates([("gate", sub.id)])
+    assert bench.plot_gate_btn.isEnabled() and bench.plot_selected_gate()
+    assert bench.x_tf.currentText() == "linear" and bench.current_population() == ("gate", t.id)
+    assert [g[2] for g in bench.plot._last["gates"]] == ["CD8+"]
+    # An image gate has no plot; a gate on a column that is gone says so.
+    assert not bench.plot_gate(("image", "left")) and "drawn on the image" in bench.status.text()
+    s.gates.get(sub.id).x_axis = "no such column"
+    assert not bench.plot_gate(("gate", sub.id)) and "not in the table any more" in bench.status.text()
+
+
+def test_gallery_shows_a_gates_objects_and_labels_training_examples(qtbot):
+    from ibif_napari._cyto_gallery import object_picture
+    from ibif_napari._cyto_workbench import Workbench
+
+    v, table = scene()  # 2 time points of 12 square cells; CD3 bright in the left half
+    s = cy.state_of(v)
+    s.set_table("cells", table, "cells")
+    t = s.add_gate("T", "CD3 mean", "CD8 mean", [[100, 0], [1e4, 0], [1e4, 1e4], [100, 1e4]], color="#ff0000")
+    top = s.add_gate("top", "CD3 mean", "CD8 mean", [[0, 100], [1e4, 100], [1e4, 1e4], [0, 1e4]])
+    bench = Workbench(v)
+    qtbot.addWidget(bench)
+    bench.select_gates([("gate", t.id)])
+    gallery = bench.open_gallery()
+    qtbot.addWidget(gallery)
+    assert gallery.current() == ("gate", t.id) and gallery.grid.count() == 12
+    assert [b.currentText() for b, _ in gallery.channels] == ["CD3", "CD8", "(none)"]
+    assert gallery.count.text() == "12 objects"
+    # A thumbnail: CD3 in grey, CD8 in green, the outline in the gate's colour.
+    row = gallery._rows[0]
+    rgb = object_picture(s, row, gallery.channel_layers(), size=64, radius=20, outline="#ff0000")
+    assert rgb.shape == (64, 64, 3) and (rgb == [255, 0, 0]).all(axis=2).any()
+    assert (rgb[32, 32] > 0).all()  # the bright cell is at the centre
+    # Following the lists; a limit and a random sample.
+    bench.select_gates([("gate", top.id)])
+    assert gallery.current() == ("gate", top.id) and gallery.grid.count() == 4
+    gallery.show_population("all")
+    gallery.limit.setValue(10)
+    assert gallery.grid.count() == 10 and gallery.count.text() == "10 of 24 objects"
+    gallery.sample.setChecked(True)
+    assert gallery.grid.count() == 10 and "random sample" in gallery.count.text()
+    # Training examples: the selected thumbnails, or all shown.
+    gallery.sample.setChecked(False)
+    gallery.limit.setValue(120)
+    gallery.show_population("gate", t.id)
+    gallery.grid.item(0).setSelected(True)
+    gallery.grid.item(1).setSelected(True)
+    gallery.train_class.setCurrentText("T cell")
+    assert gallery.label(selected=True) == 2 and s.training_counts() == {"T cell": 2}
+    assert gallery.label(selected=False) == 10 and s.training_counts() == {"T cell": 12}
+    assert "T cell" in [gallery.train_class.itemText(i) for i in range(gallery.train_class.count())]
+    # Clicking a thumbnail goes to the object; hovering enlarges it.
+    gallery._clicked(gallery.grid.item(3))
+    assert v.layers["cells"].selected_label == int(s.table.iloc[gallery._rows[3]]["label"])
+    gallery._hover(gallery.grid.item(3))
+    assert gallery._zoom.pixmap().width() == 128
+    # The outline colour can be chosen; no channel: a hint.
+    gallery.pick_outline("#00ffff")
+    assert gallery.outline_colour() == "#00ffff"
+    for box, _ in gallery.channels:
+        box.setCurrentText("(none)")
+    assert "Choose an image layer" in gallery.status.text()

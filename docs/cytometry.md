@@ -84,6 +84,23 @@ vtea-core, so VTEA and IBIF napari share them.
      the image (the *<objects> selection* labels layer); selecting a gate in the list
      shows that one. Ctrl- or Shift-click selects several gates: each is shown in its
      colour, objects in more than one in white. Delete removes every selected gate.
+   - **Double-click a gate** (or select it and click **Plot as drawn**) to see the plot
+     it was drawn on: its X and Y measurements, their scales, and the objects it was
+     drawn within (its parent gate, or the phenotype or image gate it was limited to).
+     Its outline is then on the plot, ready to check or to gate within. Image gates
+     have no plot; a gate on a column that is gone says so.
+   - **Gallery…** (or right-click a gate or phenotype) opens a window of thumbnails of
+     a population's objects, after VTEA's Gallery View: up to three image layers, each
+     in its own colour and scaled by its contrast limits in the viewer (so the
+     thumbnails are comparable), a few planes around the centre of 3D objects, and the
+     object's outline in the population's colour (or one you pick) with an optional
+     fill. *Follow the lists* shows whichever gate or phenotype is selected. **Show**
+     limits the number (the first ones, or a **Random** sample); **Size** and
+     **Around** set the thumbnail size and how much of the image around each object.
+     Hover a thumbnail to enlarge it, click it to go to the object. **Label as** adds
+     the selected thumbnails' objects (Ctrl- or Shift-click), or all shown, to the
+     training set of the Training workbench as a class: a quick way to collect
+     training examples from a gate and check them by eye.
    - **Points** (plot toolbar or right-click): point size, style and opacity. Under
      **Size**, **Custom size…** sets a diameter in pt, and **Size by a measurement…**
      sizes each point by a measurement (e.g. volume), from a smallest to a largest

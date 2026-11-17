@@ -57,6 +57,7 @@ from qtpy.QtWidgets import (
 )
 
 from . import _cytometry as cy
+from ._cyto_gallery import object_thumbnail
 from ._cyto_classify import SPLITS, _combo, _html, _metrics_html, _safe, fits_level, level_record, object_data
 
 FAMILIES = {"Generic ANN (measurements)": "ann", "NephNet3D (3D nuclear crops) — coming": None,
@@ -128,65 +129,6 @@ class _Progress(QObject):
 
 
 # ---- thumbnails ---------------------------------------------------------------------------
-
-
-def object_thumbnail(state, image, row, size=THUMB, color=None):
-    """An RGB (size, size, 3) uint8 picture of table row `row`'s object in image layer
-    `image`: the plane through its centre (a max projection of ±2 planes in 3D),
-    scaled by the layer's contrast, with the object's outline in `color`."""
-    table = state.table
-    cols = state.centroid_columns()
-    rec = table.iloc[row]
-    out = np.zeros((size, size, 3), np.uint8)
-    if image is None or "Y" not in cols:
-        return out
-    data = image.data
-    n = min(cy._spatial_ndim(image), 3)
-    lead = data.ndim - n
-    keys = [k for k in table.columns if cy._is_key(k) and k != "label"][:lead]
-    pos = tuple(int(rec[k]) for k in keys) + (0,) * (lead - len(keys))
-    world = {a: float(rec[c]) for a, c in cols.items()}
-    scale, translate = np.asarray(image.scale[-n:], float), np.asarray(image.translate[-n:], float)
-    axes = "ZYX"[-n:]
-    centre = [int(round((world.get(a, translate[i]) - translate[i]) / scale[i])) for i, a in enumerate(axes)]
-    half = size // 2
-    sl = []
-    for i, a in enumerate(axes):
-        extent = data.shape[lead + i]
-        if a == "Z":
-            sl.append(slice(max(centre[i] - 2, 0), min(centre[i] + 3, extent)))
-        else:
-            sl.append(slice(max(centre[i] - half, 0), min(centre[i] - half + size, extent)))
-    try:
-        crop = np.asarray(data[pos + tuple(sl)], dtype=float)
-    except (IndexError, ValueError):
-        return out
-    if n == 3:
-        crop = crop.max(axis=0)
-    lo, hi = (image.contrast_limits if image.contrast_limits else (crop.min(), crop.max()))
-    gray = np.clip((crop - lo) / ((hi - lo) or 1), 0, 1) * 255
-    y0 = max(half - centre[-2], 0)
-    x0 = max(half - centre[-1], 0)
-    h, w = gray.shape
-    for c in range(3):
-        out[y0:y0 + h, x0:x0 + w, c] = gray.astype(np.uint8)
-    labels = state.labels_layer()
-    if color and "label" in table.columns and labels is not None and labels.data.shape[-n:] == data.shape[-n:]:
-        try:
-            lab = np.asarray(labels.data[pos + tuple(sl)])
-        except (IndexError, ValueError):
-            lab = None
-        if lab is not None:
-            mask = lab == int(rec["label"])
-            if n == 3:
-                mask = mask.any(axis=0)
-            from scipy import ndimage as ndi
-
-            edge = mask & ~ndi.binary_erosion(mask)
-            rgb = [int(color[i:i + 2], 16) for i in (1, 3, 5)]
-            region = out[y0:y0 + h, x0:x0 + w]
-            region[edge] = rgb
-    return out
 
 
 def _pixmap(rgb):

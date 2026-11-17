@@ -30,7 +30,7 @@ import pandas as pd
 # The vtea-core this version needs (as in pyproject.toml; a test keeps them equal). pip
 # does not replace an installed vtea-core with the same version number, so an upgrade of
 # IBIF napari can leave an older one: `vtea_core_problem` notices, and gives the command.
-VTEA_CORE = "vtea-core[graph,umap,opentsne] @ git+https://github.com/winfrees/vtea-python@61bad641b22f421313b1d89fc387aad26ffa8888#subdirectory=packages/vtea-core"
+VTEA_CORE = "vtea-core[graph,umap,opentsne] @ git+https://github.com/winfrees/vtea-python@1007554de00a09ce3b3d4c59db6c1555ba8ff8bf#subdirectory=packages/vtea-core"
 VTEA_CORE_FEATURES = {"vtea_core.clustering": ["nearest_neighbors"],
                       "vtea_core.classes": ["column_references", "rename_columns"],
                       "vtea_core.spatial": ["surface_distance", "neighbor_enrichment"],
