@@ -115,7 +115,13 @@ class Cytometry:
         # saved with the workspace; view_version changes when a workspace restores it.
         self.view = {}
         self.view_version = 0
+        # The supervised training set: its classes (name -> colour, in order) and each
+        # labelled object's class (table row -> class). Saved with the workspace by the
+        # objects' ids, not row numbers.
+        self.training_classes = {}
+        self.training = {}
         self._listeners = []
+        self._training_listeners = []
         self._cache = None
 
     # ---- events --------------------------------------------------------------------------
@@ -126,6 +132,15 @@ class Cytometry:
     def changed(self):
         self._cache = None
         for callback in list(self._listeners):
+            callback()
+
+    def listen_training(self, callback):
+        """Called when the training set changes (and not on every other change, so that
+        labelling objects one click at a time stays quick)."""
+        self._training_listeners.append(callback)
+
+    def training_changed(self):
+        for callback in list(self._training_listeners):
             callback()
 
     # ---- the object table ------------------------------------------------------------------
@@ -141,6 +156,9 @@ class Cytometry:
         if not same and self.analyses:  # clustering results belong to the objects they were run on
             self.dropped_analyses = list(self.analyses)
             self.analyses, self.derived = {}, None
+        if not same and self.training:  # so do training labels
+            self.training = {}
+            self.training_changed()
         owner = getattr(self, "_owner", None)
         self.dropped_levels = []
         if owner is not None and self is owner.root:
@@ -1027,6 +1045,158 @@ class Cytometry:
             made.append(self.add_phenotype(pheno, rule + sure, parent, color))
         return made
 
+    # ---- the training set (labelled examples) --------------------------------------------------
+
+    def add_training_class(self, name, color=None):
+        name = str(name).strip()
+        if not name:
+            raise ValueError("a class needs a name")
+        if name not in self.training_classes:
+            used = set(self.training_classes.values())
+            free = [c for c in PALETTE if c not in used]
+            self.training_classes[name] = color or (free[0] if free else PALETTE[len(used) % len(PALETTE)])
+            self.training_changed()
+        elif color:
+            self.training_classes[name] = color
+            self.training_changed()
+        return name
+
+    def remove_training_class(self, name):
+        """Remove a class and its labels."""
+        self.training_classes.pop(name, None)
+        self.training = {r: c for r, c in self.training.items() if c != name}
+        self.training_changed()
+
+    def label_objects(self, rows, cls):
+        """Label table rows `rows` as class `cls` (a new class is added); None removes
+        their labels. Returns how many changed."""
+        rows = [int(r) for r in np.atleast_1d(rows)]
+        if cls is not None:
+            cls = self.add_training_class(cls) if cls not in self.training_classes else cls
+        changed = 0
+        for r in rows:
+            if cls is None:
+                changed += self.training.pop(r, None) is not None
+            elif self.training.get(r) != cls:
+                self.training[r] = cls
+                changed += 1
+        if changed:
+            self.training_changed()
+        return changed
+
+    def training_labels(self):
+        """Each object's training class, or None (one per table row)."""
+        n = 0 if self.table is None else len(self.table)
+        out = np.full(n, None, dtype=object)
+        for r, c in self.training.items():
+            if r < n:
+                out[r] = c
+        return out
+
+    def training_counts(self):
+        """{class: labelled objects}, in the classes' order."""
+        counts = dict.fromkeys(self.training_classes, 0)
+        for c in self.training.values():
+            counts[c] = counts.get(c, 0) + 1
+        return counts
+
+    def label_from_classes(self, key, overwrite=False):
+        """Label every object that has a class in `class_choices` key `key` (phenotypes,
+        clusters, a classification) with that class, keeping the phenotypes' colours.
+        Objects already labelled keep their label unless `overwrite`. Returns how many."""
+        values = self.classes(key)
+        colors = {n.name: n.color for n in self.tree} if key.startswith("phenotype") else {}
+        for v in dict.fromkeys(v for v in values if v is not None):
+            if v not in self.training_classes:
+                self.add_training_class(v, colors.get(v))
+        changed = 0
+        for r, v in enumerate(values):
+            if v is not None and (overwrite or r not in self.training) and self.training.get(r) != v:
+                self.training[r] = v
+                changed += 1
+        self.training_changed()
+        return changed
+
+    def label_population(self, kind, key, cls, overwrite=True):
+        """Label the objects of a gate / image gate / phenotype as `cls`."""
+        rows = np.flatnonzero(self.mask(kind, key))
+        if not overwrite:
+            rows = [r for r in rows if r not in self.training]
+        return self.label_objects(rows, cls)
+
+    def import_training_labels(self, table):
+        """Labels from a table (DataFrame or CSV path) with a `label` column (and `T` /
+        `P` where the objects have them) and a `class` column. Returns (labelled, not
+        found)."""
+        if not isinstance(table, pd.DataFrame):
+            table = pd.read_csv(table)
+        cols = {str(c).lower(): c for c in table.columns}
+        if "label" not in cols or "class" not in cols:
+            raise ValueError("the table needs a 'label' column and a 'class' column")
+        keys = [k for k in KEYS if k in self.table.columns and (k == "label" or k.lower() in cols)]
+        theirs = table.rename(columns={cols[k.lower()]: k for k in keys} | {cols["class"]: "class"})
+        index = {tuple(row): r for r, row in enumerate(self.table[keys].itertuples(index=False, name=None))}
+        found = missing = 0
+        for row in theirs[keys + ["class"]].itertuples(index=False, name=None):
+            r = index.get(tuple(row[:-1]))
+            cls = row[-1]
+            if r is None or cls is None or cls != cls:
+                missing += 1
+                continue
+            cls = str(cls)
+            if cls not in self.training_classes:
+                self.add_training_class(cls)
+            self.training[r] = cls
+            found += 1
+        self.training_changed()
+        return found, missing
+
+    def object_keys(self):
+        """The columns that identify an object across sessions: T / P and label for
+        segmented objects, object_id for objects of a spatial level ([] for neither)."""
+        if self.table is None:
+            return []
+        keys = [k for k in KEYS if k in self.table.columns]
+        if "label" not in keys and "object_id" in self.table.columns:
+            keys = [k for k in keys if k != "label"] + ["object_id"]
+        return keys
+
+    def object_id(self, row):
+        """An object's id for messages: its label, or its object_id, or its row + 1."""
+        rec = self.table.iloc[row]
+        for key in ("label", "object_id"):
+            if key in self.table.columns:
+                return int(rec[key])
+        return int(row) + 1
+
+    def _training_to_dict(self):
+        if self.table is None or not (self.training or self.training_classes):
+            return {"classes": dict(self.training_classes), "labels": []}
+        keys = self.object_keys()
+        if not keys:  # nothing identifies the objects: keep the row numbers
+            return {"classes": dict(self.training_classes), "keys": ["row"],
+                    "labels": [[int(r), c] for r, c in sorted(self.training.items())]}
+        rows = sorted(self.training)
+        ids = self.table.iloc[rows][keys].to_numpy().tolist() if rows else []
+        return {"classes": dict(self.training_classes), "keys": keys,
+                "labels": [[*(int(v) for v in i), self.training[r]] for r, i in zip(rows, ids)]}
+
+    def _training_from_dict(self, data):
+        self.training_classes = dict(data.get("classes") or {})
+        self.training = {}
+        if self.table is not None and data.get("labels"):
+            keys = data.get("keys") or ["label"]
+            if keys == ["row"]:
+                self.training = {int(r): c for r, c in data["labels"] if 0 <= int(r) < len(self.table)}
+            elif all(k in self.table.columns for k in keys):
+                index = {tuple(int(v) for v in row): r
+                         for r, row in enumerate(self.table[keys].itertuples(index=False, name=None))}
+                for item in data["labels"]:
+                    r = index.get(tuple(int(v) for v in item[:-1]))
+                    if r is not None:
+                        self.training[r] = item[-1]
+        self.training_changed()
+
     def show_classification(self, name):
         info = self.analyses[name]
         codes = self.column(info["columns"]["class"]).astype(np.int64)
@@ -1416,7 +1586,8 @@ class Cytometry:
                 "image_gates": {name: _image_gate_to_json(g) for name, g in self.image_gates.items()},
                 "order": [list(item) for item in self.order],
                 "scope": [[list(item), list(scope)] for item, scope in self.scope.items()],
-                "phenotypes": self.tree.to_dict(), "analyses": self.analyses, "view": dict(self.view)}
+                "phenotypes": self.tree.to_dict(), "analyses": self.analyses, "view": dict(self.view),
+                "training": self._training_to_dict()}
 
     def save_derived(self, folder, path="cytometry/derived.csv"):
         """Write the clustering / map columns next to the workspace (at `path` in
@@ -1467,6 +1638,7 @@ class Cytometry:
                 notes.append(f"cytometry: the measurement table {self.source!r} was not found")
         self.view = dict(data.get("view") or {})
         self.view_version += 1
+        self._training_from_dict(data.get("training") or {})
         if derived_path is not None and self.table is not None:
             if derived_path.exists():
                 self.load_derived(derived_path)
@@ -1723,15 +1895,17 @@ class Levels:
     `hierarchy`) and gets a full analysis of its own: gates, phenotypes, clusterings,
     spatial features, classifications. Attribute access goes to the *current* level, so
     the workbench and its tabs work on whichever level is chosen without knowing there
-    are others; `set_level` switches. Every level shares one list of listeners.
+    are others; `set_level` switches. Every level shares one list of listeners (and one
+    of training-set listeners); each level has its own training set.
     """
 
-    _OWN = frozenset({"viewer", "_levels", "_info", "_current", "_listeners", "_contacts"})
+    _OWN = frozenset({"viewer", "_levels", "_info", "_current", "_listeners", "_training_listeners", "_contacts"})
 
     def __init__(self, viewer):
         own = self.__dict__
         own["viewer"] = viewer
         own["_listeners"] = []
+        own["_training_listeners"] = []
         own["_levels"] = {}
         own["_info"] = {}
         own["_current"] = ROOT_LEVEL
@@ -1741,6 +1915,7 @@ class Levels:
     def _make(self, name, kind, parent, provenance):
         state = Cytometry(self.viewer)
         state._listeners = self._listeners  # one list: listening to any level hears every level
+        state._training_listeners = self._training_listeners  # the same for the training sets
         state._owner, state._level_name = self, name
         self._levels[name] = state
         self._info[name] = {"kind": kind, "parent": parent, "provenance": dict(provenance or {}),

@@ -163,14 +163,26 @@ vtea-core, so VTEA and IBIF napari share them.
    - **Colour the plot by type**, **Show types on image**. Engine: vtea-core
      `neighborhoods` and `spatial.enrichment`.
 7. **Classify objects with a trained model** (the **Classification** tab):
-   - **Train a model…**: labels from the phenotypes (deepest, or a level), features
-     from the measurements (intensities by default), hidden layers, and a
-     **Validation** split: by object, or **by time point / position** so that each
-     image is wholly on one side (the honest test for new images). **Train** runs in
-     the background and can be stopped; the balanced accuracy and confusion matrix on
-     the held-out objects are shown. **Save to library** writes the model with its
-     card (classes, colours, features, training data, validation, notes). **Start
-     from** fine-tunes a saved model on new labels (same classes and features).
+   - **Train a model…** opens the **Training workbench**, a window of its own:
+     - **Training set**: classes (with colours) and labelled objects. Add labels from
+       phenotypes, clusters or a classification (each object with its class), from a
+       gate (as the active class), by **clicking** objects (with *Label by clicking*
+       on, each object picked in the viewer or clicked on the Gating plot is labelled
+       as the active class), or **Import…** a CSV (`label`, `T` / `P`, `class`). The
+       training set is saved with the workspace.
+     - **Examples**: a thumbnail of each labelled object (the chosen image around
+       it, its outline in its class's colour), all or by class, and after training
+       the held-out objects the model got wrong. Click one to go to it; **Remove
+       label** or **Move to active class**.
+     - **Model**: the generic ANN for now (NephNet3D and STELLAR are listed, to
+       come), its features, hidden layers, the **Validation** split (by object, or
+       **by time point / position** so that each image is wholly on one side), and
+       **Start from** a new model or a saved one to fine-tune (new classes are
+       added; its features are used). **Train** runs in the background with live
+       loss and balanced-accuracy curves; **Stop** keeps the best weights so far.
+       **Results**: balanced accuracy, the confusion matrix, per-class precision,
+       recall and F1. **Save to library** writes the model and its card, and the
+       Classification tab offers it straight away.
    - **Model**: a model from the library (`~/.ibif-napari/models`, or the folder in
      `IBIF_NAPARI_MODELS`), or **Browse…** for a folder. Its card is shown, and its
      features are matched to the table's columns by name; missing ones are listed.
@@ -306,7 +318,7 @@ crowding the section.
 | 2 ✅ | **Dimensionality reduction and clustering** to find object types: feature choice and scaling (z-score, asinh), PCA / UMAP / t-SNE, k-means / Gaussian mixture / Leiden. A cluster × marker heat map to name clusters. Label clusters as phenotypes. Re-cluster within a phenotype, so you can work iteratively from coarse to fine. | vtea-core `reduction`, `clustering`, `clustering.profiles` (new) |
 | 3 ✅ | **Spatial features per object**, once some identities are known. Distance to the nearest object of each phenotype, by centroid or by **surface** (exact distance between masks, in µm, 3D included). Number and fraction of each phenotype within a radius. Contacts (touching masks). These features can be gated and clustered like any measurement, to split types further (e.g. CD8 T cells touching tumour cells). | vtea-core `spatial` (new) |
 | 4 ✅ | **Neighbourhood analysis.** Cellular neighbourhoods: composition of each cell's *k* nearest neighbours or of the cells within a radius, clustered into neighbourhood types (the CODEX / Schürch–Nolan approach). Cell-type × neighbourhood enrichment, and pairwise neighbourhood enrichment with permutation z-scores. Neighbourhood maps on the image. Neighbourhood features reflected back onto cells for gating. | vtea-core `neighborhoods` (extended) |
-| 5 (in progress: 5.0, 5.1 done) | **Supervised object classification**: a Classification tab (apply a model; class and confidence per object; make phenotypes) and a Training workbench (labels from phenotypes, gates or clicked objects; train or fine-tune; validate; model library). First models: a generic ANN on measurements, **NephNet3D** on 3D nuclear crops (Woloshuk et al. 2021), and **STELLAR** reference-based annotation (Brbić et al. 2022). Training locally, on the facility GPU server or a cluster. See [classification-plan.md](classification-plan.md). | vtea-core `classification` (extended) |
+| 5 (in progress: 5.0–5.2 done) | **Supervised object classification**: a Classification tab (apply a model; class and confidence per object; make phenotypes) and a Training workbench (labels from phenotypes, gates or clicked objects; train or fine-tune; validate; model library). First models: a generic ANN on measurements, **NephNet3D** on 3D nuclear crops (Woloshuk et al. 2021), and **STELLAR** reference-based annotation (Brbić et al. 2022). Training locally, on the facility GPU server or a cluster. See [classification-plan.md](classification-plan.md). | vtea-core `classification` (extended) |
 | 6 ✅ | **Trajectories** of cell types and neighbourhood types in one dataset: lineages from a chosen start class and pseudotime (Slingshot), a GAM per feature along the lineages and its tests (tradeSeq: association, start vs end, different ends, different patterns), class and neighbourhood-type fractions along pseudotime. Ports in vtea-core, validated on simulations; or the R packages when installed. After Asghari et al., *Sci Adv* 2025, figs. 5–6. | vtea-core `trajectory` (new) |
 | Next | **Spatial hierarchy**: neighbourhoods as objects, built again on themselves at any depth; one workbench with a level selector and the same tabs at every level; expanded neighbourhood features; level-aware classification. See [spatial-hierarchy-plan.md](spatial-hierarchy-plan.md). | vtea-core `hierarchy` (new) |
 | 7 (planned) | **Atlas / cohort analysis**: a pipeline built and checked here (phenotype rules or a classification model, neighbourhood definition, trajectory settings) frozen and applied unchanged to many datasets; a shared reference space; lineages fitted once and every dataset projected onto them; per-sample summaries and sample-level statistics across conditions. See [trajectory-atlas-plan.md](trajectory-atlas-plan.md). | vtea-core (headless cohort workflow) |

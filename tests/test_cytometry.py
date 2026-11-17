@@ -1055,7 +1055,6 @@ def _truth_state(n=600):
 
 
 def test_classification_tab_trains_classifies_and_makes_phenotypes(qtbot, tmp_path, monkeypatch):
-    from ibif_napari._cyto_classify import TrainDialog
     from ibif_napari._cyto_workbench import Workbench
 
     monkeypatch.setenv("IBIF_NAPARI_MODELS", str(tmp_path / "models"))
@@ -1064,18 +1063,17 @@ def test_classification_tab_trains_classifies_and_makes_phenotypes(qtbot, tmp_pa
     qtbot.addWidget(bench)
     tab = bench.classification
     assert tab.model.count() == 0 and not tab.run_btn.isEnabled() and "Train a model" in tab.card.text()
-    # Train on the phenotypes, check on held-out objects, save to the library.
-    dialog = TrainDialog(s, tab)
-    qtbot.addWidget(dialog)
-    assert dialog.labels.currentData() == "phenotype" and "CD8 T 200" in dialog.counts.text()
-    dialog.check_features("names", ["CD3 mean", "CD8 mean", "CD4 mean"])
-    metrics = dialog.train(wait=True)
-    assert metrics["balanced_accuracy"] > 0.95 and metrics["n"] == 120  # 20% held out
-    dialog.show()
-    assert dialog.height() <= 720  # fits a 1366 x 768 screen
-    assert dialog.model.card.colors["CD8 T"] == "#d62728"
-    dialog.notes.setText("synthetic T cells")
-    folder = dialog.save("T cell types")
+    # Train on the phenotypes in the Training workbench, save to the library.
+    trainer = tab.train_dialog()
+    qtbot.addWidget(trainer)
+    trainer.source.setCurrentIndex(trainer.source.findData("classes\tphenotype"))
+    assert trainer.add_from_source() == 600 and s.training_counts() == {"CD8 T": 200, "CD4 T": 200, "Other": 200}
+    trainer.check_features("names", ["CD3 mean", "CD8 mean", "CD4 mean"])
+    result = trainer.train(wait=True)
+    assert result["metrics"]["balanced_accuracy"] > 0.95 and result["metrics"]["n"] == 120  # 20% held out
+    assert result["model"].card.colors["CD8 T"] == "#d62728"
+    trainer.notes.setText("synthetic T cells")
+    folder = trainer.save("T cell types")
     assert (tmp_path / "models" / "T cell types" / "card.json").exists() and folder.endswith("T cell types")
     # Apply it from the library.
     tab.refresh()
@@ -1117,21 +1115,21 @@ def test_classification_tab_trains_classifies_and_makes_phenotypes(qtbot, tmp_pa
 
 
 def test_classification_is_saved_and_shown_on_the_image(qtbot, tmp_path, monkeypatch):
-    from ibif_napari._cyto_classify import TrainDialog
     from ibif_napari._cyto_workbench import Workbench
 
     monkeypatch.setenv("IBIF_NAPARI_MODELS", str(tmp_path / "models"))
     v, s = _typed_scene()
     bench = Workbench(v)
     qtbot.addWidget(bench)
-    dialog = TrainDialog(s, bench.classification)
-    qtbot.addWidget(dialog)
-    dialog.check_features("names", ["CD3 mean", "CD8 mean"])
-    dialog.split.setCurrentIndex(1)  # by time point: one frame trains, the other checks
-    dialog.fraction.setValue(0.5)
-    metrics = dialog.train(wait=True)
+    trainer = bench.classification.train_dialog()
+    qtbot.addWidget(trainer)
+    s.label_from_classes("phenotype")
+    trainer.check_features("names", ["CD3 mean", "CD8 mean"])
+    trainer.split_by.setCurrentIndex(1)  # by time point: one frame trains, the other checks
+    trainer.fraction.setValue(0.5)
+    metrics = trainer.train(wait=True)["metrics"]
     assert metrics["n"] == 12 and metrics["balanced_accuracy"] == 1.0
-    bench.classification.use_model(dialog.save())
+    trainer.save()
     info = bench.classification.run()
     assert info["n_objects"] == 24
     layer = bench.classification.show_on_image()
@@ -1655,7 +1653,7 @@ def _write_card(folder, family, inputs):
 def test_models_apply_to_the_level_they_were_trained_on(qtbot, tmp_path, monkeypatch):
     from vtea_core.classification import read_card
 
-    from ibif_napari._cyto_classify import TrainDialog, fits_level, model_needs
+    from ibif_napari._cyto_classify import fits_level, model_needs
     from ibif_napari._cyto_workbench import Workbench
 
     monkeypatch.setenv("IBIF_NAPARI_MODELS", str(tmp_path / "models"))
@@ -1664,11 +1662,12 @@ def test_models_apply_to_the_level_they_were_trained_on(qtbot, tmp_path, monkeyp
     qtbot.addWidget(bench)
     tab = bench.classification
     # A model trained on the cells records that it is for segmented objects.
-    dialog = TrainDialog(s, tab)
-    qtbot.addWidget(dialog)
-    dialog.check_features("names", ["CD3 mean", "CD8 mean", "CD4 mean"])
-    dialog.train(wait=True)
-    cells_model = dialog.save("cell types")
+    trainer = tab.train_dialog()
+    qtbot.addWidget(trainer)
+    s.label_from_classes("phenotype")
+    trainer.check_features("names", ["CD3 mean", "CD8 mean", "CD4 mean"])
+    trainer.train(wait=True)
+    cells_model = trainer.save("cell types")
     card = read_card(cells_model)
     assert card.inputs["kind"] == "features" and card.training["level"]["kind"] == "objects"
     assert model_needs(card) == {"input_kind": "features", "level_kind": "objects", "depth": 0}
@@ -1699,11 +1698,10 @@ def test_models_apply_to_the_level_they_were_trained_on(qtbot, tmp_path, monkeyp
     # A model trained on the windows is for windows - and not for the cells.
     s.add_phenotype("T-rich", "`fraction T` > 0.5")
     s.add_phenotype("other windows", "")
-    dialog = TrainDialog(s, tab)
-    qtbot.addWidget(dialog)
-    dialog.check_features("names", ["fraction T", "n objects"])
-    dialog.train(wait=True)
-    windows_model = dialog.save("window types")
+    s.label_from_classes("phenotype")  # the windows' own training set
+    trainer.check_features("names", ["fraction T", "n objects"])
+    trainer.train(wait=True)
+    windows_model = trainer.save("window types")
     card = read_card(windows_model)
     assert card.training["level"] == {"kind": "windows", "depth": 1, "name": "Windows", "built": {}}
     tab.refresh()
@@ -1714,9 +1712,8 @@ def test_models_apply_to_the_level_they_were_trained_on(qtbot, tmp_path, monkeyp
     enabled = {tab.model.itemText(i): tab.model.model().item(i).isEnabled() for i in range(tab.model.count())}
     assert enabled == {"cell types": True, "nuclei": True, "old": True, "window types": False}
     # Fine-tuning offers only models for this level.
-    dialog = TrainDialog(s, tab)
-    qtbot.addWidget(dialog)
-    offered = [dialog.start_from.itemText(i) for i in range(dialog.start_from.count())]
+    trainer.refresh()
+    offered = [trainer.start_from.itemText(i) for i in range(trainer.start_from.count())]
     assert "fine-tune cell types" in offered and "fine-tune window types" not in offered
 
 
@@ -1811,3 +1808,144 @@ def test_levels_are_skipped_not_fatal_when_their_objects_are_not_restored(tmp_pa
     notes = cy._load(w, folder, json.loads((folder / "workspace.json").read_text())["extensions"]["cytometry"])
     assert any("spatial levels were not restored" in n and "NH 1" in n for n in notes)
     assert cy.state_of(w).level_names() == ["Objects"]
+
+
+def test_workbench_tab_order(qtbot):
+    from ibif_napari._cyto_workbench import Workbench
+
+    v, s = _typed_scene()
+    bench = Workbench(v)
+    qtbot.addWidget(bench)
+    assert [bench.tabs.tabText(i) for i in range(bench.tabs.count())] == \
+        ["Gating", "Clustering", "Classification", "Spatial", "Neighbourhoods", "Trajectory"]
+
+
+def test_training_set_labels_from_phenotypes_gates_clicks_and_tables(qtbot, tmp_path):
+    from ibif_napari._cyto_workbench import Workbench
+
+    v, s = _typed_scene()  # 24 objects: 12 T (the left half), 12 Other, on 2 time points
+    seen = []
+    s.listen_training(lambda: seen.append(1))
+    assert s.label_from_classes("phenotype") == 24 and seen
+    assert s.training_counts() == {"T": 12, "Other": 12}
+    assert s.training_classes["T"] == "#ff0000"  # the phenotype's colour
+    # A gate's objects as one class; an object relabelled; one unlabelled.
+    top = s.add_gate("top", "CD3 mean", "CD8 mean", [[0, 100], [1e4, 100], [1e4, 1e4], [0, 1e4]])
+    assert s.label_population("gate", top.id, "CD8 T") == 4 and s.training_counts()["CD8 T"] == 4
+    s.label_objects([0], None)
+    assert s.training_labels()[0] is None and sum(s.training_counts().values()) == 23
+    # Clicking an object in the viewer labels it as the active class.
+    bench = Workbench(v)
+    qtbot.addWidget(bench)
+    trainer = bench.classification.train_dialog()
+    qtbot.addWidget(trainer)
+    trainer.active.setCurrentText("Other")
+    trainer.click.setChecked(True)
+    layer = v.layers["cells"]
+    v.dims.set_point(0, 0)
+    layer.selected_label = 0  # napari only tells about a change
+    layer.selected_label = int(s.table.iloc[0]["label"])  # the first object of time point 0
+    assert s.table.iloc[0]["T"] == 0
+    assert s.training_labels()[0] == "Other"
+    trainer.click.setChecked(False)
+    before = s.training_labels()[1]
+    layer.selected_label = int(s.table.iloc[1]["label"])
+    assert s.training_labels()[1] == before != "Other"  # not labelling any more
+    # Going to an example from the gallery does not label it, even while labelling.
+    trainer.click.setChecked(True)
+    n_cd8 = s.training_counts()["CD8 T"]
+    trainer.show_what.setCurrentIndex(trainer.show_what.findData("class\tCD8 T"))
+    assert trainer.gallery.count() == n_cd8 > 0
+    trainer._example_clicked(trainer.gallery.item(0))
+    assert s.training_counts()["CD8 T"] == n_cd8
+    trainer.click.setChecked(False)
+    # Relabel and remove from the gallery.
+    trainer.gallery.item(0).setSelected(True)
+    trainer.relabel_selected(None)
+    assert s.training_counts()["CD8 T"] == n_cd8 - 1 == trainer.gallery.count()
+    # A table of labels.
+    import pandas as pd
+
+    t = s.table
+    csv = tmp_path / "labels.csv"
+    pd.DataFrame({"T": t["T"][:3], "label": t["label"][:3], "class": ["A", "A", "B"]}).to_csv(csv, index=False)
+    assert trainer.import_labels(str(csv)) == 3 and s.training_labels()[:3].tolist() == ["A", "A", "B"]
+    # Saved with the workspace, by object ids.
+    expected = s.training_labels().tolist()
+    folder, notes = _workspace.save_workspace(v, tmp_path / "w")
+    assert notes == []
+    w = ViewerModel()
+    assert _workspace.load_workspace(w, folder) == []
+    restored = cy.state_of(w)
+    assert restored.training_labels().tolist() == expected
+    assert list(restored.training_classes) == list(s.training_classes)
+    # Other objects: the labels go.
+    table, _ = cell_types(n=30)
+    s.set_table("another", table, "cells")
+    assert not s.training
+
+
+def test_training_workbench_thumbnails_train_review_save_and_fine_tune(qtbot, tmp_path, monkeypatch):
+    from ibif_napari._cyto_training import object_thumbnail
+    from ibif_napari._cyto_workbench import Workbench
+
+    monkeypatch.setenv("IBIF_NAPARI_MODELS", str(tmp_path / "models"))
+    v, s = _typed_scene()
+    bench = Workbench(v)
+    qtbot.addWidget(bench)
+    trainer = bench.classification.train_dialog()
+    qtbot.addWidget(trainer)
+    trainer.fit_to_screen((1366, 768))
+    trainer.show()
+    assert trainer.width() <= 1366 and trainer.height() <= 768
+    s.label_from_classes("phenotype")
+    # A thumbnail: the CD3 image around the object, its outline in the class colour.
+    trainer.image.setCurrentText("CD3")
+    rgb = object_thumbnail(s, v.layers["CD3"], 0, 56, "#ff0000")
+    assert rgb.shape == (56, 56, 3) and (rgb == [255, 0, 0]).all(axis=2).any()
+    assert trainer.gallery.count() == 24 and "24 objects" in trainer.gallery_note.text()
+    # Train with live curves; the results page shows the scores.
+    trainer.check_features("names", ["CD3 mean", "CD8 mean"])
+    trainer.split_by.setCurrentIndex(1)
+    trainer.fraction.setValue(0.5)
+    result = trainer.train(wait=True)
+    assert result["metrics"]["balanced_accuracy"] == 1.0 and len(trainer._history["epoch"]) >= 1
+    assert trainer.model_tabs.currentIndex() == 1 and "precision" in trainer.metrics.text()
+    assert trainer.curves_fig.axes and trainer.save_btn.isEnabled()
+    assert trainer.show_what.findData("wrong") >= 0
+    trainer.show_what.setCurrentIndex(trainer.show_what.findData("wrong"))
+    assert trainer.gallery.count() == 0  # nothing wrong
+    first = trainer.save("cells T")
+    tab = bench.classification
+    assert tab.model.currentData() == first  # offered on the Classification tab at once
+    # Fine-tune it with a new class: the model gains it.
+    top = s.add_gate("top", "CD3 mean", "CD8 mean", [[0, 100], [1e4, 100], [1e4, 1e4], [0, 1e4]])
+    s.label_population("gate", top.id, "CD8 T")
+    trainer.refresh()
+    trainer.start_from.setCurrentIndex(trainer.start_from.findData(first))
+    trainer.split_by.setCurrentIndex(0)
+    trainer.fraction.setValue(0.25)
+    result = trainer.train(wait=True)
+    model = result["model"]
+    assert model.classes == ["CD8 T", "Other", "T"] and model.card.training["new_classes"] == ["CD8 T"]
+    assert "new classes: CD8 T" in trainer.status.text()
+    second = trainer.save("cells T + CD8")
+    assert second != first and tab.model.currentData() == second
+    info = tab.run()
+    assert info["classes"] == ["CD8 T", "Other", "T"]
+
+
+def test_a_levels_training_set_is_kept_by_object_id():
+    v, s = _typed_scene()
+    s.add_level("W", _level_table(s), select=True)
+    s.add_phenotype("T-rich", "`fraction T` > 0.5")
+    s.add_phenotype("rest", "")
+    assert s.label_from_classes("phenotype") == 24 and s.object_keys() == ["object_id"]
+    saved = s.current._training_to_dict()
+    assert saved["keys"] == ["object_id"] and len(saved["labels"]) == 24
+    expected = s.training_labels().tolist()
+    s.current._training_from_dict(saved)
+    assert s.training_labels().tolist() == expected
+    assert s.object_id(3) == int(s.table.iloc[3]["object_id"])
+    s.set_level("Objects")
+    assert not s.training  # each level has its own training set
