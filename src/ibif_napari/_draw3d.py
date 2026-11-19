@@ -296,21 +296,22 @@ class DrawingPlane:
         if direction is None or not np.any(direction):
             return None
         direction = direction / np.linalg.norm(direction)
+        shown = getattr(event, "dims_displayed", None)
         erase = layer.mode == "erase"
         hits = []
         if erase:
-            c = labels_hit(layer, position, direction)
+            c = labels_hit(layer, position, direction, dims_displayed=shown)
             if c is not None:
                 return c
         for img in self._image_layers():
             if img.visible and img.opacity > 0:
-                w = image_hit(img, position, direction)
+                w = image_hit(img, position, direction, dims_displayed=shown)
                 if w is not None:
                     hits.append(self._full_world(position, w))
         if not hits:
             if erase:
                 return None
-            return labels_hit(layer, position, direction, skip=layer.selected_label)
+            return labels_hit(layer, position, direction, skip=layer.selected_label, dims_displayed=shown)
         nearest = min(hits, key=lambda w: float(np.dot(w - position, direction)))
         return self._to_labels(layer, nearest)
 
@@ -323,32 +324,56 @@ class DrawingPlane:
         return full
 
 
-def _ray_samples(layer, position, direction):
-    """(start, end, s) of the ray through `layer`'s displayed volume, in its data
-    coordinates, with sample fractions `s` about half a voxel apart, or None."""
-    disp = [int(d) for d in layer._slice_input.displayed]
-    if len(disp) != 3:
+def _ray_samples(layer, position, direction, dims_displayed=None):
+    """(start, end, s, displayed) of the ray through `layer`'s displayed volume, in the
+    layer's own data coordinates, with sample fractions `s` about half a voxel apart, or
+    None.
+
+    `position` and `direction` are in world coordinates (every dimension of the
+    viewer); `dims_displayed` are the viewer's displayed dimensions (default its last
+    three). A layer may have fewer dimensions than the viewer - a Z Y X paint layer over
+    T Z Y X objects - so the layer's dimensions are the viewer's last `layer.ndim`, and
+    the ray is computed and clipped to the volume here, in the layer's dimensions
+    (napari's `get_ray_intersections` mixes the two when they differ)."""
+    position, direction = np.asarray(position, float), np.asarray(direction, float)
+    n = layer.ndim
+    offset = len(position) - n
+    if dims_displayed is None:
+        dims_displayed = list(range(len(position)))[-3:]
+    disp = [int(d) - offset for d in dims_displayed if int(d) - offset >= 0]
+    if len(disp) != 3 or offset < 0:
         return None
     try:
-        start, end = layer.get_ray_intersections(
-            position=position, view_direction=direction, dims_displayed=disp, world=True
-        )
+        p0 = np.asarray(layer.world_to_data(position[offset:]), float)[-n:]
+        p1 = np.asarray(layer.world_to_data(position[offset:] + direction[offset:]), float)[-n:]
     except Exception:
         return None
-    if start is None or end is None:
+    d = p1 - p0
+    data = layer.data[0] if getattr(layer, "multiscale", False) else layer.data
+    shape = np.asarray(data.shape[-n:], float)
+    t0, t1 = -np.inf, np.inf
+    for k in disp:  # the slab method: where the line is inside the volume on every axis
+        lo, hi = -0.5, shape[k] - 0.5
+        if abs(d[k]) < 1e-12:
+            if not lo <= p0[k] <= hi:
+                return None
+            continue
+        a, b = (lo - p0[k]) / d[k], (hi - p0[k]) / d[k]
+        t0, t1 = max(t0, min(a, b)), min(t1, max(a, b))
+    if not np.isfinite(t0) or not np.isfinite(t1) or t0 > t1:
         return None
-    start, end = np.asarray(start, float), np.asarray(end, float)
-    n = int(np.ceil(np.linalg.norm(end[disp] - start[disp]) * 2)) + 2
-    return start, end, np.linspace(0.0, 1.0, n), disp
+    start, end = p0 + t0 * d, p0 + t1 * d
+    n_samples = int(np.ceil(np.linalg.norm(end[disp] - start[disp]) * 2)) + 2
+    return start, end, np.linspace(0.0, 1.0, n_samples), disp
 
 
-def labels_hit(layer, position, direction, skip=None):
+def labels_hit(layer, position, direction, skip=None, dims_displayed=None):
     """Data coordinate of the first label along the ray (ignoring label `skip`), or None."""
-    ray = _ray_samples(layer, position, direction)
+    ray = _ray_samples(layer, position, direction, dims_displayed)
     if ray is None:
         return None
     start, end, s, _ = ray
-    shape = np.asarray(layer.data.shape)
+    shape = np.asarray(layer.data.shape[-layer.ndim:])
     idx = np.clip(np.round(start + (end - start) * s[:, None]).astype(int), 0, shape - 1)
     values = np.asarray(layer.data[tuple(idx.T)]) if not hasattr(layer.data, "vindex") \
         else np.asarray(layer.data.vindex[tuple(idx.T)])
@@ -356,10 +381,10 @@ def labels_hit(layer, position, direction, skip=None):
     return idx[found[0]] if len(found) else None
 
 
-def image_hit(img, position, direction):
+def image_hit(img, position, direction, dims_displayed=None):
     """World point (img's dims) where a view ray meets the signal of an image layer in
     3D, or None. Uses the volume napari shows (the current time point / channel)."""
-    ray = _ray_samples(img, position, direction)
+    ray = _ray_samples(img, position, direction, dims_displayed)
     if ray is None:
         return None
     start, end, s, disp = ray

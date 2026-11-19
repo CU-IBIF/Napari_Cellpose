@@ -323,3 +323,37 @@ def test_cellpose_region_painted_in_3d_keeps_its_shape(blob):
     cells[1][mask[1]] = 1
     cells[0, :2, :2] = 2
     assert set(np.unique(keep_inside(cells, mask))) == {0, 1}
+
+
+def test_ball_brush_on_a_3d_layer_in_a_viewer_with_time(qapp):
+    """A 3D paint layer (an image gate, a region) over objects with a time axis: the
+    viewer is T Z Y X and the layer Z Y X. The brush must work in the layer's own
+    dimensions (it raised "operands could not be broadcast" before)."""
+    from ibif_napari._draw3d import brush_for
+
+    v = ViewerModel()
+    img = np.zeros((2, 10, 40, 40), np.float32)
+    img[:, 4, 10:20, 10:20] = 1.0
+    v.add_image(img, scale=(1, 2, 0.5, 0.5), name="img", contrast_limits=(0, 1))
+    gate = v.add_labels(np.zeros((10, 40, 40), np.uint8), scale=(2, 0.5, 0.5), name="gate")
+    v.dims.ndisplay = 3
+    gate.mode, gate.brush_size, gate.selected_label = "paint", 2, 1
+    brush_for(v)
+    # Onto the image's signal.
+    stroke(gate, v, [(0, -2.0, 7.5, 7.5)], (0, 1.0, 0, 0))
+    assert gate.data[4, 15, 15] == 1
+    # Where no image signal is along the ray: the first existing label is taken, as
+    # napari's brush does (and nothing breaks when there is none).
+    gate.data[:] = 0
+    gate.data[6, 30, 30] = 1
+    gate.selected_label = 2
+    stroke(gate, v, [(0, -2.0, 15.0, 15.0)], (0, 1.0, 0, 0))
+    assert gate.data[6, 30, 30] == 2
+    before = gate.data.copy()
+    stroke(gate, v, [(0, -2.0, 2.0, 2.0)], (0, 1.0, 0, 0))
+    assert np.array_equal(gate.data, before)
+    # Erasing takes the label in front, at the other time point too.
+    v.dims.set_point(0, 1)
+    gate.mode = "erase"
+    stroke(gate, v, [(1, -2.0, 15.0, 15.0)], (0, 1.0, 0, 0))
+    assert gate.data[6, 30, 30] == 0
