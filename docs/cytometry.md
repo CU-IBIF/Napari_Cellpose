@@ -10,6 +10,17 @@ headless Python library. IBIF napari is the interface on top of it. New analysis
 methods (spatial features, neighbourhoods, reference annotation) are added to
 vtea-core, so VTEA and IBIF napari share them.
 
+Please cite VTEA when you use the Cytometry section:
+
+- Winfree S, Khan S, Micanovic R, et al. Quantitative three-dimensional tissue cytometry to
+  study kidney tissue and resident immune cells. *J Am Soc Nephrol* 28:2108–2118 (2017).
+  [doi:10.1681/ASN.2016091027](https://doi.org/10.1681/ASN.2016091027)
+- Winfree S, et al. Integrated cytometry with machine learning applied to high-content
+  imaging of human kidney tissue for in situ cell classification and neighborhood analysis.
+  *Lab Invest* 103:100104 (2023).
+  [doi:10.1016/j.labinv.2023.100104](https://doi.org/10.1016/j.labinv.2023.100104)
+  (PMID [36867975](https://pubmed.ncbi.nlm.nih.gov/36867975/))
+
 ## Using it
 
 1. **Measure the objects first.** In the Measurements section, tick the objects
