@@ -279,7 +279,7 @@ def _open_source(path, selection=None, tiff_layout=None):
 # Parts of an analysis kept by other modules (e.g. Cytometry gates and phenotypes): each
 # saves into workspace.json under "extensions" and restores itself on load. Modules are
 # imported on demand, so a workspace opens fully even if a section was never shown.
-_EXTENSION_MODULES = {"cytometry": "._cytometry"}
+_EXTENSION_MODULES = {"cytometry": "._cytometry", "processing": "._processing.session"}
 _extensions = {}  # name -> (save(viewer, folder) -> JSON-able or None, load(viewer, folder, data) -> notes)
 
 

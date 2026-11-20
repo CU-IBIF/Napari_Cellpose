@@ -16,7 +16,7 @@ Cellpose from a [facility GPU server](docs/facility-server.md) or a
   a chooser listing each image and its size. Tick the ones to open, or double-click one.
   Images of the same size can optionally be stacked onto the position slider.
 - **One panel with icon buttons** on the right of the window switches between the
-  sections, in this order: Configuration, Segmentation, Secondary objects,
+  sections, in this order: Configuration, Processing, Segmentation, Secondary objects,
   Measurements, Cytometry, Filament tracing and Save workspace. Hover over a button for
   its name and what it does. It opens on Configuration, and goes back to it when a
   workspace is loaded.
@@ -24,6 +24,10 @@ Cellpose from a [facility GPU server](docs/facility-server.md) or a
   s/min and Z in µm. It also has channel on/off switches, a 2D/3D view toggle, a max
   projection over Z, and "Extract current time/position", which copies the current
   volume out as new layers.
+- **Processing**: an ordered pipeline of corrections run before segmentation, built
+  from a library of steps (stack registration over time or Z; illumination correction
+  and deconvolution coming soon), each with its settings. It makes new
+  `<channel> [processed]` layers, and is saved with the workspace or as JSON.
 - **Painting labels in the 3D view** works on any labels layer (napari's own brush in 3D
   only re-paints existing labels). The *3D brush* setting in Configuration picks
   how:

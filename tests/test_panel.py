@@ -8,7 +8,7 @@ from napari.components import ViewerModel  # noqa: E402
 from ibif_napari import _cellpose, _workspace  # noqa: E402
 from ibif_napari._panel import ICONS, SECTIONS, IbifPanel  # noqa: E402
 
-ORDER = ["Configuration", "Segmentation", "Secondary objects", "Measurements", "Cytometry",
+ORDER = ["Configuration", "Processing", "Segmentation", "Secondary objects", "Measurements", "Cytometry",
          "Filament tracing", "Save workspace"]
 
 
@@ -75,6 +75,6 @@ def test_manifest_lists_the_panel_and_sections():
 
     manifest = yaml.safe_load((Path(_workspace.__file__).with_name("napari.yaml")).read_text())
     names = [w["display_name"] for w in manifest["contributions"]["widgets"]]
-    assert names == ["IBIF napari", "Configuration", "Segmentation (Cellpose)",
+    assert names == ["IBIF napari", "Configuration", "Processing", "Segmentation (Cellpose)",
                      "Segmentation (threshold + watershed)", "Secondary objects",
                      "Measurements", "Cytometry", "Filament tracing", "Save workspace"]

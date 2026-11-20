@@ -23,6 +23,7 @@ section.
 4. [The window](#4-the-window)
 5. [Opening your images](#5-opening-your-images)
 6. [Configuration: moving through time, positions and Z](#6-configuration-moving-through-time-positions-and-z)
+   - [6.1 Processing: correcting the image before segmenting](#61-processing-correcting-the-image-before-segmenting)
 7. [Segmentation: Cellpose, or threshold + watershed](#7-segmentation-cellpose-or-threshold--watershed)
 8. [Secondary objects: cells, cytoplasm, rings and rims](#8-secondary-objects-cells-cytoplasm-rings-and-rims)
 9. [Measurements](#9-measurements)
@@ -283,6 +284,40 @@ IBIF napari adds a 3D brush, chosen under **3D brush**:
 
 You will use painting to mark regions to segment or trace (sections 7 and 11), and to
 correct segmentations by hand.
+
+### 6.1 Processing: correcting the image before segmenting
+
+The **Processing** section (second button) corrects the image before you segment it. You
+build a **pipeline**: an ordered list of steps, each taken from the **Library**, which run one
+after the other, top to bottom.
+
+1. Tick the **Channels** of one image to process together (they must be the same size). Steps
+   that measure something, such as registration, use the **Reference channel** and apply
+   what they find to every channel.
+2. Choose what to **Process**: every time point and position, or the current position (all of
+   its time points).
+3. Select a routine in the **Library** and click **Add to pipeline →** (or double-click it).
+   Add as many as you need.
+4. Order the **Pipeline**: drag a step, or select it and click **Up** / **Down**. Untick a step
+   to skip it without removing it; **Remove** deletes it.
+5. Select a step in the pipeline to see and change its settings in **Step settings** below.
+   Selecting a routine in the library shows what it does and its default settings.
+6. Click **Run pipeline** (it becomes **Cancel** while it runs). Each channel gets a new
+   layer, `<channel> [processed]`; the original layers are not changed, so you can compare
+   them. Segment the processed layers as usual.
+
+The library has:
+
+- **Stack registration**: corrects movement between time points or Z planes (for example
+  drift, breathing or heartbeat in intravital imaging).
+- **Illumination correction (BaSiC)** and **Deconvolution (Richardson–Lucy)**: marked
+  *coming soon*. They are listed with their planned settings, but cannot be added yet.
+
+The pipeline is saved with the workspace. **Export…** saves it as a JSON file, and
+**Import…** opens one, so the same corrections can be applied to other images. A processed
+layer records the steps and settings that made it (in its metadata, saved with the
+workspace), and its data is saved in the workspace, as it is no longer what the microscope
+file holds.
 
 ---
 
