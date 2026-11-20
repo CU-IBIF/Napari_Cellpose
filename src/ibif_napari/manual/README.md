@@ -25,7 +25,7 @@ section.
 6. [Configuration: moving through time, positions and Z](#6-configuration-moving-through-time-positions-and-z)
    - [6.1 Processing: correcting the image before segmenting](#61-processing-correcting-the-image-before-segmenting)
 7. [Segmentation: Cellpose, or threshold + watershed](#7-segmentation-cellpose-or-threshold--watershed)
-8. [Secondary objects: cells, cytoplasm, rings and rims](#8-secondary-objects-cells-cytoplasm-rings-and-rims)
+8. [Secondary objects: cells, cytoplasm, rings, rims and inclusions](#8-secondary-objects-cells-cytoplasm-rings-rims-and-inclusions)
 9. [Measurements](#9-measurements)
 10. [Cytometry: gating, phenotypes and clustering](#10-cytometry-gating-phenotypes-and-clustering)
 11. [Filament tracing](#11-filament-tracing)
@@ -48,8 +48,10 @@ looks like this:
 ```mermaid
 flowchart LR
     A[Open ND2 / CZI / LIF] --> B[Configuration<br/>choose time, position, channels]
-    B --> C[Segmentation<br/>Cellpose: nuclei or cells]
-    C --> D[Secondary objects<br/>whole cells, cytoplasm, rings]
+    B --> P[Processing<br/>registration, corrections]
+    P --> C[Segmentation<br/>Cellpose: nuclei or cells]
+    B --> C
+    C --> D[Secondary objects<br/>whole cells, cytoplasm, rings, inclusions]
     D --> E[Measurements<br/>size, position, intensity]
     E --> F[Cytometry<br/>gates, phenotypes, clusters]
     B --> G[Filament tracing<br/>neurons, microtubules]
@@ -60,10 +62,11 @@ flowchart LR
 | Section | What it is for | Main method |
 |---|---|---|
 | Configuration | Move through time points, stage positions and Z; turn channels on and off; 2D/3D view | — |
+| Processing | Correct the image before segmenting it: an ordered pipeline of steps | Stack registration (translation, rigid, affine, non-rigid; after IMART); illumination correction and deconvolution coming soon |
 | Segmentation | Find each nucleus or cell and give it a number | [Cellpose](https://www.cellpose.org) deep-learning segmentation, or a classical threshold + watershed (no GPU needed) |
-| Secondary objects | Build whole cells, cytoplasm, rings or rims from the first objects | Distance transforms and seeded watershed |
+| Secondary objects | Build whole cells, cytoplasm, rings or rims from the first objects, and find inclusions (vesicles, puncta, nucleoli) inside them | Distance transforms, seeded watershed; spots by intensity + watershed or Cellpose |
 | Measurements | Measure every object: size, position and intensity in every channel | Per-object statistics |
-| Cytometry | Classify objects into cell types by gating or clustering | Gating, UMAP / t-SNE / PCA, Leiden / Louvain / k-means |
+| Cytometry | Classify objects into cell types by gating, clustering or a trained model; describe their surroundings and neighbourhoods; follow lineages | VTEA's methods: gating, UMAP / t-SNE / PCA, Leiden / Louvain / k-means, spatial features, neighbourhoods, deep-learning classification, Slingshot / tradeSeq trajectories |
 | Filament tracing | Trace and measure branched filaments (neurons, microtubules) | Multi-scale Hessian "tubeness", skeletonization |
 | Save workspace | Save everything to come back to later or share | — |
 
@@ -173,8 +176,8 @@ under the buttons.
 
 ![The IBIF napari panel and its section buttons](images/03_panel.png)
 
-*The panel. The buttons are, from left to right: Configuration, Segmentation, Secondary
-objects, Measurements, Cytometry, Filament tracing and Save workspace.*
+*The panel. The buttons are, from left to right: Configuration, Processing, Segmentation,
+Secondary objects, Measurements, Cytometry, Filament tracing and Save workspace.*
 
 Useful napari basics:
 
@@ -312,8 +315,8 @@ The library has:
 
 - **Stack registration**: corrects movement between time points or Z planes (for example
   drift, breathing or heartbeat in intravital imaging).
-- **Illumination correction (BaSiC)** and **Deconvolution (Richardson–Lucy)**: marked
-  *coming soon*. They are listed with their planned settings, but cannot be added yet.
+- **Illumination correction (BaSiC)** (Peng et al. 2017) and **Deconvolution
+  (Richardson–Lucy)** (Richardson 1972; Lucy 1974): marked *coming soon*. They are listed with their planned settings, but cannot be added yet.
 
 **Stack registration** settings:
 
@@ -324,7 +327,10 @@ The library has:
 - **Transform**: **Translation** (shifts only: stage drift), **Rigid** (shifts and a rotation),
   **Affine** (also scaling and shear) or **Non-rigid** (rigid first, then a smooth local warp for
   tissue that deforms, as with breathing or heartbeat in intravital imaging; the two-stage
-  approach of IMART, Dunn et al. 2014).
+  approach of IMART, Dunn et al. 2014). Shifts are measured by phase correlation to a fraction
+  of a pixel (Guizar-Sicairos et al. 2008), rotations from the Fourier spectrum (Reddy &
+  Chatterji 1996) and then refined, and the non-rigid warp by optical flow (Lucas & Kanade
+  1981).
 - **Reference**: what each frame is registered to: the **first frame**, the **mean of the first
   frames** (less noisy), a **chosen frame**, or the **previous frame**, which follows slow
   changes but lets small errors add up (best along Z, where planes far apart look different).
@@ -540,7 +546,7 @@ Secondary objects. In the V&V suite this tab finds every separated nucleus in 2D
 
 ---
 
-## 8. Secondary objects: cells, cytoplasm, rings and rims
+## 8. Secondary objects: cells, cytoplasm, rings, rims and inclusions
 
 The **Secondary objects** section makes new objects from a first segmentation, usually
 nuclei. **Every new object keeps the number of the object it came from**, so measurements of
@@ -746,7 +752,9 @@ cytometry but on the image. You can gate objects on a scatter plot or on the ima
 **hierarchy of phenotypes** (for example *T cell > CD8 T cell*), find types by clustering, and
 show every type back on the image. The analysis is done by
 [vtea-core](https://github.com/winfrees/vtea-python), the Python library of VTEA
-(Volumetric Tissue Exploration and Analysis; Winfree et al. 2017). More detail is in
+(Volumetric Tissue Exploration and Analysis; Winfree et al. 2017), whose integrated
+cytometry, with machine-learning classification and neighbourhood analysis of large imaging
+datasets, is described in Winfree et al. 2023. More detail is in
 [docs/cytometry.md](https://github.com/CU-IBIF/Napari_Cellpose/blob/main/docs/cytometry.md).
 
 ### 10.1 Choosing the objects
@@ -938,7 +946,8 @@ reuses that search. Leiden runs on igraph's fast implementation (about 1 s for 5
 objects). It maximises modularity at least as well as the older leidenalg route, which on a
 small table of very uniform populations can split one population into two clusters: lower
 **Resolution**, or give both clusters the same phenotype name. t-SNE uses openTSNE, which uses
-every core. UMAP is compiled in the background when the workbench opens, so the first map
+every core (Poličar et al. 2024); Leiden and Louvain run on igraph (Csardi & Nepusz 2006).
+UMAP is compiled in the background when the workbench opens, so the first map
 does not wait for it.
 
 Everything (gates, phenotypes, clustering results and their maps, and how the workbench plot was set up: axes, scales, colours and point style) is saved with the workspace. If a clustering result is deleted, a gate drawn on its map selects nothing (the Gates list says *missing column*) until a clustering of the same name is run again. Phenotypes are
@@ -971,7 +980,7 @@ the selected feature.
 ### 10.6 Neighbourhoods
 
 The **Neighbourhoods** tab finds kinds of tissue neighbourhood: places with the same mix of
-cell types (Schürch et al. 2020). Each object's neighbourhood is itself and the objects within
+cell types (Schürch et al. 2020; in kidney tissue, Winfree et al. 2023). Each object's neighbourhood is itself and the objects within
 a **Radius** (or its **k** nearest). Its composition (the fraction of each class) is measured,
 and k-means sorts the neighbourhoods into **Types**. Each object gets its neighbourhood's
 type and composition as columns (*Neighbourhoods 1 neighbourhood*, *Neighbourhoods 1 fraction
@@ -1047,7 +1056,9 @@ depth: cells → their neighbourhoods → neighbourhoods of those neighbourhoods
 ### 10.7 Classification: learning cell types from examples
 
 The **Classification** tab learns cell types from objects you have already typed, and
-predicts them for every object, in this image or the next one.
+predicts them for every object, in this image or the next one. In kidney tissue, a deep
+learning classifier outperformed classical machine learning and shape-based ones
+(Winfree et al. 2023).
 
 1. Make phenotypes for some objects (by gating, clustering or rules): these are the
    examples.
@@ -1086,7 +1097,8 @@ them in a common folder and using **Browse…**.
 **A model is for the kind of object it was trained on.** At a spatial level (10.6.1), the
 **Model** list greys out the models that do not fit it, and says why. For example, a model
 trained on cells is not offered for neighbourhood windows, and an image-crop model such as
-NephNet3D (nuclei) is only offered for the segmented objects. To classify windows or
+NephNet3D (a 3D convolutional network that types kidney cells from their nuclear stain;
+Woloshuk et al. 2021) is only offered for the segmented objects. To classify windows or
 regions, train a model at that level, with that level's phenotypes as labels.
 
 ### 10.8 Trajectories: lineages through cell types and neighbourhoods
@@ -1128,7 +1140,7 @@ figures 5 and 6). It works on one dataset (the objects in use).
   This is the marker's "pseudotime spectrum".
 - **Features along a lineage**: every feature along one lineage, as a heat map.
 - **Which features change**: the tradeSeq tests, as −log10 of the q-value
-  (Benjamini–Hochberg; 2 means q = 0.01, higher is stronger). One row per test, overall
+  (Benjamini & Hochberg 1995; 2 means q = 0.01, higher is stronger). One row per test, overall
   and per lineage or pair of lineages:
   - **association**: the feature changes along the lineage;
   - **start vs end**: it differs between the lineage's start and end;
@@ -1251,8 +1263,9 @@ Two other filament plugins are installed and appear under **Plugins**:
 ![The Save workspace section](images/12_workspace.png)
 
 - **Save workspace…** saves everything in one `.ibif` folder: all layers with their display
-  settings, the view, the measurement tables and the cytometry gates, phenotypes and
-  clusters. Microscope files are *referenced*, not copied, and are found again if you move
+  settings, the view, the measurement tables, the cytometry gates, phenotypes and
+  clusters, and the Processing pipeline. Processed layers (`[processed]`) are saved as copies,
+  with the steps and settings that made them. Microscope files are *referenced*, not copied, and are found again if you move
   the workspace together with the data. Tick **Include copies of the images** to share the
   workspace with someone who does not have the original files.
 - **Open workspace…** restores it. You can also drag the `.ibif` folder onto the window or
@@ -1307,16 +1320,24 @@ and reproducible (Senft et al. 2023; Aaron & Chew 2021; Schmied et al. 2024):
 - Use the **same settings** for all conditions, and decide them on a subset before looking at
   the results. If possible, analyse blind to condition.
 - Keep raw data unchanged. Display settings (contrast, colours) do not change measurements,
-  but processing does.
+  but processing does: the Processing section makes new layers and keeps the originals. Check
+  a registration by playing the processed layer, and measure intensities on the layer you
+  intend to report (interpolation smooths noise a little).
 - Save a workspace and the exported tables for each analysis.
 
 **What to report in your methods section**
 
 - Software and version: *IBIF napari* (version shown by `pip show ibif-napari`), napari,
   Cellpose and the model name (e.g. `cpsam_v2`), with citations.
+- Processing: each step in order with its settings; for registration, the axis, transform,
+  reference, and the correlation with the reference before and after (from the exported
+  transforms). Say which layers were processed and which were measured.
 - Segmentation settings: mode (3D or 2D stitched), diameter, flow and cell-probability
   thresholds, minimum size, and any manual corrections.
-- Secondary objects: method, channel, threshold method and factor, distances.
+- Secondary objects: method, channel, threshold method and factor, distances. For
+  inclusions: what was found (spots, filaments, regions), the method (intensity +
+  watershed, or Cellpose and its model), the split of touching inclusions and the inclusion
+  diameter, smoothing and smallest inclusion.
 - Measurements: which statistics, background subtraction, and units.
 - Cytometry: transforms, gate positions and how they were chosen; for clustering, the
   features, scaling, map, method, its parameters and the seed.
@@ -1350,6 +1371,12 @@ and [docs/vv/requirements.md](https://github.com/CU-IBIF/Napari_Cellpose/blob/ma
 measures correctly; they cannot show that Cellpose segments *your* images well. Check that
 on your own data, as described in [section 7.5](#75-checking-and-correcting-the-result).
 
+The suite also covers Secondary objects (VV-SEC: expand, rings, whole cells, inclusions split
+by the watershed and linked to their object, spots found by Cellpose) and Processing
+(VV-PROC: the pipeline, and stack registration on moving samples with a known movement:
+shifts, rotations, scaling, smooth warps, several channels, a drifting time-lapse, and the
+same result on a server).
+
 The Threshold + watershed tab needs no model, so its requirements (VV-SEG-07 to 09) run on
 every V&V run. You can also score the whole suite's segmentation requirements with it, for
 example on a computer without Cellpose:
@@ -1374,7 +1401,12 @@ ibif-napari-vv all vv --backend classic
 | Many merged or split objects | Set **Diameter**; adjust **Flow threshold** and **Cell probability**; try another model; train a custom model. |
 | Cells leak into each other in Secondary objects | Use **Max distance**, raise **Threshold ×**, increase **Smoothing**, or switch between *Membranes* and *Cytoplasm*. |
 | Whole cells look like rings, or a membrane gets the wrong cell's colour | Update to version 0.19.2 or later, which counts the dark inside of each cell as cell. |
-| A cell from a membrane stain spreads into the background | Its membrane has a gap. Increase **Smoothing** or lower **Threshold ×**, and set a **Max distance** ([section 8](#8-secondary-objects-cells-cytoplasm-rings-and-rims)). |
+| A cell from a membrane stain spreads into the background | Its membrane has a gap. Increase **Smoothing** or lower **Threshold ×**, and set a **Max distance** ([section 8](#8-secondary-objects-cells-cytoplasm-rings-rims-and-inclusions)). |
+| Touching inclusions counted as one | Choose **Split touching: Watershed**, lower **Inclusion diameter**, and keep **Smoothing** well below the spot size (about 0.1 µm for spots 1 µm across). |
+| Single inclusions cut in two | Raise **Inclusion diameter**, or use **Watershed (intensity)** for spots brightest in the middle. |
+| **Cellpose** is greyed out under Method (spots) | Its tooltip says why: Cellpose is not installed here and no server is chosen in Segmentation → Cellpose, or the cluster there is not connected. |
+| A registered layer still moves | Try **Rigid** or **Non-rigid**, a little **Smoothing**, or **Mean of the first frames** as reference; along Z use **Previous frame**. Frames marked *registered: False* in the transforms moved more than **Maximum shift**. |
+| Processing on a server reports it cannot run pipelines, or the image is too large | Update the server to 0.37 or later; for size, process fewer channels or the **Current position**, or run on this computer. |
 | A CZI or LIF file reports a missing package | `pip install bioio-czi bioio-lif` |
 | Something else | Start `ibif-napari` from a terminal and read the messages there; report problems at [github.com/CU-IBIF/Napari_Cellpose/issues](https://github.com/CU-IBIF/Napari_Cellpose/issues). |
 
@@ -1389,11 +1421,16 @@ ibif-napari-vv all vv --backend classic
 | **Centroid** | Centre of mass of an object |
 | **Channel** | Image of one fluorophore |
 | **Gate** | A region on a scatter plot (or image) that selects objects |
+| **Inclusion** | A structure inside an object (vesicle, punctum, nucleolus), found by Secondary objects; linked to its object by number |
 | **Labels image** | Image whose values are object numbers (0 = background) |
 | **Layer** | One item in napari's layer list: image, labels, shapes, points |
 | **Maximum-intensity projection** | 2D image with the brightest value along Z at each pixel |
+| **Neighbourhood** | An object and the objects around it (within a radius or its nearest k); its mix of cell types defines its type |
 | **Phenotype** | A named cell type defined by gates or rules, arranged in a hierarchy |
+| **Pipeline** | An ordered list of Processing steps, run one after the other |
+| **Pseudotime** | Position along an inferred lineage, from its start (Trajectories) |
 | **Primary / secondary objects** | Objects found directly (e.g. nuclei) / built from them (e.g. cells) |
+| **Registration** | Aligning frames (time points or Z planes) so the same structure is in the same place; rigid moves and turns, affine also scales, non-rigid warps locally |
 | **Seeded watershed** | Region growing from seeds over an image "landscape"; regions meet at ridges |
 | **Segmentation** | Assigning every pixel to an object or background |
 | **Skeleton** | One-voxel-wide centre line of a shape |
@@ -1417,9 +1454,39 @@ ibif-napari-vv all vv --backend classic
   to study kidney tissue and resident immune cells. *J Am Soc Nephrol* 28:2108–2118 (2017).
   [doi:10.1681/ASN.2016091027](https://doi.org/10.1681/ASN.2016091027);
   vtea-core: [github.com/winfrees/vtea-python](https://github.com/winfrees/vtea-python)
+- VTEA integrated cytometry: Winfree S, et al. Integrated cytometry with machine learning
+  applied to high-content imaging of human kidney tissue for in situ cell classification and
+  neighborhood analysis. *Lab Invest* 103:100104 (2023).
+  [doi:10.1016/j.labinv.2023.100104](https://doi.org/10.1016/j.labinv.2023.100104)
+  (PMID [36867975](https://pubmed.ncbi.nlm.nih.gov/36867975/))
+- igraph: Csardi G, Nepusz T. The igraph software package for complex network research.
+  *InterJournal Complex Systems* 1695 (2006). [igraph.org](https://igraph.org)
+- openTSNE: Poličar PG, Stražar M, Zupan B. openTSNE: a modular Python library for t-SNE
+  dimensionality reduction and embedding. *J Stat Softw* 109(3):1–30 (2024).
+  [doi:10.18637/jss.v109.i03](https://doi.org/10.18637/jss.v109.i03)
 - CellProfiler: Stirling DR, Swain-Bowden MJ, Lucas AM, Carpenter AE, Cimini BA, Goodman A.
   CellProfiler 4: improvements in speed, utility and usability. *BMC Bioinformatics* 22:433
   (2021). [doi:10.1186/s12859-021-04344-9](https://doi.org/10.1186/s12859-021-04344-9)
+
+**Processing**
+
+- Dunn KW, Lorenz KS, Salama P, Delp EJ. IMART software for correction of motion artifacts in
+  images collected in intravital microscopy. *IntraVital* 3:e28210 (2014).
+  [doi:10.4161/intv.28210](https://doi.org/10.4161/intv.28210)
+- Guizar-Sicairos M, Thurman ST, Fienup JR. Efficient subpixel image registration algorithms.
+  *Opt Lett* 33:156–158 (2008). [doi:10.1364/OL.33.000156](https://doi.org/10.1364/OL.33.000156)
+- Reddy BS, Chatterji BN. An FFT-based technique for translation, rotation, and
+  scale-invariant image registration. *IEEE Trans Image Process* 5:1266–1271 (1996).
+  [doi:10.1109/83.506761](https://doi.org/10.1109/83.506761)
+- Lucas BD, Kanade T. An iterative image registration technique with an application to stereo
+  vision. *Proc. 7th International Joint Conference on Artificial Intelligence*, 674–679 (1981).
+- Peng T, Thorn K, Schroeder T, et al. A BaSiC tool for background and shading correction of
+  optical microscopy images. *Nat Commun* 8:14836 (2017).
+  [doi:10.1038/ncomms14836](https://doi.org/10.1038/ncomms14836)
+- Richardson WH. Bayesian-based iterative method of image restoration. *J Opt Soc Am*
+  62:55–59 (1972). [doi:10.1364/JOSA.62.000055](https://doi.org/10.1364/JOSA.62.000055)
+- Lucy LB. An iterative technique for the rectification of observed distributions. *Astron J*
+  79:745–754 (1974). [doi:10.1086/111605](https://doi.org/10.1086/111605)
 
 **Segmentation**
 
@@ -1483,6 +1550,12 @@ ibif-napari-vv all vv --backend classic
 - Levine JH, Simonds EF, Bendall SC, et al. Data-driven phenotypic dissection of AML reveals
   progenitor-like cells that correlate with prognosis. *Cell* 162:184–197 (2015).
   [doi:10.1016/j.cell.2015.05.047](https://doi.org/10.1016/j.cell.2015.05.047)
+- Woloshuk A, Khochare S, Almulhim AF, et al. In situ classification of cell types in human
+  kidney tissue using 3D nuclear staining. *Cytometry A* 99:707–721 (2021).
+  [doi:10.1002/cyto.a.24274](https://doi.org/10.1002/cyto.a.24274)
+- Benjamini Y, Hochberg Y. Controlling the false discovery rate: a practical and powerful
+  approach to multiple testing. *J R Stat Soc B* 57:289–300 (1995).
+  [doi:10.1111/j.2517-6161.1995.tb02031.x](https://doi.org/10.1111/j.2517-6161.1995.tb02031.x)
 - Lloyd SP. Least squares quantization in PCM. *IEEE Trans Inf Theory* 28:129–137 (1982).
   [doi:10.1109/TIT.1982.1056489](https://doi.org/10.1109/TIT.1982.1056489)
 - Schwarz G. Estimating the dimension of a model. *Ann Stat* 6:461–464 (1978).
