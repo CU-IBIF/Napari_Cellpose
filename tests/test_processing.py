@@ -334,3 +334,35 @@ def test_pipeline_is_saved_with_the_workspace(test_steps, panel, viewer, tmp_pat
     assert panel.pipeline_list.count() == 0
     _workspace.load_workspace(viewer, folder)
     assert panel.pipeline_list.count() == 1
+
+
+def test_panel_registration_results(panel, viewer, qtbot, tmp_path):
+    import pandas as pd
+
+    from ibif_napari.vv import synth
+
+    sc = synth.motion_scene(seed=1, n=3)
+    viewer.layers.clear()
+    meta = {"ibif_axes": "TYX"}
+    viewer.add_image(sc.frames, name="GFP", scale=(1, 0.5, 0.5), metadata=dict(meta))
+    labels = np.zeros(sc.frames.shape, np.uint16)
+    labels[:, 70:90, 70:90] = 3
+    viewer.add_labels(labels, name="cells", scale=(1, 0.5, 0.5), metadata=dict(meta))
+    assert not panel.results_box.isVisibleTo(panel)
+    panel.check_channels(["GFP"])
+    panel.add_step("registration")
+    assert panel.reference.isVisibleTo(panel) and panel.reference.currentText() == "GFP"
+    panel.run()
+    qtbot.waitUntil(lambda: panel._worker is None, timeout=30000)
+    out = viewer.layers["GFP [processed]"]
+    assert "3 frames along T" in panel.status.text()
+    assert panel.results_box.isVisibleTo(panel) and panel.registered.currentText() == "GFP [processed]"
+    table = pd.read_csv(panel.export_transforms(tmp_path / "t.csv"))
+    assert list(table["T"]) == [0, 1, 2] and {"shift Y (µm)", "m00", "m12", "correlation after"} <= set(table)
+    assert "matrix" not in table
+    moved = panel.apply_registration("cells")
+    assert moved.name == "cells [registered]" and moved.data.dtype == np.uint16
+    assert set(np.unique(moved.data)) == {0, 3} and moved.metadata["ibif_registered_like"] == "GFP [processed]"
+    viewer.add_labels(np.zeros((3, 10, 10), np.uint16), name="small")
+    assert panel.apply_registration("small") is None and "is not the size" in panel.status.text()
+    assert out.metadata["ibif_processing"][0]["records"][1]["registered"]

@@ -11,7 +11,7 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
-from napari.layers import Image
+from napari.layers import Image, Labels
 from napari.qt.threading import thread_worker
 from qtpy.QtCore import QObject, Qt, Signal
 from qtpy.QtGui import QBrush, QColor, QFont
@@ -147,6 +147,26 @@ class ProcessingWidget(QWidget):
         self.status = QLabel()
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
+
+        self.results_box = QGroupBox("Registration results")
+        results = QFormLayout(self.results_box)
+        self.registered = QComboBox()
+        self.registered.setToolTip("A layer made by a pipeline with Stack registration")
+        results.addRow("Registered layer", self.registered)
+        self.export_csv_btn = QPushButton("Export transforms (CSV)…")
+        self.export_csv_btn.setToolTip("The shift, rotation and correlation of every frame, as a table")
+        self.export_csv_btn.clicked.connect(self._export_transforms_dialog)
+        results.addRow("", self.export_csv_btn)
+        row = QHBoxLayout()
+        self.apply_target = QComboBox()
+        self.apply_target.setToolTip("Another layer of the same size (e.g. labels segmented before "
+                                     "registering) to move the same way")
+        self.apply_btn = QPushButton("Apply")
+        self.apply_btn.clicked.connect(lambda: self.apply_registration())
+        row.addWidget(self.apply_target, 1)
+        row.addWidget(self.apply_btn)
+        results.addRow("Apply to", row)
+        layout.addWidget(self.results_box)
         layout.addStretch(1)
 
         self._fill_library()
@@ -331,6 +351,20 @@ class ProcessingWidget(QWidget):
     # ---- channels ------------------------------------------------------------------------
 
     def _refresh_layers(self, event=None):
+        from ._processing.registration import records_of
+
+        registered = [layer.name for layer in self.viewer.layers
+                      if isinstance(layer, Image) and records_of(layer.metadata)[0]]
+        targets = [layer.name for layer in self.viewer.layers if isinstance(layer, (Image, Labels))]
+        for combo, names in ((self.registered, registered), (self.apply_target, targets)):
+            current = combo.currentText()
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItems(names)
+            if current in names:
+                combo.setCurrentText(current)
+            combo.blockSignals(False)
+        self.results_box.setVisible(bool(registered))
         checked = set(self.checked_channels(names=True))
         self.channels.blockSignals(True)
         self.channels.clear()
@@ -398,6 +432,72 @@ class ProcessingWidget(QWidget):
         path, _ = QFileDialog.getOpenFileName(self, "Open pipeline", "", "Pipeline (*.json)")
         if path:
             self.import_pipeline(path)
+
+    # ---- registration results ------------------------------------------------------------
+
+    def _registration(self, name=None):
+        from ._processing.registration import records_of
+
+        name = name or self.registered.currentText()
+        if not name or name not in self.viewer.layers:
+            raise ValueError("choose a registered layer")
+        layer = self.viewer.layers[name]
+        records, along = records_of(layer.metadata)
+        if not records:
+            raise ValueError(f"{name} was not made by a registration")
+        return layer, records, along
+
+    def export_transforms(self, path, name=None):
+        """Write the registration of a layer (one row per frame) as CSV; returns the path."""
+        import pandas as pd
+
+        layer, records, _ = self._registration(name)
+        rows = []
+        for r in records:
+            row = {k: v for k, v in r.items() if k != "matrix"}
+            for i, line in enumerate(r["matrix"]):
+                for j, v in enumerate(line):
+                    row[f"m{i}{j}"] = v  # output -> input, pixels
+            rows.append(row)
+        pd.DataFrame(rows).to_csv(path, index=False)
+        self.status.setText(f"Transforms of {layer.name} saved to {Path(path).name}.")
+        return Path(path)
+
+    def apply_registration(self, target=None, name=None):
+        """Move another layer (same size) frame by frame as the registered layer was moved;
+        adds '<target> [registered]' and returns it, or None (with the reason shown)."""
+        from ._processing.registration import apply_records
+        from ._util import layer_axes
+
+        try:
+            layer, records, along = self._registration(name)
+            target = target or self.apply_target.currentText()
+            if target not in self.viewer.layers:
+                raise ValueError("choose a layer to apply the registration to")
+            other = self.viewer.layers[target]
+            if tuple(other.data.shape) != tuple(layer.data.shape):
+                raise ValueError(f"{other.name} {tuple(other.data.shape)} is not the size of "
+                                 f"{layer.name} {tuple(layer.data.shape)}")
+            is_labels = isinstance(other, Labels)
+            moved = apply_records(other.data, layer_axes(layer), records, along, labels=is_labels)
+        except ValueError as e:
+            self.status.setText(str(e))
+            return None
+        meta = {k: v for k, v in dict(other.metadata or {}).items() if k not in session.SOURCE_KEYS}
+        meta["ibif_registered_like"] = layer.name
+        kwargs = dict(name=f"{other.name} [registered]", scale=other.scale, translate=other.translate,
+                      metadata=meta)
+        added = self.viewer.add_labels(moved, **kwargs) if is_labels else self.viewer.add_image(moved, **kwargs)
+        self.status.setText(f"Made {added.name}, moved as {layer.name} was (rigid part of the registration).")
+        return added
+
+    def _export_transforms_dialog(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Save transforms", "transforms.csv", "CSV (*.csv)")
+        if path:
+            try:
+                self.export_transforms(path)
+            except ValueError as e:
+                self.status.setText(str(e))
 
     # ---- running -------------------------------------------------------------------------
 

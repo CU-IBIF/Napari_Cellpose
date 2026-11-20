@@ -465,3 +465,128 @@ def inclusion_scene(ndim=2, seed=0, snr=8.0, grid=3, touch_share=0.5):
     image = (image + rng.normal(0, 1.0 / snr, shape)).astype(np.float32)
     return InclusionScene(cells, spots, {n: k for n, (_, _, k) in enumerate(placed, start=1)}, image,
                           spacing, 0.45, touching)
+
+
+# ---- movement (stack registration) ----------------------------------------------------------
+
+
+@dataclass
+class MotionScene:
+    """Frames of a textured sample that moves (and warps) by a known amount.
+
+    frames: (N, Y, X) or (N, Z, Y, X) along T, or a (Z, Y, X) stack whose planes drift
+    along Z; spacing (µm per pixel of a frame); truth: per frame, the rotation (degrees,
+    YX), shift (pixels, ZYX / YX) and warp amplitude (pixels). `source(k, coords)` gives,
+    for pixel coordinates of frame k (shape (n, ...)), where they come from in the sample
+    (the motion-free canvas): registration is perfect when the registered frame k reads,
+    at every pixel, what the reference frame reads there."""
+
+    frames: np.ndarray
+    spacing: tuple
+    truth: list
+    offset: np.ndarray  # where pixel 0 of a frame is in the sample, per axis
+    centre: np.ndarray
+    along: str
+    ideal: np.ndarray
+
+    def source(self, k, coords):
+        coords = np.asarray(coords, float)
+        t = self.truth[k]
+        n = coords.shape[0]
+        q = coords + self.offset.reshape((n,) + (1,) * (coords.ndim - 1))
+        shift = np.asarray(t["shift"], float).reshape((n,) + (1,) * (coords.ndim - 1))
+        c = self.centre.reshape((n,) + (1,) * (coords.ndim - 1))
+        d = q - c - shift
+        a = np.deg2rad(-t["angle"])
+        y, x = d[-2], d[-1]
+        ry, rx = np.cos(a) * y - np.sin(a) * x, np.sin(a) * y + np.cos(a) * x
+        out = np.concatenate([d[:-2], ry[None], rx[None]]) + c
+        if t["warp"]:
+            out = out - _warp_field(q, t["warp"], t["phase"])
+        return out
+
+
+def _warp_field(q, amplitude, phase):
+    """A smooth displacement (pixels) like tissue moving with breathing: a slow wave across
+    the field, larger in the middle."""
+    y, x = q[-2], q[-1]
+    dy = amplitude * np.sin(2 * np.pi * x / 160.0 + phase) * np.exp(-((y - 100) / 120.0) ** 2)
+    dx = 0.6 * amplitude * np.cos(2 * np.pi * y / 140.0 + phase)
+    zeros = [np.zeros_like(y)] * (q.shape[0] - 2)
+    return np.stack(zeros + [dy, dx])
+
+
+def _sample(seed, shape, spacing):
+    """A motion-free sample: cell-like blobs on a textured background, with structure at
+    several scales so every frame can be registered."""
+    rng = np.random.default_rng(seed)
+    background = ndi.gaussian_filter(rng.random(shape), [4.0 / s * spacing[-1] for s in spacing])
+    background = (background - background.min()) / (np.ptp(background) or 1)
+    blobs = np.zeros(shape)
+    n = int(np.prod(shape) / 900)
+    for _ in range(n):
+        blobs[tuple(rng.integers(0, s) for s in shape)] = rng.uniform(1.0, 3.0)
+    blobs = ndi.gaussian_filter(blobs, [2.5 * spacing[-1] / s for s in spacing])
+    return 0.3 * background + blobs / (blobs.max() or 1)
+
+
+def motion_scene(ndim=2, along="T", n=8, seed=0, snr=8.0, max_shift=15.0, max_angle=0.0, warp=0.0,
+                 size=160, depth=12):
+    """Frames with known movement. Along T: `n` frames (2D, or 3D Z stacks of `depth`
+    planes at 2 x 0.5 x 0.5 µm with a Z shift too), each moved by a random shift up to
+    `max_shift` pixels (in Z up to 1.5 planes), rotated up to `max_angle` degrees in YX,
+    and warped smoothly by up to `warp` pixels; the first frame does not move. Along Z: a
+    3D stack whose planes drift in YX like a random walk (steps up to `max_shift` / 4,
+    plane 0 fixed). Gaussian noise gives the signal-to-noise ratio `snr` (mean signal /
+    sigma). The frames are read from a larger motion-free sample with cubic interpolation,
+    so the movement comes in from outside the frame like a real field of view."""
+    rng = np.random.default_rng(seed)
+    margin = int(np.ceil(max_shift + abs(max_angle) / 45 * size + 2 * warp)) + 8
+    if along == "Z":
+        spacing = (1.0, 0.5, 0.5)
+        shape = (depth, size + 2 * margin, size + 2 * margin)
+    elif ndim == 3:
+        spacing = (2.0, 0.5, 0.5)
+        shape = (depth + 2 * 4, size + 2 * margin, size + 2 * margin)
+    else:
+        spacing = (0.5, 0.5)
+        shape = (size + 2 * margin,) * 2
+    sample = _sample(seed, shape, spacing)
+    centre = (np.asarray(shape, float) - 1) / 2
+    truth = []
+    if along == "Z":
+        walk = np.cumsum(rng.uniform(-max_shift / 4, max_shift / 4, (depth, 2)), axis=0)
+        walk -= walk[0]
+        scene = MotionScene(None, spacing, [], np.array([margin, margin], float), centre[1:], "Z", sample)
+        planes = []
+        for z in range(depth):
+            t = {"angle": 0.0, "shift": tuple(walk[z]), "warp": 0.0, "phase": 0.0}
+            scene.truth.append(t)
+            coords = np.indices((size, size)).astype(float)
+            src = scene.source(z, coords)
+            planes.append(ndi.map_coordinates(sample[z], src, order=3, mode="nearest"))
+        frames = np.stack(planes)
+    else:
+        nd = len(shape)
+        out_shape = (depth,) * (nd == 3) + (size, size)
+        offset = np.array(([4] if nd == 3 else []) + [margin, margin], float)
+        scene = MotionScene(None, spacing, truth, offset, centre, "T", sample)
+        frames = []
+        for k in range(n):
+            if k == 0:
+                shift, angle, amp, phase = np.zeros(nd), 0.0, 0.0, 0.0
+            else:
+                shift = rng.uniform(-max_shift, max_shift, nd)
+                if nd == 3:
+                    shift[0] = rng.uniform(-1.5, 1.5)
+                angle = float(rng.uniform(-max_angle, max_angle)) if max_angle else 0.0
+                amp = float(rng.uniform(0.5, 1.0) * warp) if warp else 0.0
+                phase = float(rng.uniform(0, 2 * np.pi))
+            truth.append({"angle": angle, "shift": tuple(float(s) for s in shift), "warp": amp, "phase": phase})
+            coords = np.indices(out_shape).astype(float)
+            frames.append(ndi.map_coordinates(sample, scene.source(k, coords), order=3, mode="nearest"))
+        frames = np.stack(frames)
+    signal = float(np.mean(frames))
+    frames = frames + rng.normal(0, signal / snr, frames.shape)
+    scene.frames = frames.astype(np.float32)
+    return scene

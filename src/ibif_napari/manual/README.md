@@ -313,6 +313,39 @@ The library has:
 - **Illumination correction (BaSiC)** and **Deconvolution (Richardson–Lucy)**: marked
   *coming soon*. They are listed with their planned settings, but cannot be added yet.
 
+**Stack registration** settings:
+
+- **Correct along**: **T** registers the time points to each other (each a whole Z stack:
+  one 3D shift, and rotation in the XY plane, per time point); **Z** registers the planes of
+  each Z stack (one 2D correction per plane), for stacks whose planes slipped while they were
+  acquired.
+- **Transform**: **Translation** (shifts only: stage drift), **Rigid** (shifts and a rotation),
+  **Affine** (also scaling and shear) or **Non-rigid** (rigid first, then a smooth local warp for
+  tissue that deforms, as with breathing or heartbeat in intravital imaging; the two-stage
+  approach of IMART, Dunn et al. 2014).
+- **Reference**: what each frame is registered to: the **first frame**, the **mean of the first
+  frames** (less noisy), a **chosen frame**, or the **previous frame**, which follows slow
+  changes but lets small errors add up (best along Z, where planes far apart look different).
+- **Smoothing** blurs the reference channel before measuring (only for measuring: the result
+  is not blurred); a little helps with noisy images. **Sub-pixel precision** sets how finely
+  shifts are measured. **Maximum shift**: a frame that seems to move further is left as it was
+  and reported, which guards against a frame that cannot be registered (for example one
+  blurred by fast movement).
+- **Warp smoothness**, **Warp window** and **Maximum warp** (non-rigid only): how smooth the local
+  warp is, the window it is measured over, and the largest local correction allowed.
+- **Edges**: what fills the edge the movement uncovers: zero, the nearest edge value, or NaN
+  (empty, which also makes the result 32-bit floating point). **Interpolation**: linear or cubic.
+
+After a run, **Registration results** appears. **Export transforms (CSV)…** saves the shift (in
+pixels and µm), rotation and the correlation with the reference before and after, for every
+frame. **Apply to** moves another layer of the same size in the same way, for example labels
+segmented before registering (they keep their numbers) or a channel that was not ticked; it
+applies the rigid / affine part of the registration.
+
+> **Check the result.** Play the processed layer over time (or through Z): structures should
+> stay put. The status line gives the correlation with the reference before → after; the CSV
+> has it per frame, and a frame marked *registered: False* was left as it was.
+
 The pipeline is saved with the workspace. **Export…** saves it as a JSON file, and
 **Import…** opens one, so the same corrections can be applied to other images. A processed
 layer records the steps and settings that made it (in its metadata, saved with the

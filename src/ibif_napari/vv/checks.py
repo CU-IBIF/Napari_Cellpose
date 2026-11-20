@@ -825,6 +825,265 @@ def _inclusion_links(ctx, res):
         f"inclusions columns match an independent count.")
 
 
+# ---- processing: stack registration -----------------------------------------------------------
+
+
+def _reg_residual(scene, k, t, ref=0, t_ref=None, border=20):
+    """RMS distance (pixels of the sample) between what the registered frame k and the
+    (registered) reference frame read at each pixel, from the scene's truth."""
+    shape = scene.frames.shape[1:]
+    n = len(shape)
+    coords = np.indices(shape).astype(float)
+    sl = (slice(None),) + tuple(slice(border, -border) if i >= n - 2 else slice(2, -2) for i in range(n))
+    coords = coords[sl]
+
+    def reads(tr):
+        if tr is None:
+            return coords
+        read = coords + (tr.flow[sl] if tr.flow is not None else 0)
+        return np.tensordot(tr.matrix[:n, :n], read, axes=1) + tr.matrix[:n, n].reshape((n,) + (1,) * n)
+
+    d = scene.source(k, reads(t)) - scene.source(ref, reads(t_ref))
+    return float(np.sqrt(np.mean(np.sum(d ** 2, axis=0))))
+
+
+def _reg_series(scene, model="translation", reference="first", smooth=0.0):
+    from .._processing import registration as R
+
+    spacing = scene.spacing[1:] if scene.along == "Z" else scene.spacing
+    return R.register_frames(scene.frames, model, reference, spacing=spacing, smooth=smooth)
+
+
+@check("VV-PROC-01")
+def _pipeline_order(ctx, res):
+    from .._processing import Pipeline, Stack
+
+    sc = synth.motion_scene(ndim=3, n=3, seed=11, max_shift=6)
+    data = sc.frames.copy()
+    stack = Stack({"A": data}, "TZYX", dict(zip("ZYX", sc.spacing)))
+    pipe = Pipeline()
+    pipe.add("registration")
+    pipe.add("registration", {"axis": "Z (planes)", "reference": "Previous frame (cumulative)"})
+    result = pipe.run(stack)
+    first = Pipeline([pipe.steps[0]]).run(stack)
+    by_hand = Pipeline([pipe.steps[1]]).run(first.stack)
+    diff = float(np.nanmax(np.abs(result.stack.channels["A"] - by_hand.stack.channels["A"])))
+    pipe.steps[1].enabled = False
+    skipped = pipe.run(stack)
+    diff_skip = float(np.nanmax(np.abs(skipped.stack.channels["A"] - first.stack.channels["A"])))
+    recorded = [(s["key"], s["params"]["axis"]) for s in result.steps]
+    res.check("pipeline result vs the steps by hand (largest difference)", diff, "==", 0.0)
+    res.check("second step disabled vs the first step alone (largest difference)", diff_skip, "==", 0.0)
+    res.check("input voxels changed", int(np.sum(data != sc.frames)), "==", 0, "{:.0f}")
+    res.check("steps recorded in order with their settings",
+              recorded == [("registration", "T (time points)"), ("registration", "Z (planes)")], "is", True)
+    res.evidence.append(
+        f"A pipeline of registration along T then along Z on a {sc.frames.shape} time-lapse gives exactly "
+        f"what the two steps give one after the other (largest difference {diff:g}); with the second step "
+        f"disabled it equals the first step alone; the input is unchanged, and both steps are recorded.")
+
+
+@check("VV-PROC-02")
+def _reg_shifts(ctx, res):
+    rows = []
+    groups = {"2D SNR 8": [], "2D SNR 4": [], "3D": [], "Z": []}
+    for seed in range(4):
+        for snr, name, smooth in ((8.0, "2D SNR 8", 0.0), (4.0, "2D SNR 4", 0.5)):
+            sc = synth.motion_scene(seed=seed, snr=snr)
+            tr = _reg_series(sc, smooth=smooth)
+            r = [_reg_residual(sc, k, t) for k, t in enumerate(tr)][1:]
+            groups[name] += r
+            rows.append({"scene": f"{name} seed {seed}", "frames": len(tr), "mean residual (px)": np.mean(r),
+                         "largest residual (px)": np.max(r), "largest shift (px)": max(
+                             np.hypot(*t["shift"]) for t in sc.truth)})
+    for seed in range(2):
+        sc = synth.motion_scene(ndim=3, n=4, seed=seed)
+        tr = _reg_series(sc)
+        r = [_reg_residual(sc, k, t) for k, t in enumerate(tr)][1:]
+        groups["3D"] += r
+        rows.append({"scene": f"3D seed {seed}", "frames": len(tr), "mean residual (px)": np.mean(r),
+                     "largest residual (px)": np.max(r), "largest shift (px)": max(
+                         np.linalg.norm(t["shift"]) for t in sc.truth)})
+        sz = synth.motion_scene(along="Z", seed=seed)
+        tz = _reg_series(sz, reference="previous")
+        r = [_reg_residual(sz, k, tz[k], ref=k - 1, t_ref=tz[k - 1]) for k in range(1, len(tz))]
+        drift = _reg_residual(sz, len(tz) - 1, tz[-1], ref=0, t_ref=tz[0])
+        groups["Z"] += r
+        rows.append({"scene": f"Z planes seed {seed}", "frames": len(tz), "mean residual (px)": np.mean(r),
+                     "largest residual (px)": np.max(r), "largest shift (px)": max(
+                         np.hypot(*t["shift"]) for t in sz.truth), "last plane vs first (px)": drift})
+    res.check("2D, SNR 8: mean residual (px)", np.mean(groups["2D SNR 8"]), "<=", ctx.limits["reg_rms_snr8"])
+    res.check("2D, SNR 4: mean residual (px)", np.mean(groups["2D SNR 4"]), "<=", ctx.limits["reg_rms_snr4"])
+    res.check("3D: mean residual (px)", np.mean(groups["3D"]), "<=", ctx.limits["reg_rms_3d"])
+    res.check("along Z: mean residual between neighbouring planes (px)", np.mean(groups["Z"]), "<=",
+              ctx.limits["reg_z_step"])
+    table = pd.DataFrame(rows)
+    res.tables["registration"] = table
+    res.metrics = {k: {"mean": float(np.mean(v)), "max": float(np.max(v))} for k, v in groups.items()}
+    sc = synth.motion_scene(seed=0)
+    tr = _reg_series(sc)
+    from .._processing import registration as R
+
+    res.figures.append(("Frame 5 of a 2D scene over the first frame, before (left) and after (right)",
+                        _overlay_figure(sc.frames[0], sc.frames[5], R.warp(sc.frames[5], tr[5]))))
+    res.evidence.append(
+        "Residual movement after registration (RMS, pixels): " + "; ".join(
+            f"{k} mean {np.mean(v):.3f}, largest {np.max(v):.3f}" for k, v in groups.items()) +
+        ". Along Z each plane is registered to the one before, so small errors add up over the stack "
+        "(the last plane vs the first is in the table).")
+
+
+def _overlay_figure(reference, before, after):
+    plt = _plt()
+    fig, axes = plt.subplots(1, 2, figsize=(8, 4))
+    for ax, img, title in ((axes[0], before, "before"), (axes[1], after, "after")):
+        lo, hi = np.nanpercentile(reference, (1, 99.5))
+        rgb = np.zeros(reference.shape + (3,))
+        rgb[..., 0] = np.clip((np.nan_to_num(img) - lo) / (hi - lo), 0, 1)
+        rgb[..., 1] = np.clip((reference - lo) / (hi - lo), 0, 1)
+        ax.imshow(rgb)
+        ax.set_axis_off()
+        ax.set_title(f"{title}: frame (magenta) on reference (green)", fontsize=8)
+        rgb[..., 2] = rgb[..., 0]
+    return _png(fig)
+
+
+@check("VV-PROC-03")
+def _reg_rotation(ctx, res):
+    angles, resid, rows = [], [], []
+    for ndim, seeds, max_angle, n in ((2, (0, 1, 2), 10.0, 6), (3, (0,), 6.0, 4)):
+        for seed in seeds:
+            sc = synth.motion_scene(ndim=ndim, seed=seed, max_angle=max_angle, n=n)
+            tr = _reg_series(sc, "rigid")
+            for k in range(1, len(tr)):
+                err = abs(tr[k].angle - sc.truth[k]["angle"])  # the scene measures angles the other way
+                r = _reg_residual(sc, k, tr[k])
+                angles.append(err)
+                resid.append(r)
+                rows.append({"scene": f"{ndim}D seed {seed}", "frame": k, "true rotation (°)": sc.truth[k]["angle"],
+                             "rotation error (°)": err, "residual (px)": r})
+    res.check("largest rotation error (°)", max(angles), "<=", ctx.limits["reg_angle_deg"])
+    res.check("mean residual (px)", np.mean(resid), "<=", ctx.limits["reg_rms_rigid"])
+    res.tables["rotation"] = pd.DataFrame(rows)
+    res.metrics = {"largest rotation error": max(angles), "mean residual": float(np.mean(resid))}
+    res.evidence.append(
+        f"{len(rows)} rotated frames (up to ±10° in 2D, ±6° in 3D, with shifts): rotation error at most "
+        f"{max(angles):.3f}°, mean residual {np.mean(resid):.3f} px.")
+
+
+@check("VV-PROC-04")
+def _reg_channels(ctx, res):
+    from .._processing import Pipeline, Stack
+    from .._processing import registration as R
+
+    sc = synth.motion_scene(seed=12, n=4)
+    other = synth.motion_scene(seed=13, n=4).frames  # a different image as the second channel
+    pipe = Pipeline()
+    pipe.add("registration")
+    result = pipe.run(Stack({"A": sc.frames, "B": other}, "TYX", {"Y": 0.5, "X": 0.5}, reference="A"))
+    records = result.steps[0]["records"]
+    by_hand = np.stack([R.warp(f, R.Transform(np.asarray(r["matrix"]))) for f, r in zip(other, records)])
+    diff = float(np.max(np.abs(by_hand - result.stack.channels["B"])))
+    still = np.repeat(sc.frames[:1], 4, axis=0)
+    shifts = [np.hypot(*t.shift) for t in R.register_frames(still, "translation", "first")]
+    labels = np.zeros(sc.frames.shape, np.uint16)
+    rng = np.random.default_rng(0)
+    for i in range(1, 30):
+        y, x = rng.integers(25, 135, 2)
+        labels[:, y:y + 8, x:x + 8] = i
+    moved = R.apply_records(labels, "TYX", records, "T", labels=True)
+    new = len(set(np.unique(moved)) - set(np.unique(labels)))
+    sizes = [np.bincount(f.ravel(), minlength=30)[1:] for f in (labels[1], moved[1])]
+    keep = sizes[1] > 0
+    size_change = float(np.max(np.abs(sizes[1][keep] / sizes[0][keep] - 1))) if keep.any() else 1.0
+    res.check("second channel vs the transforms applied by hand (largest difference)", diff, "==", 0.0)
+    res.check("identical frames: largest shift found (px)", max(shifts), "<=", ctx.limits["reg_identity_px"])
+    res.check("labels moved: new label numbers", new, "==", 0, "{:.0f}")
+    res.check("labels moved: largest change in a label's size", size_change, "<=", 0.10)
+    res.evidence.append(
+        f"The second channel was moved exactly as the reference channel's transforms say (largest "
+        f"difference {diff:g}); identical frames gave shifts of at most {max(shifts):.3f} px; labels moved "
+        f"by the records keep their numbers (sizes within {size_change:.0%}).")
+
+
+@check("VV-PROC-06")
+def _reg_tracks(ctx, res):
+    from .. import _classic
+    from .._processing import registration as R
+
+    spec = synth.SceneSpec("drift", shape=(300, 300), spacing=(0.5, 0.5), n_objects=40, seed=21, snr=12)
+    scene = synth.generate(spec)
+    rng = np.random.default_rng(21)
+    size, n = 256, 8
+    walk = np.vstack([[0, 0], np.cumsum(rng.integers(-4, 5, (n - 1, 2)), axis=0)])
+    walk = np.clip(walk, -12, 12)
+    ideal = scene.ideal["nuclei"] * spec.peak + spec.background
+    frames = []
+    for dy, dx in walk:  # the field moves by (dy, dx): content moves the other way
+        y0, x0 = 22 + dy, 22 + dx
+        frames.append(ideal[y0:y0 + size, x0:x0 + size] + rng.normal(0, scene.noise_sigma, (size, size)))
+    frames = np.stack(frames).astype(np.float32)
+    transforms = R.register_frames(frames, "translation", "first", spacing=spec.spacing)
+    registered = np.stack([R.warp(f, t, fill="nan") for f, t in zip(frames, transforms)])
+
+    def centroids(img):
+        img = np.nan_to_num(img, nan=float(np.nanmin(img)))
+        labels, _ = _classic.segment(img, spec.spacing)
+        ids = np.arange(1, labels.max() + 1)
+        return np.asarray(ndi.center_of_mass(np.ones(labels.shape), labels, ids)).reshape(-1, 2)
+
+    def tracks(series, offsets):
+        """RMS movement of the first frame's nuclei (away from the edges) over the frames,
+        and the share of them found again (within 4 px of where they should be: moved by
+        the drift before registration, in place after)."""
+        first = centroids(series[0])
+        first = first[np.all((first > 30) & (first < size - 30), axis=1)]
+        moves, found = [], []
+        for k in range(1, len(series)):
+            c = centroids(series[k])
+            expected = first - offsets[k]  # where each nucleus should be in frame k
+            d = np.linalg.norm(c[None, :, :] - expected[:, None, :], axis=2)
+            j = d.argmin(axis=1)
+            ok = d[np.arange(len(first)), j] < 4
+            moves.append(np.linalg.norm(c[j[ok]] - first[ok], axis=1))
+            found.append(ok.mean())
+        return float(np.sqrt(np.mean(np.concatenate(moves) ** 2))), len(first), np.asarray(found)
+
+    before, n_before, found_before = tracks(frames, walk)
+    after, _, found_after = tracks(registered, np.zeros_like(walk))
+    removed = 1 - after / before if before else 0.0
+    res.check("share of the track jitter removed", removed, ">=", ctx.limits["reg_jitter_cut"])
+    res.check("nuclei found again in every frame: before minus after", float(found_before.mean() - found_after.mean()),
+              "<=", 0.05)
+    res.metrics = {"jitter before (px)": before, "jitter after (px)": after, "nuclei tracked": n_before}
+    res.tables["tracks"] = pd.DataFrame({"T": range(1, n), "drift Y (px)": walk[1:, 0], "drift X (px)": walk[1:, 1],
+                                         "found again before": found_before, "found again after": found_after})
+    res.evidence.append(
+        f"{n_before} nuclei tracked over {n} time points of a field drifting by up to "
+        f"{np.abs(walk).max()} px: their positions moved by {before:.2f} px RMS before registration and "
+        f"{after:.2f} px after ({removed:.0%} of the jitter removed).")
+
+
+@check("VV-PROC-07")
+def _reg_intensity(ctx, res):
+    worst = 0.0
+    for seed in range(4):
+        sc = synth.motion_scene(seed=seed)
+        from .._processing import registration as R
+
+        tr = _reg_series(sc)
+        m = int(np.ceil(max(np.abs(np.asarray(t["shift"])).max() for t in sc.truth))) + 2
+        inner = (slice(m, -m), slice(m, -m))
+        ref = float(np.mean(sc.frames[0][inner]))
+        for k in range(1, len(tr)):
+            out = R.warp(sc.frames[k], tr[k], order=1)
+            worst = max(worst, abs(float(np.mean(out[inner])) / ref - 1))
+    res.check("largest relative difference in mean intensity", worst, "<=", ctx.limits["reg_intensity_rel"])
+    res.metrics = {"largest relative difference": worst}
+    res.evidence.append(f"Mean intensity of the field after registration is within {worst:.2%} of the "
+                        f"reference frame's (28 frames, linear interpolation).")
+
+
 @check("VV-SEC-01")
 def _expand(ctx, res):
     from .. import _secondary

@@ -42,7 +42,7 @@ def library():
 
 
 def _load_builtin():
-    from . import stubs  # noqa: F401  (they register themselves)
+    from . import registration, stubs  # noqa: F401  (they register themselves)
 
 
 from .pipeline import Pipeline, PipelineStep, Result  # noqa: E402,F401
