@@ -55,6 +55,10 @@ LIMITS = {
     "reg_identity_px": 0.02,  # a frame that did not move: largest shift found
     "reg_intensity_rel": 0.01,  # mean intensity of the field, registered vs reference
     "reg_jitter_cut": 0.80,  # share of the drift in cell tracks that registration removes
+    # Affine (zoom up to 4 %, rotation, shift) and non-rigid (smooth warp up to 3 px on top
+    # of drift); seeds 0-2 measure affine 0.11 px (rigid 0.96), non-rigid 0.33 px (rigid 1.3)
+    "reg_rms_affine": 0.25, "reg_rms_nonrigid": 0.50,
+    "reg_nonrigid_share": 0.40,  # non-rigid residual / rigid-only residual
     # Measurements
     "exact_rel": 1e-9,
     "analytic_size_rel": 0.10,  # median |voxel size - ellipsoid size| / ellipsoid size
@@ -343,6 +347,17 @@ REQUIREMENTS = [
          "identical frames: largest shift found <= {reg_identity_px} px",
          "labels moved: new label numbers == 0, and each label's size within 10 %"],
         kind="verification"),
+    Requirement(
+        "VV-PROC-05", "Processing", "Affine and non-rigid registration undo deformation",
+        "Stack registration shall undo a change of scale (Affine) and a smooth local warp of the "
+        "tissue on top of drift (Non-rigid, rigid first then a smooth warp, as in IMART).",
+        "Processing section: Stack registration, Transform: Affine / Non-rigid (after rigid)",
+        "Test on synthetic moving samples: magnified by up to ±4 % with rotations up to 4° and "
+        "shifts (3 scenes of 5 frames); warped by a smooth breathing-like field of up to 3 px on top "
+        "of shifts (3 scenes of 5 frames, and one 3D scene of 3 frames). SNR 8, default settings.",
+        ["affine: mean residual <= {reg_rms_affine} px",
+         "non-rigid: mean residual <= {reg_rms_nonrigid} px (2D and 3D)",
+         "non-rigid residual / rigid-only residual <= {reg_nonrigid_share}"]),
     Requirement(
         "VV-PROC-06", "Processing", "Registration takes the drift out of segmented cell tracks",
         "Segmenting a drifting time-lapse after Stack registration shall give cell positions that "

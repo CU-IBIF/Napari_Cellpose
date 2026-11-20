@@ -29,6 +29,7 @@ Generated from `src/ibif_napari/vv/requirements.py` (`ibif-napari-vv requirement
 | VV-PROC-02 | Processing | Stack registration recovers known shifts | Processing section: Stack registration, Correct along T / Z, Transform: Translation | validation |
 | VV-PROC-03 | Processing | Stack registration recovers known rotations | Processing section: Stack registration, Transform: Rigid (translation + rotation) | validation |
 | VV-PROC-04 | Processing | Registration moves every channel alike and leaves still frames alone | Processing section: Stack registration (Reference channel); Registration results: Apply to | verification |
+| VV-PROC-05 | Processing | Affine and non-rigid registration undo deformation | Processing section: Stack registration, Transform: Affine / Non-rigid (after rigid) | validation |
 | VV-PROC-06 | Processing | Registration takes the drift out of segmented cell tracks | Processing section: Stack registration + Segmentation (Threshold + watershed) + Measurements | validation |
 | VV-PROC-07 | Processing | Registration keeps intensities | Processing section: Stack registration, Interpolation: Linear | verification |
 | VV-MEAS-01 | Measurements | Object size in µm² / µm³ | Measurements section: area / volume, equivalent diameter | verification |
@@ -398,6 +399,20 @@ Generated from `src/ibif_napari/vv/requirements.py` (`ibif-napari-vv requirement
 - second channel vs the same transforms applied by hand: largest difference == 0
 - identical frames: largest shift found <= 0.02 px
 - labels moved: new label numbers == 0, and each label's size within 10 %
+
+## VV-PROC-05: Affine and non-rigid registration undo deformation
+
+**Requirement.** Stack registration shall undo a change of scale (Affine) and a smooth local warp of the tissue on top of drift (Non-rigid, rigid first then a smooth warp, as in IMART).
+
+**Feature.** Processing section: Stack registration, Transform: Affine / Non-rigid (after rigid)
+
+**Method.** Test on synthetic moving samples: magnified by up to ±4 % with rotations up to 4° and shifts (3 scenes of 5 frames); warped by a smooth breathing-like field of up to 3 px on top of shifts (3 scenes of 5 frames, and one 3D scene of 3 frames). SNR 8, default settings.
+
+**Acceptance criteria.**
+
+- affine: mean residual <= 0.25 px
+- non-rigid: mean residual <= 0.5 px (2D and 3D)
+- non-rigid residual / rigid-only residual <= 0.4
 
 ## VV-PROC-06: Registration takes the drift out of segmented cell tracks
 

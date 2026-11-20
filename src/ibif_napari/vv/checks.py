@@ -933,10 +933,10 @@ def _reg_shifts(ctx, res):
         "(the last plane vs the first is in the table).")
 
 
-def _overlay_figure(reference, before, after):
+def _overlay_figure(reference, before, after, titles=("before", "after")):
     plt = _plt()
     fig, axes = plt.subplots(1, 2, figsize=(8, 4))
-    for ax, img, title in ((axes[0], before, "before"), (axes[1], after, "after")):
+    for ax, img, title in ((axes[0], before, titles[0]), (axes[1], after, titles[1])):
         lo, hi = np.nanpercentile(reference, (1, 99.5))
         rgb = np.zeros(reference.shape + (3,))
         rgb[..., 0] = np.clip((np.nan_to_num(img) - lo) / (hi - lo), 0, 1)
@@ -1004,6 +1004,49 @@ def _reg_channels(ctx, res):
         f"The second channel was moved exactly as the reference channel's transforms say (largest "
         f"difference {diff:g}); identical frames gave shifts of at most {max(shifts):.3f} px; labels moved "
         f"by the records keep their numbers (sizes within {size_change:.0%}).")
+
+
+@check("VV-PROC-05")
+def _reg_deformation(ctx, res):
+    from .._processing import registration as R
+
+    rows = []
+    affine, rigid_z, nonrigid, rigid_w = [], [], [], []
+    for seed in range(3):
+        sc = synth.motion_scene(seed=seed, n=5, max_shift=8, max_angle=4, max_zoom=0.04)
+        a, r = _reg_series(sc, "affine"), _reg_series(sc, "rigid")
+        for k in range(1, 5):
+            affine.append(_reg_residual(sc, k, a[k]))
+            rigid_z.append(_reg_residual(sc, k, r[k]))
+            rows.append({"test": "affine", "scene": f"2D seed {seed}", "frame": k, "zoom": sc.truth[k]["zoom"],
+                         "residual (px)": affine[-1], "rigid only (px)": rigid_z[-1]})
+    scenes = [synth.motion_scene(seed=seed, n=5, max_shift=8, warp=3) for seed in range(3)]
+    scenes.append(synth.motion_scene(ndim=3, seed=0, n=3, max_shift=6, warp=3))
+    for sc in scenes:
+        nr, r = _reg_series(sc, "nonrigid"), _reg_series(sc, "rigid")
+        for k in range(1, len(nr)):
+            nonrigid.append(_reg_residual(sc, k, nr[k]))
+            rigid_w.append(_reg_residual(sc, k, r[k]))
+            rows.append({"test": "non-rigid", "scene": f"{sc.frames.ndim - 1}D", "frame": k,
+                         "warp (px)": sc.truth[k]["warp"], "residual (px)": nonrigid[-1],
+                         "rigid only (px)": rigid_w[-1]})
+    res.check("affine: mean residual (px)", np.mean(affine), "<=", ctx.limits["reg_rms_affine"])
+    res.check("non-rigid: mean residual (px)", np.mean(nonrigid), "<=", ctx.limits["reg_rms_nonrigid"])
+    res.check("non-rigid / rigid-only residual", np.mean(nonrigid) / np.mean(rigid_w), "<=",
+              ctx.limits["reg_nonrigid_share"])
+    res.tables["deformation"] = pd.DataFrame(rows)
+    res.metrics = {"affine": float(np.mean(affine)), "rigid on zoomed": float(np.mean(rigid_z)),
+                   "non-rigid": float(np.mean(nonrigid)), "rigid on warped": float(np.mean(rigid_w))}
+    sc = scenes[0]
+    nr = _reg_series(sc, "nonrigid")
+    rg = _reg_series(sc, "rigid")
+    res.figures.append(("A warped frame on the first frame: rigid only (left), non-rigid (right)",
+                        _overlay_figure(sc.frames[0], R.warp(sc.frames[3], rg[3]), R.warp(sc.frames[3], nr[3]),
+                                        ("rigid only", "non-rigid"))))
+    res.evidence.append(
+        f"Magnified frames: affine leaves {np.mean(affine):.3f} px (rigid alone {np.mean(rigid_z):.3f}). "
+        f"Warped frames (up to 3 px): non-rigid leaves {np.mean(nonrigid):.3f} px (rigid alone "
+        f"{np.mean(rigid_w):.3f}), in 2D and 3D.")
 
 
 @check("VV-PROC-06")

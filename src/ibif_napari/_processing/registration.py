@@ -341,15 +341,13 @@ def register_frames(frames, model="translation", reference="first", frame=0, n_m
     for i in range(n):
         if progress is not None:
             progress(i, n)
+        if (reference == "previous" or reference == "first") and i == 0 or reference == "chosen" and i == int(frame):
+            out.append(Transform.identity(nd))  # the reference itself
+            continue
         if reference == "previous":
-            if i == 0:
-                out.append(Transform.identity(nd))
-                continue
             step = estimate(frames[i - 1], frames[i], rigid_model, spacing, smooth, upsample, max_shift)
             t = _compose(previous, step)
             previous = t
-        elif reference == "chosen" and i == int(frame) or (reference == "first" and i == 0):
-            t = Transform.identity(nd)
         else:
             t = estimate(ref, frames[i], rigid_model, spacing, smooth, upsample, max_shift)
         if model == "nonrigid" and t.ok:

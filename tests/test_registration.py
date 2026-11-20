@@ -181,3 +181,34 @@ def test_records_reapply_to_labels():
 def test_registration_is_in_the_library():
     spec = _processing.get("registration")
     assert spec.available and spec.needs_reference and _processing.library()[0] is spec
+
+
+def test_affine_undoes_a_change_of_scale():
+    sc = synth.motion_scene(seed=1, n=3, max_shift=6, max_zoom=0.04)
+    rigid = R.register_frames(sc.frames, "rigid", "first", spacing=sc.spacing)
+    affine = R.register_frames(sc.frames, "affine", "first", spacing=sc.spacing)
+    for k in (1, 2):
+        assert residual(sc, k, affine[k]) < 0.4 < residual(sc, k, rigid[k])
+
+
+def test_nonrigid_undoes_a_smooth_warp():
+    sc = synth.motion_scene(seed=2, n=3, max_shift=6, warp=3)
+    rigid = R.register_frames(sc.frames, "rigid", "first", spacing=sc.spacing)
+    warped = R.register_frames(sc.frames, "nonrigid", "first", spacing=sc.spacing)
+    assert warped[0].flow is None and warped[1].flow.shape == (2,) + sc.frames.shape[1:]
+    for k in (1, 2):
+        assert residual(sc, k, warped[k]) < 0.5 * residual(sc, k, rigid[k])
+    # A cap on the local correction holds.
+    capped = R.register_frames(sc.frames[:2], "nonrigid", "first", spacing=sc.spacing, max_displacement=0.25)
+    size = np.sqrt(sum((f * 0.5) ** 2 for f in capped[1].flow))
+    assert size.max() <= 0.25 + 1e-4
+
+
+def test_nonrigid_step_records_the_warp():
+    sc = synth.motion_scene(seed=3, n=2, max_shift=4, warp=2)
+    pipe = Pipeline()
+    pipe.add("registration", {"model": "Non-rigid (after rigid)"})
+    result = pipe.run(Stack({"A": sc.frames}, "TYX", {"Y": 0.5, "X": 0.5}))
+    r = result.steps[0]["records"][1]
+    assert r["non-rigid max (µm)"] > 0.3 and "rotation (°)" in r
+    assert r["correlation after"] > r["correlation before"]

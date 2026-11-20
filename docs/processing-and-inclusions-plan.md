@@ -1,6 +1,6 @@
 # Plan: Processing section, and inclusions in Secondary objects
 
-Status: **in progress**: M1 done (0.33.0), M2 done (0.33.1), M3 done (0.34.0; VV-SEC-07 limit to confirm on the first CI run), M4 done (0.35.0), M5 done (0.35.1). Target: 0.33.0 – 0.37.0.
+Status: **in progress**: M1 done (0.33.0), M2 done (0.33.1), M3 done (0.34.0; VV-SEC-07 limit to confirm on the first CI run), M4 done (0.35.0), M5 done (0.35.1), M6 done (0.36.0). Target: 0.33.0 – 0.37.0.
 
 ## Decisions (from review, 2026-11-20)
 

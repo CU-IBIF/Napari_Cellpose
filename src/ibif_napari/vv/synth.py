@@ -500,7 +500,8 @@ class MotionScene:
         a = np.deg2rad(-t["angle"])
         y, x = d[-2], d[-1]
         ry, rx = np.cos(a) * y - np.sin(a) * x, np.sin(a) * y + np.cos(a) * x
-        out = np.concatenate([d[:-2], ry[None], rx[None]]) + c
+        zoom = t.get("zoom", 1.0)  # the content is magnified by `zoom` in YX
+        out = np.concatenate([d[:-2], ry[None] / zoom, rx[None] / zoom]) + c
         if t["warp"]:
             out = out - _warp_field(q, t["warp"], t["phase"])
         return out
@@ -531,17 +532,18 @@ def _sample(seed, shape, spacing):
 
 
 def motion_scene(ndim=2, along="T", n=8, seed=0, snr=8.0, max_shift=15.0, max_angle=0.0, warp=0.0,
-                 size=160, depth=12):
+                 size=160, depth=12, max_zoom=0.0):
     """Frames with known movement. Along T: `n` frames (2D, or 3D Z stacks of `depth`
     planes at 2 x 0.5 x 0.5 µm with a Z shift too), each moved by a random shift up to
     `max_shift` pixels (in Z up to 1.5 planes), rotated up to `max_angle` degrees in YX,
+    magnified in YX by up to 1 ± `max_zoom` (focus or tissue swelling: an affine change),
     and warped smoothly by up to `warp` pixels; the first frame does not move. Along Z: a
     3D stack whose planes drift in YX like a random walk (steps up to `max_shift` / 4,
     plane 0 fixed). Gaussian noise gives the signal-to-noise ratio `snr` (mean signal /
     sigma). The frames are read from a larger motion-free sample with cubic interpolation,
     so the movement comes in from outside the frame like a real field of view."""
     rng = np.random.default_rng(seed)
-    margin = int(np.ceil(max_shift + abs(max_angle) / 45 * size + 2 * warp)) + 8
+    margin = int(np.ceil(max_shift + abs(max_angle) / 45 * size + 2 * warp + max_zoom * size)) + 8
     if along == "Z":
         spacing = (1.0, 0.5, 0.5)
         shape = (depth, size + 2 * margin, size + 2 * margin)
@@ -582,7 +584,9 @@ def motion_scene(ndim=2, along="T", n=8, seed=0, snr=8.0, max_shift=15.0, max_an
                 angle = float(rng.uniform(-max_angle, max_angle)) if max_angle else 0.0
                 amp = float(rng.uniform(0.5, 1.0) * warp) if warp else 0.0
                 phase = float(rng.uniform(0, 2 * np.pi))
-            truth.append({"angle": angle, "shift": tuple(float(s) for s in shift), "warp": amp, "phase": phase})
+            zoom = float(1 + rng.uniform(-max_zoom, max_zoom)) if (k and max_zoom) else 1.0
+            truth.append({"angle": angle, "shift": tuple(float(s) for s in shift), "warp": amp, "phase": phase,
+                          "zoom": zoom})
             coords = np.indices(out_shape).astype(float)
             frames.append(ndi.map_coordinates(sample, scene.source(k, coords), order=3, mode="nearest"))
         frames = np.stack(frames)
