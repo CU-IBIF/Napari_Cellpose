@@ -22,6 +22,8 @@ Generated from `src/ibif_napari/vv/requirements.py` (`ibif-napari-vv requirement
 | VV-SEC-02 | Secondary objects | Rings and rims have the set gap and width | Secondary objects section: Ring, Rim | verification |
 | VV-SEC-03 | Secondary objects | Whole cells grown from nuclei match the true cells | Secondary objects section: Whole cells from these seeds (Cytoplasm, Membranes), Also add cytoplasm | validation |
 | VV-SEC-04 | Secondary objects | Whole cells from a membrane stain stay within their membranes | Secondary objects section: Whole cells from these seeds, Channel shows: Membranes | validation |
+| VV-SEC-05 | Secondary objects | Touching inclusions are split by the watershed | Secondary objects section: Structures inside each object, Find: Spots, Split touching: Watershed (distance); the '<objects> spots inclusions' layer | validation |
+| VV-SEC-06 | Secondary objects | Every inclusion is linked to the one object it is in | Secondary objects section: Structures inside each object (both layers); Measurements section: parent and inclusions columns | verification |
 | VV-MEAS-01 | Measurements | Object size in µm² / µm³ | Measurements section: area / volume, equivalent diameter | verification |
 | VV-MEAS-02 | Measurements | Object centroids in µm | Measurements section: centroid Z/Y/X (µm), click a row to go to the object | verification |
 | VV-MEAS-03 | Measurements | Intensity statistics per object | Measurements section: <channel> mean / median / min / max / std / sum | validation |
@@ -288,6 +290,35 @@ Generated from `src/ibif_napari/vv/requirements.py` (`ibif-napari-vv requirement
 - a cell left without its nucleus: at most 0.05 of its inside taken by other cells
 
 *scenes: `cells_2d`, `cells_3d`*
+
+## VV-SEC-05: Touching inclusions are split by the watershed
+
+**Requirement.** Structures inside each object shall tell touching inclusions apart with a seeded watershed (on by default), in 2D and in 3D stacks with anisotropic voxels, and number them one by one.
+
+**Feature.** Secondary objects section: Structures inside each object, Find: Spots, Split touching: Watershed (distance); the '<objects> spots inclusions' layer
+
+**Method.** Test on synthetic cells holding 1-3 spots (radius 0.4-0.5 µm) and, in about half of them, a pair of spots pressed together (4 scenes in 2D at 0.1 µm pixels, 4 in 3D at 0.3 x 0.1 x 0.1 µm, SNR 8), with Otsu, Size 1.5 µm and Smoothing 0.1 µm. The same is run without a split and with the intensity watershed (shown, not a criterion).
+
+**Acceptance criteria.**
+
+- mean F1 at IoU 0.5 >= 0.95, and >= 0.9 in every scene, in 2D and 3D
+- inclusions counted exactly in a mean share >= 0.85 of the cells
+- F1 at least 0.05 higher than without a split (mean of the scenes)
+
+## VV-SEC-06: Every inclusion is linked to the one object it is in
+
+**Requirement.** Each inclusion numbered one by one shall lie inside a single object; the layer numbered by object shall hold the same pixels with the object's number; the measurements shall give each inclusion the number of its object ('parent') and each object the number of its inclusions ('inclusions').
+
+**Feature.** Secondary objects section: Structures inside each object (both layers); Measurements section: parent and inclusions columns
+
+**Method.** Test on the VV-SEC-05 scenes, with every split method, against an independent count.
+
+**Acceptance criteria.**
+
+- inclusions spanning more than one object: 0
+- pixels where the two layers disagree: 0
+- inclusions whose 'parent' differs from the object they are in: 0
+- objects whose 'inclusions' differs from the independent count: 0
 
 ## VV-MEAS-01: Object size in µm² / µm³
 

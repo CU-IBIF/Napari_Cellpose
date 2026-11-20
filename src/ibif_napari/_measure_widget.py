@@ -210,13 +210,16 @@ class MeasureWidget(QWidget):
 
     def _measured(self, tables):
         self.tables = dict(tables)
-        if len(tables) > 1:
-            self.tables[COMBINED] = _measure.combine(tables)
+        # Inclusions numbered one by one do not share label numbers with their objects.
+        joined = {n: t for n, t in tables.items()
+                  if not (n in self.viewer.layers and _measure.is_individual_inclusions(self.viewer.layers[n]))}
+        if len(joined) > 1:
+            self.tables[COMBINED] = _measure.combine(joined)
         _measure.remember(self.viewer, self.tables)
         self.view.blockSignals(True)
         self.view.clear()
         self.view.addItems(list(self.tables))
-        self.view.setCurrentIndex(len(self.tables) - 1 if len(tables) > 1 else 0)
+        self.view.setCurrentIndex(len(self.tables) - 1 if COMBINED in self.tables else 0)
         self.view.blockSignals(False)
         self._show(self.view.currentText())
         counts = ", ".join(f"{n}: {len(t)}" for n, t in tables.items())

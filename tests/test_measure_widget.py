@@ -51,3 +51,30 @@ def test_measurements_panel(qtbot, tmp_path):
     assert pd.read_csv(tmp_path / "all objects measurements.csv").shape == combined.shape
     w.view.setCurrentText("nuclei")
     assert w.save_table(str(tmp_path / "n.xlsx")).endswith("n.xlsx")
+
+
+def test_inclusions_numbered_one_by_one_are_not_joined(qtbot):
+    """The layer of inclusions numbered one by one gets its own table with a 'parent'
+    column; it is not joined by label number with the objects it lies in."""
+    v = make_viewer()
+    nuclei = v.layers["nuclei"]
+    spots = np.zeros_like(nuclei.data)
+    single = np.zeros(nuclei.data.shape, np.uint32)
+    for t in range(2):
+        spots[t, :, 14, 13] = spots[t, :, 14, 16] = 1  # two in nucleus 1 (centre x=15)
+        single[t, :, 14, 13], single[t, :, 14, 16] = 1, 2
+    common = dict(scale=nuclei.scale, translate=nuclei.translate)
+    v.add_labels(single, name="spots inclusions", **common,
+                 metadata={**nuclei.metadata, "ibif_inclusion_ids": True, "ibif_seeds": "nuclei"})
+    v.add_labels(spots, name="spots", **common, metadata={**nuclei.metadata, "ibif_inclusions": True,
+                                                          "ibif_inclusion_layer": "spots inclusions"})
+    w = MeasureWidget(v)
+    qtbot.addWidget(w)
+    w.check(objects=["nuclei", "spots", "spots inclusions"])
+    w.measure()
+    qtbot.waitUntil(lambda: w._worker is None, timeout=30000)
+    combined = w.tables[COMBINED]
+    assert not any(c.startswith("spots inclusions:") for c in combined.columns)
+    assert list(combined.dropna(subset=["spots: inclusions"])["spots: inclusions"]) == [2, 2]
+    per = w.tables["spots inclusions"]
+    assert list(per["parent"]) == [1, 1, 1, 1] and list(per["label"]) == [1, 2, 1, 2]

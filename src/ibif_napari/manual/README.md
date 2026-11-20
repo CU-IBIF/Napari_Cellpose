@@ -567,15 +567,38 @@ Its settings:
   with no structures still gets some. Use it only when every object has structures, or
   check the result.
 - **Smallest inclusion**: inclusions smaller than this area or volume are dropped (noise).
-- **Smoothing**: a Gaussian blur before thresholding.
+- **Split touching** (Spots and Regions): how inclusions that touch are told apart.
+  - **Watershed (distance)** (the default): a seeded watershed of the distance to the
+    inclusion's edge (as in Segmentation → Threshold + watershed) cuts touching round
+    inclusions along their neck, in 2D and in 3D (using the real voxel size).
+  - **Watershed (intensity)**: one inclusion per bright centre, for spots that are
+    brightest in the middle.
+  - **None (each connected piece)**: touching inclusions count as one (the behaviour before
+    version 0.33).
+- **Inclusion diameter**: the typical diameter of an inclusion. Seeds closer than half of
+  it are one inclusion; raise it if single inclusions are cut in two. **auto** uses the
+  median size of the connected pieces.
+- **Smoothing**: a Gaussian blur before thresholding. For small spots keep it well below
+  their size (for example 0.1 µm for spots 1 µm across): a blur as large as the spots joins
+  neighbouring spots before they can be split.
 
-The new layer is named after the objects and what was found, for example *nuclei cytoplasm
-spots*; rename it in the layer list if you like (for example *vesicles*).
+Two layers are made, named after the objects and what was found:
+
+- *nuclei cytoplasm spots*: every inclusion has the number of the object it is in, as
+  described above. Its `inclusions` column in the Measurements counts the inclusions of each
+  object, after splitting touching ones.
+- *nuclei cytoplasm spots inclusions*: every inclusion has its own number (1, 2, 3…). Its
+  Measurements table has one row per inclusion, with a `parent` column: the number of the
+  object it is in. It is not joined into **All objects**, whose rows are matched by number.
+
+Rename them in the layer list if you like (for example *vesicles*). The count uses the second
+layer while it keeps its name; renamed, the count falls back to connected pieces.
 
 > **Check the result.** Show the structures over their channel. If noise is found, raise
 > **Threshold ×**, **Smoothing** or **Smallest inclusion**; if structures are missed, lower
 > **Threshold ×** or try another threshold (Triangle often suits a few small bright spots).
-> Touching spots are counted as one inclusion.
+> If touching spots are still counted as one, lower **Smoothing** or **Inclusion diameter**;
+> if single spots are cut in two, raise **Inclusion diameter**.
 
 *Background.* The watershed transform (Vincent & Soille 1991) treats the image as a landscape
 and floods it from the seeds; cells meet where the floods meet. Growing cells from nuclei in
@@ -614,6 +637,7 @@ For each object (and time point / position) the table has:
 | `centroid Z / Y / X (µm)` | Centre of the object, in the image's coordinates |
 | `<channel> mean`, `median`, `min`, `max`, `std` | Intensity statistics of the object's voxels in each channel |
 | `<channel> sum` | Integrated intensity (sum over the object's voxels) |
+| `parent` | Layers of inclusions numbered one by one (*… inclusions*) only: the number of the object each inclusion is in |
 | `inclusions` | Layers from **Structures inside each object** only: the number of separate inclusions (e.g. vesicles) that make up the object. Called `pieces` before version 0.33; older workspaces are renamed when they open |
 
 **Interpreting intensities.** Intensity measurements are only as good as the acquisition

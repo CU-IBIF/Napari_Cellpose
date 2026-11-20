@@ -43,6 +43,11 @@ SIZE_TIPS = {
     "filaments": "Width of the filaments",
     "regions": "",
 }
+SPLITS = {
+    "Watershed (distance)": "distance",
+    "Watershed (intensity)": "intensity",
+    "None (each connected piece)": "none",
+}
 THRESHOLDS = {"Otsu": "otsu", "Li": "li", "Triangle": "triangle", "Manual": "manual",
               "None (whole image)": "none"}
 
@@ -112,6 +117,17 @@ class SecondaryWidget(QWidget):
         form.addRow("", self.per_object)
         self.min_size = _spin(0, 1e6, 0.0, "Drop inclusions smaller than this", step=0.1)
         form.addRow("Smallest inclusion", self.min_size)
+        self.split = QComboBox()
+        self.split.addItems(list(SPLITS))
+        self.split.setToolTip(
+            "How touching inclusions are told apart. Distance: cut along the neck between round "
+            "inclusions. Intensity: one inclusion per bright centre. None: touching inclusions "
+            "count as one")
+        form.addRow("Split touching", self.split)
+        self.diameter = _spin(0, 1000, 0.0, "Typical inclusion diameter: seeds closer than half "
+                              "of it are one inclusion (auto = the median size of the pieces)", step=0.1)
+        self.diameter.setSpecialValueText("auto")
+        form.addRow("Inclusion diameter", self.diameter)
 
         self.run_btn = QPushButton("Make objects")
         self.run_btn.clicked.connect(self.run)
@@ -127,11 +143,13 @@ class SecondaryWidget(QWidget):
         self._rows = {w: form.labelForField(w) for w in (
             self.distance, self.gap, self.width, self.channels, self.kind, self.threshold,
             self.factor, self.manual, self.max_distance, self.smooth, self.add_cytoplasm,
-            self.structure, self.size, self.dark, self.per_object, self.min_size)}
+            self.structure, self.size, self.dark, self.per_object, self.min_size, self.split,
+            self.diameter)}
         self.method.currentTextChanged.connect(self._update)
         self.kind.currentTextChanged.connect(self._update)
         self.structure.currentTextChanged.connect(self._update)
         self.threshold.currentTextChanged.connect(self._update)
+        self.split.currentTextChanged.connect(self._update)
         self.primary.currentTextChanged.connect(self._update)
         for ev in (self.viewer.layers.events.inserted, self.viewer.layers.events.removed,
                    self.viewer.layers.events.reordered):
@@ -183,6 +201,8 @@ class SecondaryWidget(QWidget):
             self.max_distance: cells, self.add_cytoplasm: cells,
             self.structure: inner, self.size: inner and structure != "regions", self.dark: inner,
             self.per_object: inner and threshold != "manual", self.min_size: inner,
+            self.split: inner and structure != "filaments",
+            self.diameter: inner and structure != "filaments" and SPLITS[self.split.currentText()] != "none",
         }
         self._rows[self.channels].setText("Channels" if inner else "Cell channels")
         self.channels.setToolTip("Channel(s) that show the structures; several are averaged" if inner
@@ -194,7 +214,7 @@ class SecondaryWidget(QWidget):
             label = self._rows.get(w)
             if label is not None:
                 label.setVisible(visible)
-        for w in (self.distance, self.gap, self.width, self.max_distance, self.smooth, self.size):
+        for w in (self.distance, self.gap, self.width, self.max_distance, self.smooth, self.size, self.diameter):
             w.setSuffix(f" {units}")
         layer = self._layer(self.primary.currentText())
         nd = spatial_ndim(layer) if layer is not None else 2
@@ -238,7 +258,8 @@ class SecondaryWidget(QWidget):
             max_distance=self.max_distance.value() or None, smooth=self.smooth.value(),
             structure=STRUCTURE_KINDS[self.structure.currentText()], size=self.size.value(),
             dark=self.dark.isChecked(), per_object=self.per_object.isChecked(),
-            min_size=self.min_size.value(),
+            min_size=self.min_size.value(), split=SPLITS[self.split.currentText()],
+            diameter=self.diameter.value(),
         )
         try:  # check alignment now, so a mismatch is reported before any work
             for c in channels:
@@ -253,6 +274,7 @@ class SecondaryWidget(QWidget):
             seeds_all = np.asarray(labels.data)
             out = np.zeros_like(seeds_all)
             cyto = np.zeros_like(seeds_all) if add_cyto else None
+            inclusions = np.zeros(seeds_all.shape, np.uint32) if method == STRUCTURES else None
             positions = list(np.ndindex(*lead_shape))
             thresholds = []
             for n, pos in enumerate(positions):
@@ -268,12 +290,14 @@ class SecondaryWidget(QWidget):
                     image = _secondary.combine_channels(
                         [aligned_image(viewer, c, labels, pos) for c in channels]
                     )
-                    found, used = _secondary.structures(
+                    found, used, one_by_one = _secondary.structures(
                         seeds, image, spacing, settings["structure"], settings["size"],
                         settings["threshold"], settings["value"], settings["factor"],
                         settings["per_object"], settings["dark"], settings["smooth"], settings["min_size"],
+                        split=settings["split"], diameter=settings["diameter"], return_inclusions=True,
                     )
                     out[pos] = found
+                    inclusions[pos] = one_by_one
                     thresholds.extend(used)
                 else:
                     image = _secondary.combine_channels(
@@ -288,7 +312,7 @@ class SecondaryWidget(QWidget):
                         thresholds.append(used)
                     if cyto is not None:
                         cyto[pos] = _secondary.cytoplasm(cells, seeds)
-            return out, cyto, thresholds
+            return out, cyto, thresholds, inclusions
 
         worker = work()
         worker.yielded.connect(self._on_progress)
@@ -313,7 +337,7 @@ class SecondaryWidget(QWidget):
         self.run_btn.setEnabled(True)
         self.progress.setVisible(False)
 
-    def _add(self, labels, method, settings, out, cyto, thresholds):
+    def _add(self, labels, method, settings, out, cyto, thresholds, inclusions=None):
         units = self._units()
         name = {
             EXPAND: f"{labels.name} expanded {settings['distance']:g} {units}",
@@ -324,11 +348,17 @@ class SecondaryWidget(QWidget):
         }[method]
         meta = {**(labels.metadata or {}), "ibif_cellpose": True, "ibif_secondary": method,
                 "ibif_seeds": labels.name}
-        meta.pop("ibif_pieces", None)
-        meta.pop("ibif_inclusions", None)
+        for key in ("ibif_pieces", "ibif_inclusions", "ibif_inclusion_layer", "ibif_inclusion_ids"):
+            meta.pop(key, None)
+        common = dict(scale=labels.scale, translate=labels.translate)
+        if method == STRUCTURES and inclusions is not None:
+            # The same inclusions numbered one by one, each knowing its object (ibif_seeds).
+            single = self.viewer.add_labels(inclusions, name=f"{name} inclusions", **common,
+                                            metadata={**meta, "ibif_inclusion_ids": True})
+            meta["ibif_inclusion_layer"] = single.name
         if method == STRUCTURES:
             meta["ibif_inclusions"] = True  # the measurements count the inclusions of each object
-        common = dict(scale=labels.scale, translate=labels.translate, metadata=meta)
+        common["metadata"] = meta
         self.viewer.add_labels(out, name=name, **common)
         if cyto is not None:
             self.viewer.add_labels(cyto, name=f"{labels.name} cytoplasm", **common)
@@ -336,8 +366,10 @@ class SecondaryWidget(QWidget):
         text = f"{name}: {count} objects."
         if method == STRUCTURES:
             parents = len(np.unique(labels.data)) - (1 if (labels.data == 0).any() else 0)
-            text = (f"{name}: structures in {count} of {parents} objects; each object's structures "
-                    f"share its number.")
+            n_incl = int(sum(len(np.unique(p)) - 1 for p in _per_position(inclusions, labels))) \
+                if inclusions is not None else 0
+            text = (f"{name}: {n_incl} inclusions in {count} of {parents} objects. In {name!r} each "
+                    f"object's inclusions share its number; in {name + ' inclusions'!r} each has its own.")
         if thresholds:
             label = "Threshold" if method == STRUCTURES else "Foreground threshold"
             text += f" {label} {np.mean(thresholds):.3f} (channels scaled to 0-1)."
@@ -346,6 +378,12 @@ class SecondaryWidget(QWidget):
             if missing > 0:
                 text += f" {missing} seeds got no cell."
         self.status.setText(text)
+
+
+def _per_position(data, labels):
+    """The 2D / 3D blocks of `data` (laid out like `labels`), one per time point / position."""
+    lead = labels.ndim - spatial_ndim(labels)
+    return [data[pos] for pos in np.ndindex(*data.shape[:lead])]
 
 
 def _spin(lo, hi, value, tip, unit="µm", step=0.5):

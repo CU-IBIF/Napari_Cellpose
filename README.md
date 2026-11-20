@@ -56,7 +56,8 @@ Cellpose from a [facility GPU server](docs/facility-server.md) or a
   spots (vesicles, puncta, nucleoli), filaments or bright regions (organelles), bright or
   dark, inside each object (the *inclusions*), with all the inclusions inside object 17
   forming object 17 (so nuclei -> cytoplasm -> vesicles link by number, and the
-  measurements count the inclusions).
+  measurements count the inclusions). Touching inclusions are split by a 2D / 3D
+  watershed, and a second layer numbers them one by one with their object as `parent`.
   Every new object keeps its seed's label number; distances are in µm using the real
   voxel size, so 3D stacks work too.
 - **Measurements**: tick objects layers (e.g. nuclei, cells, cytoplasm) and channels,

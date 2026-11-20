@@ -141,7 +141,16 @@ def test_panel_structures_inside_each_object(qtbot):
     assert (found[found > 0] == nuclei[found > 0]).all()  # each structure has its nucleus's number
     assert found[1, 2, 14, 13] == 1 and found[1, 2, 14, 33] == 2  # region row 14 = image row 19
     assert layer.metadata["ibif_inclusions"] and layer.metadata["ibif_seeds"] == "nuclei"
-    assert "structures in 2 of 2 objects" in w.status.text()
+    assert "6 inclusions in 2 of 2 objects" in w.status.text()  # 3 per time point
     table = measure_layer(v, layer)
     assert list(table["inclusions"]) == [2, 1, 2, 1]  # per time point: 2 spots in nucleus 1, 1 in 2
     assert "inclusions" not in measure_layer(v, v.layers["nuclei"]).columns
+    # The same inclusions numbered one by one, each linked to its nucleus.
+    single = v.layers["nuclei regions inclusions"]
+    assert layer.metadata["ibif_inclusion_layer"] == single.name
+    assert single.metadata["ibif_inclusion_ids"] and not single.metadata.get("ibif_inclusions")
+    assert [len(np.unique(single.data[t])) - 1 for t in range(2)] == [3, 3]
+    assert ((single.data > 0) == (found > 0)).all()
+    per = measure_layer(v, single)
+    assert list(per.columns[:3]) == ["T", "label", "parent"] and "inclusions" not in per.columns
+    assert sorted(per[per["T"] == 0]["parent"]) == [1, 1, 2]

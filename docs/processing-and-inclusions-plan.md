@@ -1,6 +1,6 @@
 # Plan: Processing section, and inclusions in Secondary objects
 
-Status: **reviewed, decisions recorded below** (no code yet). Target: 0.33.0 – 0.37.0.
+Status: **in progress**: M1 done (0.33.0), M2 done (0.33.1). Target: 0.33.0 – 0.37.0.
 
 ## Decisions (from review, 2026-11-20)
 

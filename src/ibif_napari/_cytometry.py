@@ -1860,7 +1860,9 @@ def _is_key(column):
 
 
 def _is_voxels(column):
-    return column == "voxels" or str(column).endswith(": voxels")
+    """The raw voxel count, or the number of the object an inclusion is in: columns that
+    are not measurements of the object."""
+    return column in ("voxels", "parent") or str(column).endswith((": voxels", ": parent"))
 
 
 def _centroid_columns(frame, prefix=""):

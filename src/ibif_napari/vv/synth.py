@@ -376,3 +376,92 @@ def generate_all(out, quick=False, specs=None):
     manifest = {"quick": quick, "scenes": [f.name for f in folders]}
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2))
     return folders
+
+
+# ---- inclusions (spots inside cells) ---------------------------------------------------------
+
+
+@dataclass
+class InclusionScene:
+    """Spots inside cells, some of them touching, with their truth.
+
+    cells: parent objects (1...n); spots: truth inclusions numbered one by one; parent:
+    {spot: cell}; image: blurred spots on a dim cytoplasm, with Gaussian noise;
+    touching: number of touching pairs; spacing (µm) and radius (µm) of the spots."""
+
+    cells: np.ndarray
+    spots: np.ndarray
+    parent: dict
+    image: np.ndarray
+    spacing: tuple
+    radius: float
+    touching: int
+
+
+def inclusion_scene(ndim=2, seed=0, snr=8.0, grid=3, touch_share=0.5):
+    """A grid of `grid` x `grid` square cells; each holds 1-3 round spots (radius 0.4-0.5 µm)
+    placed well apart, and about `touch_share` of the cells also a pair of spots pressed
+    together (centres 1.6-1.85 radii apart, so they touch along a neck). 2D at 0.1 µm
+    pixels, or 3D at 0.3 x 0.1 x 0.1 µm (Z steps 3x the pixel size), each spot (pair) at
+    its own depth. Overlapping voxels go to the nearer spot centre. The image is the spots
+    (1.0) on cytoplasm (0.15), blurred by a 0.05 µm PSF, with noise of sigma 1 / `snr`."""
+    rng = np.random.default_rng(seed)
+    spacing = (0.1, 0.1) if ndim == 2 else (0.3, 0.1, 0.1)
+    side, gap = 70, 6  # cell size and gap, pixels (XY)
+    n_xy = grid * (side + gap) + gap
+    shape = (n_xy, n_xy) if ndim == 2 else (16, n_xy, n_xy)
+    cells = np.zeros(shape, np.uint16)
+    corners = {}
+    for k, (i, j) in enumerate(np.ndindex(grid, grid), start=1):
+        y0, x0 = gap + i * (side + gap), gap + j * (side + gap)
+        cells[..., y0:y0 + side, x0:x0 + side] = k
+        corners[k] = (y0, x0)
+    depth = (shape[0] - 1) * spacing[0] if ndim == 3 else 0.0
+
+    def z_of():  # a depth at least 0.6 µm inside the stack
+        return float(rng.uniform(0.6, depth - 0.6)) if ndim == 3 else None
+
+    placed = []  # (centre (µm, Z Y X or Y X), radius, cell)
+    touching = 0
+    for k, (y0, x0) in corners.items():
+        lo = np.array([y0, x0]) * 0.1 + 0.8
+        hi = np.array([y0 + side - 1, x0 + side - 1]) * 0.1 - 0.8
+        mine = []
+
+        def free(c, mine=mine):
+            return all(np.hypot(*(c - m)) > 1.5 for m in mine)
+
+        if rng.random() < touch_share:
+            r1, r2 = rng.uniform(0.4, 0.5, 2)
+            for _ in range(100):
+                c1 = rng.uniform(lo + 0.6, hi - 0.6)
+                angle = rng.uniform(0, 2 * np.pi)
+                c2 = c1 + rng.uniform(1.6, 1.85) * max(r1, r2) * np.array([np.sin(angle), np.cos(angle)])
+                if np.all((c2 >= lo) & (c2 <= hi)) and free(c1) and free(c2):
+                    z = z_of()
+                    for c, r in ((c1, r1), (c2, r2)):
+                        mine.append(c)
+                        placed.append((np.r_[z, c] if ndim == 3 else c, r, k))
+                    touching += 1
+                    break
+        for _ in range(int(rng.integers(1, 4))):
+            r = rng.uniform(0.4, 0.5)
+            for _ in range(100):
+                c = rng.uniform(lo, hi)
+                if free(c):
+                    mine.append(c)
+                    placed.append((np.r_[z_of(), c] if ndim == 3 else c, r, k))
+                    break
+    mesh = np.meshgrid(*[np.arange(n) * s for n, s in zip(shape, spacing)], indexing="ij", sparse=True)
+    best = np.full(shape, np.inf)
+    spots = np.zeros(shape, np.uint32)
+    for n, (c, r, _) in enumerate(placed, start=1):
+        d = np.sqrt(sum((m - ci) ** 2 for m, ci in zip(mesh, c))) / r  # in radii
+        take = (d <= 1.0) & (d < best)
+        spots[take] = n
+        best = np.where(take, d, best)
+    phantom = np.where(cells > 0, 0.15, 0.0) + (spots > 0) * 0.85
+    image = ndi.gaussian_filter(phantom, sigma=[0.05 / s for s in spacing])
+    image = (image + rng.normal(0, 1.0 / snr, shape)).astype(np.float32)
+    return InclusionScene(cells, spots, {n: k for n, (_, _, k) in enumerate(placed, start=1)}, image,
+                          spacing, 0.45, touching)

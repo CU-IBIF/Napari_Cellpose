@@ -52,7 +52,22 @@ def tables_of(viewer):
 
 
 INCLUSIONS = "inclusions"
+PARENT = "parent"
 LEGACY_NAMES = {"pieces": INCLUSIONS}  # measurement names before 0.33
+
+
+def count_per_object(objects, inclusion_labels):
+    """{object label: number of distinct inclusions (non-zero `inclusion_labels`) in it}."""
+    objects = np.asarray(objects)
+    inclusion_labels = np.asarray(inclusion_labels)
+    if objects.shape != inclusion_labels.shape:
+        raise ValueError(f"the objects ({objects.shape}) and the inclusions ({inclusion_labels.shape}) differ in size")
+    both = (objects > 0) & (inclusion_labels > 0)
+    if not both.any():
+        return {}
+    pairs = np.unique(np.stack([objects[both].astype(np.int64), inclusion_labels[both].astype(np.int64)]), axis=1)
+    ids, counts = np.unique(pairs[0], return_counts=True)
+    return {int(i): int(c) for i, c in zip(ids, counts)}
 
 
 def upgrade_name(name):
@@ -84,20 +99,41 @@ def upgrade_names(data):
 
 def has_inclusions(layer):
     """Whether a labels layer holds structures inside objects (Secondary objects ->
-    Structures inside each object), whose measurements count the inclusions."""
+    Structures inside each object), each object's numbered like it, whose measurements
+    count the inclusions."""
     meta = layer.metadata or {}
     return bool(meta.get("ibif_inclusions") or meta.get("ibif_pieces"))
 
 
+def is_individual_inclusions(layer):
+    """Whether a labels layer numbers inclusions one by one (1...N) rather than by the
+    object they are in. Its measurements get a 'parent' column instead, and it is left out
+    of the joined "All objects" table, whose rows are matched by label number."""
+    return bool((layer.metadata or {}).get("ibif_inclusion_ids"))
+
+
+def _same_grid_layer(viewer, labels, name):
+    """The layer `name` if it is a labels layer of the same shape as `labels`."""
+    if not name or viewer is None or name not in viewer.layers:
+        return None
+    other = viewer.layers[name]
+    return other if np.shape(other.data) == np.shape(labels.data) else None
+
+
 def measure_block(labels, channels=None, spacing=None, origin=None, units="µm", inclusions=False,
-                  pieces=None):
+                  pieces=None, inclusion_labels=None, parents=None):
     """One row per object of a 2D or 3D labels array.
 
     channels: {name: array of the same shape}; spacing: voxel size per axis;
     origin: world coordinate of voxel 0 (for centroids); inclusions: add an 'inclusions'
     column, the number of separate inclusions in each object (e.g. the vesicles of a
-    cell, which share its number). `pieces` is the old name of `inclusions`. Returns a
-    DataFrame with 'label', size, centroid and '<channel> <stat>' columns.
+    cell, which share its number). `pieces` is the old name of `inclusions`.
+    inclusion_labels: the same inclusions numbered one by one (Secondary objects split
+    touching ones); the count is then the number of those in each object, rather than
+    the number of connected pieces.
+    parents: the objects the inclusions lie in (for a layer of inclusions numbered one by
+    one); adds a 'parent' column, the number of the object each one is in.
+    Returns a DataFrame with 'label', size, centroid and '<channel> <stat>' columns.
     """
     if pieces is not None:
         inclusions = pieces
@@ -112,11 +148,20 @@ def measure_block(labels, channels=None, spacing=None, origin=None, units="µm",
         return pd.DataFrame(columns=["label", size_name])
     voxels = ndi.sum(np.ones(labels.shape, np.uint8), labels, ids).astype(np.int64)
     size = voxels * float(np.prod(spacing))
-    data = {"label": ids.astype(np.int64), "voxels": voxels, size_name: size}
+    data = {"label": ids.astype(np.int64)}
+    if parents is not None:
+        parents = np.asarray(parents)
+        if parents.shape != labels.shape:
+            raise ValueError(f"the objects ({parents.shape}) and the inclusions ({labels.shape}) differ in size")
+        data[PARENT] = np.asarray(ndi.maximum(parents, labels, ids), np.int64)
+    data.update({"voxels": voxels, size_name: size})
     if inclusions:
-        from ._secondary import count_inclusions
+        if inclusion_labels is not None:
+            counts = count_per_object(labels, inclusion_labels)
+        else:
+            from ._secondary import count_inclusions
 
-        counts = count_inclusions(labels)
+            counts = count_inclusions(labels)
         data[INCLUSIONS] = np.array([counts.get(int(i), 0) for i in ids], np.int64)
     # Diameter of the sphere (3D) or disc (2D) with the same volume / area.
     data[f"equivalent diameter ({units})"] = (
@@ -141,7 +186,9 @@ def measure_layer(viewer, labels, images=(), progress=None):
 
     `images` are image layers on the same pixel grid (matched by world coordinates, so
     cropped Cellpose region results work). Adds 'T' and 'P' columns when the layer has
-    those axes, and an 'inclusions' column for layers of structures (vesicles, nucleoli...). `progress(done, total)` is called per block.
+    those axes, an 'inclusions' column for layers of structures (vesicles, nucleoli...)
+    numbered by their object (counted in the layer of the same inclusions numbered one by
+    one, when it is there), and a 'parent' column for that layer. `progress(done, total)` is called per block.
     """
     from ._util import aligned_image, spatial_ndim
 
@@ -152,6 +199,10 @@ def measure_layer(viewer, labels, images=(), progress=None):
     spacing = [float(s) for s in labels.scale[-n_sp:]]
     units = "µm" if (labels.metadata or {}).get("ibif_voxel_um") else "px"
     data = np.asarray(labels.data)
+    meta = labels.metadata or {}
+    counted = has_inclusions(labels)
+    one_by_one = _same_grid_layer(viewer, labels, meta.get("ibif_inclusion_layer")) if counted else None
+    parents = _same_grid_layer(viewer, labels, meta.get("ibif_seeds")) if is_individual_inclusions(labels) else None
     rows = []
     positions = list(np.ndindex(*data.shape[:lead]))
     for n, pos in enumerate(positions):
@@ -159,8 +210,9 @@ def measure_layer(viewer, labels, images=(), progress=None):
             progress(n, len(positions))
         channels = {img.name: aligned_image(viewer, img, labels, pos) for img in images}
         origin = [float(t) for t in labels.translate[-n_sp:]]
-        table = measure_block(data[pos], channels, spacing, origin, units,
-                              inclusions=has_inclusions(labels))
+        table = measure_block(data[pos], channels, spacing, origin, units, inclusions=counted,
+                              inclusion_labels=None if one_by_one is None else np.asarray(one_by_one.data[pos]),
+                              parents=None if parents is None else np.asarray(parents.data[pos]))
         for name, i in zip(lead_names, pos):
             table.insert(0, name, i)
         rows.append(table)

@@ -667,6 +667,113 @@ def _region(ctx, res):
     res.figures.append(("Region run", _png(fig)))
 
 
+INCLUSION_SCENES = {2: (0, 1, 2, 3), 3: (0, 1, 2, 3)}  # seeds of the synthetic scenes
+INCLUSION_SETTINGS = dict(kind="spots", size=1.5, threshold="otsu", smooth=0.1)
+
+
+def _inclusion_runs():
+    """[(dimensions, seed, scene, {split: (by object, one by one)})] on the inclusion
+    scenes, computed once per run."""
+    from .. import _secondary
+
+    if _inclusion_runs.cache is None:
+        runs = []
+        for ndim, seeds in INCLUSION_SCENES.items():
+            for seed in seeds:
+                sc = synth.inclusion_scene(ndim, seed)
+                min_size = 0.05 if ndim == 2 else 0.02  # µm² / µm³: noise specks
+                out = {}
+                for split in ("distance", "none", "intensity"):
+                    found, _, single = _secondary.structures(
+                        sc.cells, sc.image, sc.spacing, min_size=min_size, split=split,
+                        return_inclusions=True, **INCLUSION_SETTINGS)
+                    out[split] = (found, single)
+                runs.append((ndim, seed, sc, out))
+        _inclusion_runs.cache = runs
+    return _inclusion_runs.cache
+
+
+_inclusion_runs.cache = None
+
+
+def _true_counts(sc):
+    counts = dict.fromkeys(range(1, int(sc.cells.max()) + 1), 0)
+    for parent in sc.parent.values():
+        counts[parent] += 1
+    return counts
+
+
+@check("VV-SEC-05")
+def _inclusions(ctx, res):
+    from .._measure import count_per_object
+
+    rows = []
+    for ndim, seed, sc, out in _inclusion_runs():
+        truth = _true_counts(sc)
+        row = {"scene": f"{ndim}D seed {seed}", "dims": ndim, "inclusions": len(sc.parent),
+               "touching pairs": sc.touching}
+        for split, (_, single) in out.items():
+            m = metrics.match(sc.spots, single)
+            got = count_per_object(sc.cells, single)
+            row[f"F1 {split}"] = m["f1@0.5"]
+            row[f"merges {split}"] = m["merges"]
+            row[f"counted exactly {split}"] = float(np.mean([got.get(k, 0) == n for k, n in truth.items()]))
+        rows.append(row)
+    table = pd.DataFrame(rows)
+    for ndim in sorted(INCLUSION_SCENES):
+        part = table[table["dims"] == ndim]
+        res.check(f"{ndim}D: mean F1 at IoU 0.5 (distance watershed)", part["F1 distance"].mean(), ">=",
+                  ctx.limits["incl_f1"])
+        res.check(f"{ndim}D: lowest F1 of a scene", part["F1 distance"].min(), ">=", ctx.limits["incl_f1_low"])
+        res.check(f"{ndim}D: share of cells counted exactly", part["counted exactly distance"].mean(), ">=",
+                  ctx.limits["incl_count"])
+        res.check(f"{ndim}D: F1 gained over no split", (part["F1 distance"] - part["F1 none"]).mean(), ">=",
+                  ctx.limits["incl_gain"])
+    res.tables["inclusions"] = table
+    res.metrics = {r["scene"]: {k: v for k, v in r.items() if k != "scene"} for r in rows}
+    ndim, seed, sc, out = next(r for r in _inclusion_runs() if r[0] == 2)
+    res.figures.append(("2D scene: truth spots and inclusions split by the watershed",
+                        seg_figure(sc.image, sc.spots, out["distance"][1], f"inclusions 2D seed {seed}")))
+    res.evidence.append(
+        f"{len(rows)} synthetic scenes ({sum(r['inclusions'] for r in rows)} spots, "
+        f"{sum(r['touching pairs'] for r in rows)} touching pairs). With the distance watershed the mean "
+        f"F1 is {table['F1 distance'].mean():.3f} (no split {table['F1 none'].mean():.3f}, intensity "
+        f"watershed {table['F1 intensity'].mean():.3f}); {table['counted exactly distance'].mean():.0%} of "
+        f"the cells have their spots counted exactly (no split "
+        f"{table['counted exactly none'].mean():.0%}). Settings: Otsu, Size 1.5 µm, Smoothing 0.1 µm.")
+
+
+@check("VV-SEC-06")
+def _inclusion_links(ctx, res):
+    from .._measure import measure_block
+
+    spanning = disagree = wrong_parent = wrong_count = n = 0
+    for _, _, sc, out in _inclusion_runs():
+        for found, single in out.values():
+            n += int(single.max())
+            for i in range(1, int(single.max()) + 1):
+                if len(np.unique(sc.cells[single == i])) != 1:
+                    spanning += 1
+            disagree += int(np.sum(found != np.where(single > 0, sc.cells, 0)))
+            per = measure_block(single, parents=sc.cells)
+            for label, parent in zip(per["label"], per["parent"]):
+                inside = np.unique(sc.cells[single == label])
+                wrong_parent += int(len(inside) != 1 or inside[0] != parent)
+            objects = measure_block(found, inclusions=True, inclusion_labels=single)
+            for label, count in zip(objects["label"], objects["inclusions"]):
+                independent = len(set(single[(found == label) & (single > 0)].tolist()))
+                wrong_count += int(count != independent)
+    res.check("inclusions spanning more than one object", spanning, "==", 0, "{:.0f}")
+    res.check("pixels where the two layers disagree", disagree, "==", 0, "{:.0f}")
+    res.check("inclusions with a wrong 'parent'", wrong_parent, "==", 0, "{:.0f}")
+    res.check("objects with a wrong 'inclusions' count", wrong_count, "==", 0, "{:.0f}")
+    res.metrics = {"inclusions checked": n}
+    res.evidence.append(
+        f"{n} inclusions from the VV-SEC-05 scenes (every split method): each lies in one object, the "
+        f"layer numbered by object matches them pixel for pixel, and the measurements' parent and "
+        f"inclusions columns match an independent count.")
+
+
 @check("VV-SEC-01")
 def _expand(ctx, res):
     from .. import _secondary

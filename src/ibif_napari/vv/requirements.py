@@ -37,6 +37,12 @@ LIMITS = {
     "unseeded_taken": 0.05,  # share of a cell without a seed that other cells may take
     "membrane_spill": 0.10,  # share of grown voxels outside their true cell and its membrane
     "membrane_size_ratio": 1.5,  # largest grown cell / its true cell
+    # Inclusions (synthetic spots, some touching; 4 scenes each in 2D and 3D, smoothing
+    # 0.1 µm; seeds 0-5 measure F1 0.98-1.0 and 89-100 % of cells counted exactly)
+    "incl_f1": 0.95,  # mean F1 at IoU 0.5 of the inclusions numbered one by one
+    "incl_f1_low": 0.90,  # lowest scene
+    "incl_count": 0.85,  # mean share of cells whose inclusions are counted exactly (seeds 0-3: 3D 0.92)
+    "incl_gain": 0.05,  # mean F1 gained over no split (connected pieces)
     # Measurements
     "exact_rel": 1e-9,
     "analytic_size_rel": 0.10,  # median |voxel size - ellipsoid size| / ellipsoid size
@@ -242,6 +248,34 @@ REQUIREMENTS = [
          "a cell left without its nucleus: at most {unseeded_taken} of its inside taken by other cells"],
         scenes=["cells_2d", "cells_3d"]),
     # ---- measurements ---------------------------------------------------------------------
+    Requirement(
+        "VV-SEC-05", "Secondary objects", "Touching inclusions are split by the watershed",
+        "Structures inside each object shall tell touching inclusions apart with a seeded "
+        "watershed (on by default), in 2D and in 3D stacks with anisotropic voxels, and number "
+        "them one by one.",
+        "Secondary objects section: Structures inside each object, Find: Spots, Split touching: "
+        "Watershed (distance); the '<objects> spots inclusions' layer",
+        "Test on synthetic cells holding 1-3 spots (radius 0.4-0.5 µm) and, in about half of "
+        "them, a pair of spots pressed together (4 scenes in 2D at 0.1 µm pixels, 4 in 3D at "
+        "0.3 x 0.1 x 0.1 µm, SNR 8), with Otsu, Size 1.5 µm and Smoothing 0.1 µm. The same is run "
+        "without a split and with the intensity watershed (shown, not a criterion).",
+        ["mean F1 at IoU 0.5 >= {incl_f1}, and >= {incl_f1_low} in every scene, in 2D and 3D",
+         "inclusions counted exactly in a mean share >= {incl_count} of the cells",
+         "F1 at least {incl_gain} higher than without a split (mean of the scenes)"]),
+    Requirement(
+        "VV-SEC-06", "Secondary objects", "Every inclusion is linked to the one object it is in",
+        "Each inclusion numbered one by one shall lie inside a single object; the layer numbered "
+        "by object shall hold the same pixels with the object's number; the measurements shall give "
+        "each inclusion the number of its object ('parent') and each object the number of its "
+        "inclusions ('inclusions').",
+        "Secondary objects section: Structures inside each object (both layers); Measurements "
+        "section: parent and inclusions columns",
+        "Test on the VV-SEC-05 scenes, with every split method, against an independent count.",
+        ["inclusions spanning more than one object: 0",
+         "pixels where the two layers disagree: 0",
+         "inclusions whose 'parent' differs from the object they are in: 0",
+         "objects whose 'inclusions' differs from the independent count: 0"],
+        kind="verification"),
     Requirement(
         "VV-MEAS-01", "Measurements", "Object size in µm² / µm³",
         "The measured area or volume shall equal the voxel count times the voxel size, and "
