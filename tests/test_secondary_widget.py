@@ -140,8 +140,8 @@ def test_panel_structures_inside_each_object(qtbot):
     nuclei = v.layers["nuclei"].data
     assert (found[found > 0] == nuclei[found > 0]).all()  # each structure has its nucleus's number
     assert found[1, 2, 14, 13] == 1 and found[1, 2, 14, 33] == 2  # region row 14 = image row 19
-    assert layer.metadata["ibif_pieces"] and layer.metadata["ibif_seeds"] == "nuclei"
+    assert layer.metadata["ibif_inclusions"] and layer.metadata["ibif_seeds"] == "nuclei"
     assert "structures in 2 of 2 objects" in w.status.text()
     table = measure_layer(v, layer)
-    assert list(table["pieces"]) == [2, 1, 2, 1]  # per time point: 2 spots in nucleus 1, 1 in 2
-    assert "pieces" not in measure_layer(v, v.layers["nuclei"]).columns
+    assert list(table["inclusions"]) == [2, 1, 2, 1]  # per time point: 2 spots in nucleus 1, 1 in 2
+    assert "inclusions" not in measure_layer(v, v.layers["nuclei"]).columns

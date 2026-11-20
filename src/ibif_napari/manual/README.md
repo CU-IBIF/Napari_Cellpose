@@ -529,10 +529,11 @@ and *nuclei cytoplasm*.
 ### Structures inside each object
 
 **Structures inside each object** finds vesicles, puncta, nucleoli, filaments or membranous
-organelles inside the objects you choose. **All the pieces inside an object together form one
-object with that object's number**: the twelve vesicles inside cytoplasm 17 are one object,
-numbered 17. They therefore join nucleus 17, cell 17 and cytoplasm 17 in the Measurements
-table, and its `pieces` column still says how many there were.
+organelles inside the objects you choose. We call these structures **inclusions**. **All the
+inclusions inside an object together form one object with that object's number**: the twelve
+vesicles inside cytoplasm 17 are one object, numbered 17. They therefore join nucleus 17,
+cell 17 and cytoplasm 17 in the Measurements table, and its `inclusions` column still says
+how many there were.
 
 This builds a hierarchy. For example, to find vesicles in the cytosol only:
 
@@ -565,16 +566,16 @@ Its settings:
   in brightness. An automatic threshold always splits an object in two, though, so an object
   with no structures still gets some. Use it only when every object has structures, or
   check the result.
-- **Smallest piece**: pieces smaller than this area or volume are dropped (noise).
+- **Smallest inclusion**: inclusions smaller than this area or volume are dropped (noise).
 - **Smoothing**: a Gaussian blur before thresholding.
 
 The new layer is named after the objects and what was found, for example *nuclei cytoplasm
 spots*; rename it in the layer list if you like (for example *vesicles*).
 
 > **Check the result.** Show the structures over their channel. If noise is found, raise
-> **Threshold ×**, **Smoothing** or **Smallest piece**; if structures are missed, lower
+> **Threshold ×**, **Smoothing** or **Smallest inclusion**; if structures are missed, lower
 > **Threshold ×** or try another threshold (Triangle often suits a few small bright spots).
-> Touching spots are counted as one piece.
+> Touching spots are counted as one inclusion.
 
 *Background.* The watershed transform (Vincent & Soille 1991) treats the image as a landscape
 and floods it from the seeds; cells meet where the floods meet. Growing cells from nuclei in
@@ -613,7 +614,7 @@ For each object (and time point / position) the table has:
 | `centroid Z / Y / X (µm)` | Centre of the object, in the image's coordinates |
 | `<channel> mean`, `median`, `min`, `max`, `std` | Intensity statistics of the object's voxels in each channel |
 | `<channel> sum` | Integrated intensity (sum over the object's voxels) |
-| `pieces` | Layers from **Structures inside each object** only: the number of separate pieces (e.g. vesicles) that make up the object |
+| `inclusions` | Layers from **Structures inside each object** only: the number of separate inclusions (e.g. vesicles) that make up the object. Called `pieces` before version 0.33; older workspaces are renamed when they open |
 
 **Interpreting intensities.** Intensity measurements are only as good as the acquisition
 (Waters 2009):

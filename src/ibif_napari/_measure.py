@@ -51,15 +51,56 @@ def tables_of(viewer):
     return dict(_tables.get(viewer, {}))
 
 
-def measure_block(labels, channels=None, spacing=None, origin=None, units="µm", pieces=False):
+INCLUSIONS = "inclusions"
+LEGACY_NAMES = {"pieces": INCLUSIONS}  # measurement names before 0.33
+
+
+def upgrade_name(name):
+    """A measurement name saved by an older version, in today's words: 'pieces' and
+    '<layer>: pieces' become 'inclusions' and '<layer>: inclusions'. Other names are
+    returned unchanged."""
+    if not isinstance(name, str):
+        return name
+    head, sep, last = name.rpartition(": ")
+    new = LEGACY_NAMES.get(last)
+    return head + sep + new if new else name
+
+
+def upgrade_table(table):
+    """`table` with its old measurement names renamed (see `upgrade_name`)."""
+    renames = {c: upgrade_name(c) for c in table.columns if upgrade_name(c) != c}
+    return table.rename(columns=renames) if renames else table
+
+
+def upgrade_names(data):
+    """A copy of saved state (dicts, lists, strings) with every old measurement name in
+    it renamed (see `upgrade_name`), keys included."""
+    if isinstance(data, dict):
+        return {upgrade_name(k): upgrade_names(v) for k, v in data.items()}
+    if isinstance(data, (list, tuple)):
+        return type(data)(upgrade_names(v) for v in data)
+    return upgrade_name(data)
+
+
+def has_inclusions(layer):
+    """Whether a labels layer holds structures inside objects (Secondary objects ->
+    Structures inside each object), whose measurements count the inclusions."""
+    meta = layer.metadata or {}
+    return bool(meta.get("ibif_inclusions") or meta.get("ibif_pieces"))
+
+
+def measure_block(labels, channels=None, spacing=None, origin=None, units="µm", inclusions=False,
+                  pieces=None):
     """One row per object of a 2D or 3D labels array.
 
     channels: {name: array of the same shape}; spacing: voxel size per axis;
-    origin: world coordinate of voxel 0 (for centroids); pieces: add a 'pieces' column,
-    the number of separate parts of each object (e.g. the vesicles of a cell, which share
-    its number). Returns a DataFrame with 'label', size, centroid and '<channel> <stat>'
-    columns.
+    origin: world coordinate of voxel 0 (for centroids); inclusions: add an 'inclusions'
+    column, the number of separate inclusions in each object (e.g. the vesicles of a
+    cell, which share its number). `pieces` is the old name of `inclusions`. Returns a
+    DataFrame with 'label', size, centroid and '<channel> <stat>' columns.
     """
+    if pieces is not None:
+        inclusions = pieces
     labels = np.asarray(labels)
     nd = labels.ndim
     spacing = np.asarray(spacing if spacing is not None else (1.0,) * nd, float)
@@ -72,11 +113,11 @@ def measure_block(labels, channels=None, spacing=None, origin=None, units="µm",
     voxels = ndi.sum(np.ones(labels.shape, np.uint8), labels, ids).astype(np.int64)
     size = voxels * float(np.prod(spacing))
     data = {"label": ids.astype(np.int64), "voxels": voxels, size_name: size}
-    if pieces:
-        from ._secondary import count_pieces
+    if inclusions:
+        from ._secondary import count_inclusions
 
-        counts = count_pieces(labels)
-        data["pieces"] = np.array([counts.get(int(i), 0) for i in ids], np.int64)
+        counts = count_inclusions(labels)
+        data[INCLUSIONS] = np.array([counts.get(int(i), 0) for i in ids], np.int64)
     # Diameter of the sphere (3D) or disc (2D) with the same volume / area.
     data[f"equivalent diameter ({units})"] = (
         np.cbrt(6 * size / np.pi) if nd == 3 else np.sqrt(4 * size / np.pi)
@@ -100,7 +141,7 @@ def measure_layer(viewer, labels, images=(), progress=None):
 
     `images` are image layers on the same pixel grid (matched by world coordinates, so
     cropped Cellpose region results work). Adds 'T' and 'P' columns when the layer has
-    those axes, and a 'pieces' column for layers of structures (vesicles, nucleoli...). `progress(done, total)` is called per block.
+    those axes, and an 'inclusions' column for layers of structures (vesicles, nucleoli...). `progress(done, total)` is called per block.
     """
     from ._util import aligned_image, spatial_ndim
 
@@ -119,7 +160,7 @@ def measure_layer(viewer, labels, images=(), progress=None):
         channels = {img.name: aligned_image(viewer, img, labels, pos) for img in images}
         origin = [float(t) for t in labels.translate[-n_sp:]]
         table = measure_block(data[pos], channels, spacing, origin, units,
-                              pieces=bool((labels.metadata or {}).get("ibif_pieces")))
+                              inclusions=has_inclusions(labels))
         for name, i in zip(lead_names, pos):
             table.insert(0, name, i)
         rows.append(table)

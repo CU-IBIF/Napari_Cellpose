@@ -110,8 +110,8 @@ class SecondaryWidget(QWidget):
         self.per_object.setToolTip(
             "Better when objects differ in brightness; but an object with no structures still gets some")
         form.addRow("", self.per_object)
-        self.min_size = _spin(0, 1e6, 0.0, "Drop pieces smaller than this", step=0.1)
-        form.addRow("Smallest piece", self.min_size)
+        self.min_size = _spin(0, 1e6, 0.0, "Drop inclusions smaller than this", step=0.1)
+        form.addRow("Smallest inclusion", self.min_size)
 
         self.run_btn = QPushButton("Make objects")
         self.run_btn.clicked.connect(self.run)
@@ -325,8 +325,9 @@ class SecondaryWidget(QWidget):
         meta = {**(labels.metadata or {}), "ibif_cellpose": True, "ibif_secondary": method,
                 "ibif_seeds": labels.name}
         meta.pop("ibif_pieces", None)
+        meta.pop("ibif_inclusions", None)
         if method == STRUCTURES:
-            meta["ibif_pieces"] = True  # the measurements count the pieces of each object
+            meta["ibif_inclusions"] = True  # the measurements count the inclusions of each object
         common = dict(scale=labels.scale, translate=labels.translate, metadata=meta)
         self.viewer.add_labels(out, name=name, **common)
         if cyto is not None:

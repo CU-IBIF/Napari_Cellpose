@@ -4,7 +4,7 @@ from scipy import ndimage as ndi
 
 from ibif_napari._secondary import (
     combine_channels,
-    count_pieces,
+    count_inclusions,
     cytoplasm,
     expand,
     foreground,
@@ -221,7 +221,7 @@ def test_structures_spots_take_their_objects_number():
     assert (found[found > 0] == cells[found > 0]).all()  # each piece has its cell's number
     assert not found[outside].any() and not found[cells == 0].any()
     assert iou(found > 0, truth) > 0.8
-    assert count_pieces(found) == {1: 3, 2: 1}
+    assert count_inclusions(found) == {1: 3, 2: 1}
 
 
 def test_structures_dark_nucleoli_in_a_dna_stain():
@@ -236,7 +236,7 @@ def test_structures_dark_nucleoli_in_a_dna_stain():
         found, _ = structures(nuclei, img, kind=kind, size=4, dark=True, smooth=0)
         assert (found[found > 0] == nuclei[found > 0]).all()
         assert iou(found > 0, nucleoli) > 0.7, kind
-        assert count_pieces(found) == {1: 2, 2: 1}, kind
+        assert count_inclusions(found) == {1: 2, 2: 1}, kind
 
 
 def test_structures_filaments():
@@ -251,7 +251,7 @@ def test_structures_filaments():
     assert (found[found > 0] == cells[found > 0]).all()
     assert (found[line] > 0).mean() > 0.9
     assert (found > 0).sum() < 3 * line.sum()  # thin, not a blob
-    assert count_pieces(found) == {1: 1, 2: 1}
+    assert count_inclusions(found) == {1: 1, 2: 1}
     # 3D with long Z voxels: the ridge filter runs per plane.
     cells3 = np.stack([cells] * 3)
     found3, _ = structures(cells3, np.stack([img] * 3), spacing=(2.0, 0.5, 0.5), kind="filaments",

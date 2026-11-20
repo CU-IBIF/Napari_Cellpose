@@ -5,8 +5,8 @@
 - `seeded_cells`: whole cells from seeds (nuclei) in another channel, by a seeded
   watershed inside a thresholded foreground (like CellProfiler's IdentifySecondaryObjects).
 - `structures`: structures inside each object (vesicles, puncta, nucleoli, filaments,
-  organelles) found in a channel. All the pieces inside object 17 together form object 17,
-  so they link to it (and to everything else numbered 17) in the measurements.
+  organelles), the *inclusions*, found in a channel. All the inclusions inside object 17
+  together form object 17, so they link to it (and to everything else numbered 17) in the measurements.
 
 Every secondary object keeps the label number of the object it came from, so nucleus 17
 and cell 17 belong together. Distances are in physical units with per-axis `spacing`
@@ -232,7 +232,7 @@ def structures(parents, image, spacing=None, kind="spots", size=1.0, threshold="
                factor=1.0, per_object=False, dark=False, smooth=0.0, min_size=0.0):
     """Structures inside each object of `parents` (e.g. vesicles in the cytoplasm, nucleoli
     in nuclei), found in `image`. Every structure pixel takes the number of the object it
-    lies in, so all the pieces inside object 17 are one object, numbered 17.
+    lies in, so all the inclusions inside object 17 are one object, numbered 17.
 
     kind: "spots" (small bright blobs: vesicles, puncta, nucleoli; the local background,
           a Gaussian blur of width `size`, is subtracted first, so `size` should be about
@@ -246,7 +246,7 @@ def structures(parents, image, spacing=None, kind="spots", size=1.0, threshold="
           pixels inside all the objects together, or inside each object on its own with
           `per_object` (better when objects differ in brightness, but an object with no
           structures still gets some).
-    min_size: pieces smaller than this (µm² / µm³ with `spacing`) are dropped.
+    min_size: inclusions smaller than this (µm² / µm³ with `spacing`) are dropped.
     `size` and `smooth` are in the units of `spacing`. Returns (structures, thresholds used).
     """
     from skimage import filters
@@ -304,7 +304,7 @@ def structures(parents, image, spacing=None, kind="spots", size=1.0, threshold="
             used.append(t)
     out = np.where(found, parents, 0).astype(parents.dtype, copy=False)
     if min_size and found.any():
-        # Pieces in touching objects are split by number below.
+        # Inclusions in touching objects are split by number below.
         pieces, n = ndi.label(out > 0, structure=ndi.generate_binary_structure(out.ndim, out.ndim))
         pieces = np.where(out > 0, pieces * (int(out.max()) + 1) + out, 0)
         ids, inverse, counts = np.unique(pieces, return_inverse=True, return_counts=True)
@@ -325,9 +325,9 @@ def _ridges(image, radius, spacing):
     return sato(image, sigmas=[sigma], black_ridges=False)
 
 
-def count_pieces(labels):
-    """{label: number of separate pieces}, e.g. vesicles per cell. Pixels that touch at a
-    corner or edge belong to the same piece."""
+def count_inclusions(labels):
+    """{label: number of separate inclusions}, e.g. vesicles per cell. Pixels that touch at
+    a corner or edge belong to the same inclusion."""
     labels = np.asarray(labels)
     full = ndi.generate_binary_structure(labels.ndim, labels.ndim)
     out = {}
@@ -335,3 +335,6 @@ def count_pieces(labels):
         if sl is not None:
             out[label] = int(ndi.label(labels[sl] == label, structure=full)[1])
     return out
+
+
+count_pieces = count_inclusions  # the name before 0.33 ("pieces" are now "inclusions")

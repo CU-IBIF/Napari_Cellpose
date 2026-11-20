@@ -210,7 +210,7 @@ class Cytometry:
         if self.table is None:
             return "No objects chosen yet."
         feats = self.measured_features()
-        size = [f for f in feats if any(w in f for w in ("volume", "area", "diameter", "pieces"))]
+        size = [f for f in feats if any(w in f for w in ("volume", "area", "diameter", "inclusions"))]
         channels = sorted({f.rsplit(" ", 1)[0].split(": ")[-1] for f in feats
                            if f.rsplit(" ", 1)[-1] in _STATS})
         found, total = self.objects_found()
@@ -2304,6 +2304,7 @@ def _save(viewer, folder):
 def _load(viewer, folder, data):
     from . import _measure
 
+    data = _measure.upgrade_names(data)  # names saved before 0.33 ("pieces")
     levels = state_of(viewer)
     levels.set_level(ROOT_LEVEL)
     levels.clear_levels()
@@ -2323,7 +2324,7 @@ def _load(viewer, folder, data):
         if path is None or not path.exists():
             notes.append(f"cytometry: the table of level {name!r} was not found")
             continue
-        table = pd.read_csv(path)
+        table = _measure.upgrade_table(pd.read_csv(path))
         from . import _cyto_levels
 
         geometry = _cyto_levels.load_geometry(folder, entry.get("geometry"))

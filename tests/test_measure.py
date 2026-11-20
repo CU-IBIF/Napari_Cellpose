@@ -50,7 +50,7 @@ def test_combine_and_save(tmp_path):
     assert pd.read_excel(xlsx).shape == c.shape
 
 
-def test_structures_link_to_their_cell_and_count_pieces():
+def test_structures_link_to_their_cell_and_count_inclusions():
     """nuclei -> cytoplasm -> vesicles: the vesicles inside cytoplasm 1 are one object
     numbered 1, so they share a row with nucleus 1 and cytoplasm 1."""
     from ibif_napari._secondary import structures
@@ -67,10 +67,39 @@ def test_structures_link_to_their_cell_and_count_pieces():
     t = combine({
         "nuclei": measure_block(nuclei),
         "cytoplasm": measure_block(cyto),
-        "vesicles": measure_block(vesicles, {"GFP": img}, pieces=True),
+        "vesicles": measure_block(vesicles, {"GFP": img}, inclusions=True),
     })
     assert list(t["label"]) == [1, 2]
-    assert list(t["vesicles: pieces"]) == [2, 1]
+    assert list(t["vesicles: inclusions"]) == [2, 1]
     assert list(t["vesicles: voxels"]) == [8, 4]
     assert list(t["nuclei: voxels"]) == [36, 36] and list(t["cytoplasm: voxels"]) == [220, 220]
-    assert "pieces" not in measure_block(cells).columns
+    assert "inclusions" not in measure_block(cells).columns
+
+
+def test_old_pieces_names_are_upgraded_to_inclusions():
+    from ibif_napari._measure import upgrade_name, upgrade_names, upgrade_table
+
+    assert upgrade_name("pieces") == "inclusions"
+    assert upgrade_name("vesicles: pieces") == "vesicles: inclusions"
+    assert upgrade_name("my pieces mean") == "my pieces mean"  # a channel that happens to say "pieces"
+    assert upgrade_name(3) == 3
+    t = upgrade_table(pd.DataFrame({"label": [1], "pieces": [2], "cells: pieces": [2]}))
+    assert list(t.columns) == ["label", "inclusions", "cells: inclusions"]
+    state = {"gates": [{"x": "vesicles: pieces", "y": "area (µm²)"}], "features": ["pieces", "label"],
+             "vesicles: pieces": {"min": 1}}
+    assert upgrade_names(state) == {"gates": [{"x": "vesicles: inclusions", "y": "area (µm²)"}],
+                                    "features": ["inclusions", "label"], "vesicles: inclusions": {"min": 1}}
+
+
+def test_short_label_of_inclusions():
+    from ibif_napari._cyto_labels import short_names
+
+    labels = short_names(["vesicles: inclusions", "vesicles: volume (µm³)"])
+    assert "incl" in labels["vesicles: inclusions"]
+
+
+def test_count_pieces_is_kept_as_an_alias():
+    from ibif_napari import _secondary
+
+    assert _secondary.count_pieces is _secondary.count_inclusions
+    assert measure_block(np.ones((3, 3), np.uint8), pieces=True)["inclusions"].tolist() == [1]
