@@ -39,6 +39,10 @@ def _serve(conn, backend):
                 result = None
             elif op == "segment":
                 result = module.segment(*args, **kwargs)
+            elif op == "process":  # a Processing pipeline (whatever the Cellpose back-end)
+                from ._processing.remote import run_payload
+
+                result = run_payload(*args, **kwargs)
             else:
                 raise ValueError(f"unknown request {op!r}")
             conn.send(("ok", result))
@@ -91,7 +95,15 @@ class CellposeProcess:
             self._cancelled = False
             self._start()
             proc, conn = self._proc, self._conn
-            conn.send((op, args, kwargs))
+            try:
+                conn.send((op, args, kwargs))  # a large image takes a while to go through
+            except (OSError, ValueError):  # the child was stopped meanwhile (Cancel), or died
+                self._reset(conn)
+                if self._cancelled:
+                    raise Cancelled() from None
+                raise RuntimeError(
+                    f"the Cellpose process stopped unexpectedly (exit code {proc.exitcode}); "
+                    "it may have run out of memory, try a smaller region") from None
             pending = conn
             while True:
                 try:

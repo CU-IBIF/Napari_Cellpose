@@ -210,3 +210,46 @@ def test_tiff_reopens_with_its_dimension_order(tmp_path):
     assert _workspace.load_workspace(w, folder) == []
     assert [l.name for l in w.layers] == [l.name for l in v.layers]
     assert np.array_equal(np.asarray(w.layers[1].data), czyx[1])
+
+
+def test_workspace_from_before_0_33_says_inclusions(tmp_path, monkeypatch):
+    """A workspace saved when inclusions were called "pieces" opens with today's names:
+    layer metadata, measurement tables and the cytometry state that names them."""
+    v = ViewerModel()
+    cells = np.zeros((10, 10), np.uint16)
+    cells[1:5, 1:5] = 1
+    spots = np.zeros_like(cells)
+    spots[2, 2] = spots[4, 4] = 1
+    v.add_labels(cells, name="cells")
+    v.add_labels(spots, name="spots", metadata={"ibif_inclusions": True})
+    _measure.remember(v, {"spots": _measure.measure_layer(v, v.layers["spots"])})
+    folder = tmp_path / "old.ibif"
+    _workspace.save_workspace(v, folder)
+    # Turn it into what 0.32 wrote.
+    state = json.loads((folder / "workspace.json").read_text())
+    for entry in state["layers"]:
+        if entry["metadata"].pop("ibif_inclusions", None):
+            entry["metadata"]["ibif_pieces"] = True
+    state.setdefault("extensions", {})["cytometry"] = {"source": "spots", "features": ["spots: pieces"]}
+    (folder / "workspace.json").write_text(json.dumps(state))
+    rel = state["measurements"]["spots"]
+    pd.read_csv(folder / rel).rename(columns={"inclusions": "pieces"}).to_csv(folder / rel, index=False)
+    from ibif_napari import _cytometry
+
+    got = {}
+
+    def load_dict(self, data, tables, derived_path=None):
+        got.update(data)
+        return []
+
+    monkeypatch.setattr(_cytometry.Cytometry, "load_dict", load_dict)
+    v2 = ViewerModel()
+    _workspace.load_workspace(v2, folder)
+    meta = v2.layers["spots"].metadata
+    assert meta.get("ibif_inclusions") and "ibif_pieces" not in meta
+    table = _measure.tables_of(v2)["spots"]
+    assert "inclusions" in table.columns and "pieces" not in table.columns
+    assert table["inclusions"].tolist() == [2]
+    assert got["features"] == ["spots: inclusions"]  # what cytometry is given to restore
+    assert _measure.has_inclusions(v2.layers["spots"])
+    assert _measure.measure_layer(v2, v2.layers["spots"])["inclusions"].tolist() == [2]

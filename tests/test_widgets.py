@@ -258,3 +258,20 @@ def test_cellpose_panel_on_a_server(viewer, qtbot, use_process, monkeypatch, tmp
         httpd.shutdown()
         httpd.server_close()
         app.close()
+
+
+def test_other_panels_run_cellpose_where_this_panel_says(viewer, qtbot, use_process, monkeypatch):
+    """Secondary objects -> spots by Cellpose use this panel's process, model and GPU."""
+    process = use_process(FakeProcess(fake_segment))
+    monkeypatch.setattr(_cellpose, "cellpose_major", lambda: 4)
+    monkeypatch.setattr(_cellpose, "builtin_models", lambda: ["cpsam_v2", "cyto3"])
+    w = CellposeWidget(viewer)
+    qtbot.addWidget(w)
+    w.model.setCurrentText("cyto3")
+    w.gpu.setChecked(False)
+    backend, why = cellpose_widget.cellpose_backend(viewer)
+    assert why is None and backend.process is process and backend.model == "cyto3"
+    assert backend.where == cellpose_widget.THIS_COMPUTER and not backend.remote and not backend.gpu
+    w._local_available = False  # no Cellpose here and no server chosen
+    backend, why = cellpose_widget.cellpose_backend(viewer)
+    assert backend is None and "choose a server" in why

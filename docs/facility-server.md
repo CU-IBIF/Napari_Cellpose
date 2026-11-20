@@ -62,6 +62,13 @@ On a user's computer, in the napari Cellpose panel:
 
 Users do not need Cellpose or a GPU on their own computers to use the server.
 
+The same server also runs **Processing** pipelines (stack registration, from version
+0.37): users choose it under **Run on** in the Processing section. Only the steps in the
+server's own library can run: the server checks every step and setting before queueing
+the job, and refuses anything else. Pipeline jobs share the queue with Cellpose jobs and
+are cancelled the same way. Images are sent one position at a time, each within the
+`--max-mb` upload limit.
+
 ## 5. Security
 
 - **Network:** limit access with `--allow` and with the operating system firewall.

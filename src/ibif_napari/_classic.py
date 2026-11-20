@@ -171,13 +171,16 @@ def foreground(image, settings=None, rel=None, planes=False, **kwargs):
     return fg, info, work
 
 
-def split(fg, image, settings=None, rel=None, **kwargs):
-    """Labels of the foreground: connected components, or a seeded watershed."""
+def split(fg, image, settings=None, rel=None, connectivity=1, **kwargs):
+    """Labels of the foreground: connected components, or a seeded watershed.
+    `connectivity`: 1 joins pixels that share a face, `fg.ndim` also those that touch at
+    an edge or corner (as the inclusions of Secondary objects are counted)."""
     from skimage.segmentation import watershed
 
     s = settings or Settings(**kwargs)
     rel = np.ones(fg.ndim) if rel is None else np.asarray(rel, float)
-    components, n = ndi.label(fg, structure=ndi.generate_binary_structure(fg.ndim, 1))
+    structure = ndi.generate_binary_structure(fg.ndim, connectivity)
+    components, n = ndi.label(fg, structure=structure)
     if s.split == "none" or n == 0:
         return components.astype(np.uint32)
     if s.split == "distance":
@@ -190,11 +193,11 @@ def split(fg, image, settings=None, rel=None, **kwargs):
         raise ValueError(f"unknown split method {s.split!r}")
     diameter = s.diameter or _typical_diameter(components, n, rel)
     markers = _seeds(landscape, components, diameter, rel)
-    labels = watershed(-landscape, markers=markers, mask=fg)
+    labels = watershed(-landscape, markers=markers, mask=fg, connectivity=connectivity)
     # A component that got no seed (too small or flat) stays one object.
     missing = (labels == 0) & fg
     if missing.any():
-        extra, _ = ndi.label(missing)
+        extra, _ = ndi.label(missing, structure=structure)
         labels = np.where(missing, extra + labels.max(), labels)
     return labels.astype(np.uint32)
 
@@ -209,8 +212,17 @@ def _seeds(landscape, components, diameter, rel):
     peaks = peak_local_max(landscape, footprint=footprint, labels=components, exclude_border=False)
     markers = np.zeros(landscape.shape, bool)
     markers[tuple(peaks.T)] = True
-    # Plateaus give several neighbouring peaks: one marker each.
-    markers, _ = ndi.label(ndi.binary_dilation(markers, structure=ndi.generate_binary_structure(landscape.ndim, 2)))
+    # Plateaus give several neighbouring peaks: one marker each. The dilation stays inside
+    # each component, and markers in different components are never joined, so objects a
+    # pixel apart keep their own seeds.
+    grown = ndi.binary_dilation(markers, structure=ndi.generate_binary_structure(landscape.ndim, 2))
+    grown &= components > 0
+    markers, n = ndi.label(grown, structure=ndi.generate_binary_structure(landscape.ndim, landscape.ndim))
+    if n:
+        from skimage.segmentation import relabel_sequential
+
+        pairs = np.where(grown, markers.astype(np.int64) * (int(components.max()) + 1) + components, 0)
+        markers = relabel_sequential(pairs)[0]
     return markers
 
 

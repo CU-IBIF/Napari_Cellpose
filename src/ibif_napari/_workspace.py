@@ -279,7 +279,7 @@ def _open_source(path, selection=None, tiff_layout=None):
 # Parts of an analysis kept by other modules (e.g. Cytometry gates and phenotypes): each
 # saves into workspace.json under "extensions" and restores itself on load. Modules are
 # imported on demand, so a workspace opens fully even if a section was never shown.
-_EXTENSION_MODULES = {"cytometry": "._cytometry"}
+_EXTENSION_MODULES = {"cytometry": "._cytometry", "processing": "._processing.session"}
 _extensions = {}  # name -> (save(viewer, folder) -> JSON-able or None, load(viewer, folder, data) -> notes)
 
 
@@ -322,6 +322,9 @@ def load_workspace(viewer, path, replace=True):
     for entry in state["layers"]:
         kind, name = entry["type"], entry["name"]
         kwargs = {k: entry[k] for k in ("name", "visible", "opacity", "blending", "scale", "translate", "metadata")}
+        meta = kwargs["metadata"] = dict(kwargs["metadata"] or {})
+        if meta.pop("ibif_pieces", None):  # saved before 0.33: "pieces" are now "inclusions"
+            meta["ibif_inclusions"] = True
         data = None
         if kind == "image" and "source" in entry:
             src = _find_source(entry, folder)
@@ -369,7 +372,7 @@ def load_workspace(viewer, path, replace=True):
 
         for name, rel in state["measurements"].items():
             if (folder / rel).exists():
-                tables[name] = pd.read_csv(folder / rel)
+                tables[name] = _measure.upgrade_table(pd.read_csv(folder / rel))
     if tables:
         _measure.remember(viewer, tables, notify=True)
     for name, data in (state.get("extensions") or {}).items():

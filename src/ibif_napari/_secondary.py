@@ -5,8 +5,8 @@
 - `seeded_cells`: whole cells from seeds (nuclei) in another channel, by a seeded
   watershed inside a thresholded foreground (like CellProfiler's IdentifySecondaryObjects).
 - `structures`: structures inside each object (vesicles, puncta, nucleoli, filaments,
-  organelles) found in a channel. All the pieces inside object 17 together form object 17,
-  so they link to it (and to everything else numbered 17) in the measurements.
+  organelles), the *inclusions*, found in a channel. All the inclusions inside object 17
+  together form object 17, so they link to it (and to everything else numbered 17) in the measurements.
 
 Every secondary object keeps the label number of the object it came from, so nucleus 17
 and cell 17 belong together. Distances are in physical units with per-axis `spacing`
@@ -20,6 +20,9 @@ from scipy import ndimage as ndi
 THRESHOLDS = ("otsu", "li", "triangle", "manual", "none")
 CHANNEL_KINDS = ("membrane", "cytoplasm", "distance")
 STRUCTURE_KINDS = ("spots", "filaments", "regions")
+# How touching inclusions are told apart: not at all (each connected piece is one), or by
+# a seeded watershed of the distance to their edge or of their intensity.
+INCLUSION_SPLITS = ("distance", "intensity", "none")
 # Weight of the distance term in the cytoplasm watershed (per pixel, gradient scaled to 0-1).
 # Chosen with the V&V suite's synthetic cells on independent seeds (docs/vv/README.md).
 CYTOPLASM_COMPACTNESS = 0.03
@@ -229,10 +232,11 @@ def cytoplasm(cells, nuclei):
 
 
 def structures(parents, image, spacing=None, kind="spots", size=1.0, threshold="otsu", value=None,
-               factor=1.0, per_object=False, dark=False, smooth=0.0, min_size=0.0):
+               factor=1.0, per_object=False, dark=False, smooth=0.0, min_size=0.0,
+               split="distance", diameter=0.0, return_inclusions=False):
     """Structures inside each object of `parents` (e.g. vesicles in the cytoplasm, nucleoli
     in nuclei), found in `image`. Every structure pixel takes the number of the object it
-    lies in, so all the pieces inside object 17 are one object, numbered 17.
+    lies in, so all the inclusions inside object 17 are one object, numbered 17.
 
     kind: "spots" (small bright blobs: vesicles, puncta, nucleoli; the local background,
           a Gaussian blur of width `size`, is subtracted first, so `size` should be about
@@ -246,8 +250,14 @@ def structures(parents, image, spacing=None, kind="spots", size=1.0, threshold="
           pixels inside all the objects together, or inside each object on its own with
           `per_object` (better when objects differ in brightness, but an object with no
           structures still gets some).
-    min_size: pieces smaller than this (µm² / µm³ with `spacing`) are dropped.
-    `size` and `smooth` are in the units of `spacing`. Returns (structures, thresholds used).
+    split: how touching inclusions are told apart (see `split_inclusions`): "distance"
+          (the default), "intensity" or "none". Filaments are never split.
+    diameter: typical inclusion diameter for the split, in the units of `spacing` (0 =
+          the median size of the connected pieces); seeds closer than half of it merge.
+    min_size: inclusions smaller than this (µm² / µm³ with `spacing`) are dropped.
+    `size` and `smooth` are in the units of `spacing`. Returns (structures, thresholds
+    used), and with `return_inclusions` also the inclusions numbered one by one (1...N),
+    each inside one object (see `split_inclusions`).
     """
     from skimage import filters
 
@@ -262,7 +272,10 @@ def structures(parents, image, spacing=None, kind="spots", size=1.0, threshold="
     sp = _spacing(parents, spacing)
     inside = parents > 0
     if not inside.any():
-        return np.zeros_like(parents), []
+        empty = np.zeros_like(parents)
+        return (empty, [], np.zeros(parents.shape, np.uint32)) if return_inclusions else (empty, [])
+    if split not in INCLUSION_SPLITS:
+        raise ValueError(f"unknown split {split!r}")
     if dark:
         image = image.max() - image
     if smooth:
@@ -303,14 +316,115 @@ def structures(parents, image, spacing=None, kind="spots", size=1.0, threshold="
             found = inside & (response > t)
             used.append(t)
     out = np.where(found, parents, 0).astype(parents.dtype, copy=False)
+    inclusions = split_inclusions(out, response, sp, "none" if kind == "filaments" else split, diameter)
     if min_size and found.any():
-        # Pieces in touching objects are split by number below.
-        pieces, n = ndi.label(out > 0, structure=ndi.generate_binary_structure(out.ndim, out.ndim))
-        pieces = np.where(out > 0, pieces * (int(out.max()) + 1) + out, 0)
-        ids, inverse, counts = np.unique(pieces, return_inverse=True, return_counts=True)
-        small = (counts * float(np.prod(sp)) < min_size) & (ids != 0)
-        out[small[inverse.reshape(out.shape)]] = 0
+        counts = np.bincount(inclusions.ravel())
+        small = counts * float(np.prod(sp)) < min_size
+        small[0] = False
+        if small.any():
+            from skimage.segmentation import relabel_sequential
+
+            inclusions = relabel_sequential(np.where(small[inclusions], 0, inclusions))[0]
+            out[inclusions == 0] = 0
+    if return_inclusions:
+        return out, used, inclusions
     return out, used
+
+
+def cellpose_spot_params(spacing, diameter, model, gpu=False, cellprob=0.0):
+    """The Cellpose settings for spots (Structures inside each object, Method: Cellpose):
+    `diameter` (µm) as pixels; true 3D flows in a stack, with its anisotropy; masks of
+    3 pixels or more (the panel's own minimum size is applied afterwards)."""
+    spacing = tuple(float(s) for s in spacing)
+    is_3d = len(spacing) == 3
+    return dict(model=model, gpu=bool(gpu), do_3D=is_3d,
+                anisotropy=spacing[0] / spacing[-1] if is_3d else None,
+                diameter=float(diameter) / spacing[-1], flow_threshold=0.4,
+                cellprob_threshold=float(cellprob), stitch_threshold=0.0, min_size=3)
+
+
+def assign_to_parents(parents, found, spacing=None, max_outside=0.5, min_size=0.0):
+    """Objects found on their own (e.g. Cellpose spots: 1...n, 0 = background) as
+    inclusions of `parents`. Each goes to the object holding most of its pixels and is
+    cut to that object, so it lies in one object only. One with more than `max_outside`
+    (0-1) of its pixels outside that object is dropped, as is one smaller than `min_size`
+    (µm² / µm³ with `spacing`) once cut.
+
+    Returns (inclusions numbered by their object, inclusions numbered one by one 1...N
+    (uint32)), as `structures(..., return_inclusions=True)` does."""
+    from skimage.segmentation import relabel_sequential
+
+    parents = np.asarray(parents)
+    found = np.asarray(found)
+    if found.shape != parents.shape:
+        raise ValueError(f"the spots ({found.shape}) and the objects ({parents.shape}) differ in size")
+    sp = _spacing(parents, spacing)
+    empty = (np.zeros_like(parents), np.zeros(parents.shape, np.uint32))
+    spot = found > 0
+    if not spot.any():
+        return empty
+    ids = found[spot].astype(np.int64)
+    owners = parents[spot].astype(np.int64)
+    sizes = np.bincount(ids)
+    # Pixels of each spot in each object: the object with the most pixels owns it.
+    inside = owners > 0
+    pairs, counts = np.unique(np.stack([ids[inside], owners[inside]]), axis=1, return_counts=True)
+    owner = np.zeros(sizes.size, np.int64)
+    best = np.zeros(sizes.size, np.int64)
+    for (i, p), c in zip(pairs.T, counts):
+        if c > best[i] or (c == best[i] and p < owner[i]):
+            owner[i], best[i] = p, c
+    keep = (owner > 0) & (best >= (1.0 - max_outside) * sizes - 1e-9)
+    if min_size:
+        keep &= best * float(np.prod(sp)) >= min_size
+    keep[0] = False
+    kept = np.zeros(parents.shape, bool)
+    kept[spot] = keep[ids] & (owners == owner[ids])  # cut to the owner
+    if not kept.any():
+        return empty
+    single = relabel_sequential(np.where(kept, found.astype(np.int64), 0))[0].astype(np.uint32)
+    return np.where(kept, parents, 0).astype(parents.dtype, copy=False), single
+
+
+def split_inclusions(structures, image=None, spacing=None, split="distance", diameter=0.0):
+    """The inclusions of `structures` (labelled with the number of the object they are
+    in) numbered one by one, 1...N (uint32). Each inclusion lies inside a single object.
+
+    split: "none": each connected piece (pixels touching at a face, edge or corner) is
+          one inclusion;
+          "distance": touching inclusions are cut along their neck by a seeded watershed
+          of the distance to their edge (round spots that touch become two);
+          "intensity": seeds at the brightest points of `image` (spots brighter in the
+          middle).
+    The watershed is the one of Segmentation -> Threshold + watershed. `diameter`
+    (units of `spacing`; 0 = the median size of the connected pieces) sets how close two
+    seeds may be: closer than half of it, they are one inclusion.
+    """
+    from skimage.segmentation import relabel_sequential
+
+    from ._classic import Settings
+    from ._classic import split as watershed_split
+
+    structures = np.asarray(structures)
+    if split not in INCLUSION_SPLITS:
+        raise ValueError(f"unknown split {split!r}")
+    sp = np.asarray(_spacing(structures, spacing), float)
+    mask = structures > 0
+    if not mask.any():
+        return np.zeros(structures.shape, np.uint32)
+    connectivity = structures.ndim
+    if split == "none":
+        pieces, _ = ndi.label(mask, structure=ndi.generate_binary_structure(structures.ndim, connectivity))
+    else:
+        if split == "intensity" and image is None:
+            raise ValueError("splitting by intensity needs the image")
+        xy = float(sp[-1]) or 1.0
+        settings = Settings(split=split, diameter=float(diameter) / xy if diameter else 0.0)
+        landscape = np.asarray(image, np.float32) if image is not None else None
+        pieces = watershed_split(mask, landscape, settings, sp / xy, connectivity=connectivity)
+    # A piece that spans two touching objects becomes one inclusion in each.
+    pieces = np.where(mask, pieces.astype(np.int64) * (int(structures.max()) + 1) + structures, 0)
+    return relabel_sequential(pieces)[0].astype(np.uint32)
 
 
 def _ridges(image, radius, spacing):
@@ -325,9 +439,9 @@ def _ridges(image, radius, spacing):
     return sato(image, sigmas=[sigma], black_ridges=False)
 
 
-def count_pieces(labels):
-    """{label: number of separate pieces}, e.g. vesicles per cell. Pixels that touch at a
-    corner or edge belong to the same piece."""
+def count_inclusions(labels):
+    """{label: number of separate inclusions}, e.g. vesicles per cell. Pixels that touch at
+    a corner or edge belong to the same inclusion."""
     labels = np.asarray(labels)
     full = ndi.generate_binary_structure(labels.ndim, labels.ndim)
     out = {}
@@ -335,3 +449,6 @@ def count_pieces(labels):
         if sl is not None:
             out[label] = int(ndi.label(labels[sl] == label, structure=full)[1])
     return out
+
+
+count_pieces = count_inclusions  # the name before 0.33 ("pieces" are now "inclusions")

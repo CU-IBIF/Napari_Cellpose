@@ -15,6 +15,7 @@ on:
       - "src/ibif_napari/vv/**"
       - "src/ibif_napari/_cellpose.py"
       - "src/ibif_napari/_classic.py"
+      - "src/ibif_napari/_processing/**"
       - "src/ibif_napari/_secondary.py"
       - "src/ibif_napari/_measure.py"
       - "src/ibif_napari/_region.py"

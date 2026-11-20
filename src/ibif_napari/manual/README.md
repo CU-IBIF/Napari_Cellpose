@@ -23,6 +23,7 @@ section.
 4. [The window](#4-the-window)
 5. [Opening your images](#5-opening-your-images)
 6. [Configuration: moving through time, positions and Z](#6-configuration-moving-through-time-positions-and-z)
+   - [6.1 Processing: correcting the image before segmenting](#61-processing-correcting-the-image-before-segmenting)
 7. [Segmentation: Cellpose, or threshold + watershed](#7-segmentation-cellpose-or-threshold--watershed)
 8. [Secondary objects: cells, cytoplasm, rings and rims](#8-secondary-objects-cells-cytoplasm-rings-and-rims)
 9. [Measurements](#9-measurements)
@@ -284,6 +285,75 @@ IBIF napari adds a 3D brush, chosen under **3D brush**:
 You will use painting to mark regions to segment or trace (sections 7 and 11), and to
 correct segmentations by hand.
 
+### 6.1 Processing: correcting the image before segmenting
+
+The **Processing** section (second button) corrects the image before you segment it. You
+build a **pipeline**: an ordered list of steps, each taken from the **Library**, which run one
+after the other, top to bottom.
+
+1. Tick the **Channels** of one image to process together (they must be the same size). Steps
+   that measure something, such as registration, use the **Reference channel** and apply
+   what they find to every channel.
+2. Choose what to **Process**: every time point and position, or the current position (all of
+   its time points).
+3. Select a routine in the **Library** and click **Add to pipeline →** (or double-click it).
+   Add as many as you need.
+4. Order the **Pipeline**: drag a step, or select it and click **Up** / **Down**. Untick a step
+   to skip it without removing it; **Remove** deletes it.
+5. Select a step in the pipeline to see and change its settings in **Step settings** below.
+   Selecting a routine in the library shows what it does and its default settings.
+6. Choose where it runs under **Run on**: this computer, a facility server, or a cluster job
+   connected in Segmentation (see section 13), then click **Run pipeline** (it becomes
+   **Cancel** while it runs). Each channel gets a new
+   layer, `<channel> [processed]`; the original layers are not changed, so you can compare
+   them. Segment the processed layers as usual.
+
+The library has:
+
+- **Stack registration**: corrects movement between time points or Z planes (for example
+  drift, breathing or heartbeat in intravital imaging).
+- **Illumination correction (BaSiC)** and **Deconvolution (Richardson–Lucy)**: marked
+  *coming soon*. They are listed with their planned settings, but cannot be added yet.
+
+**Stack registration** settings:
+
+- **Correct along**: **T** registers the time points to each other (each a whole Z stack:
+  one 3D shift, and rotation in the XY plane, per time point); **Z** registers the planes of
+  each Z stack (one 2D correction per plane), for stacks whose planes slipped while they were
+  acquired.
+- **Transform**: **Translation** (shifts only: stage drift), **Rigid** (shifts and a rotation),
+  **Affine** (also scaling and shear) or **Non-rigid** (rigid first, then a smooth local warp for
+  tissue that deforms, as with breathing or heartbeat in intravital imaging; the two-stage
+  approach of IMART, Dunn et al. 2014).
+- **Reference**: what each frame is registered to: the **first frame**, the **mean of the first
+  frames** (less noisy), a **chosen frame**, or the **previous frame**, which follows slow
+  changes but lets small errors add up (best along Z, where planes far apart look different).
+- **Smoothing** blurs the reference channel before measuring (only for measuring: the result
+  is not blurred); a little helps with noisy images. **Sub-pixel precision** sets how finely
+  shifts are measured. **Maximum shift**: a frame that seems to move further is left as it was
+  and reported, which guards against a frame that cannot be registered (for example one
+  blurred by fast movement).
+- **Warp smoothness**, **Warp window** and **Maximum warp** (non-rigid only): how smooth the local
+  warp is, the window it is measured over, and the largest local correction allowed.
+- **Edges**: what fills the edge the movement uncovers: zero, the nearest edge value, or NaN
+  (empty, which also makes the result 32-bit floating point). **Interpolation**: linear or cubic.
+
+After a run, **Registration results** appears. **Export transforms (CSV)…** saves the shift (in
+pixels and µm), rotation and the correlation with the reference before and after, for every
+frame. **Apply to** moves another layer of the same size in the same way, for example labels
+segmented before registering (they keep their numbers) or a channel that was not ticked; it
+applies the rigid / affine part of the registration.
+
+> **Check the result.** Play the processed layer over time (or through Z): structures should
+> stay put. The status line gives the correlation with the reference before → after; the CSV
+> has it per frame, and a frame marked *registered: False* was left as it was.
+
+The pipeline is saved with the workspace. **Export…** saves it as a JSON file, and
+**Import…** opens one, so the same corrections can be applied to other images. A processed
+layer records the steps and settings that made it (in its metadata, saved with the
+workspace), and its data is saved in the workspace, as it is no longer what the microscope
+file holds.
+
 ---
 
 ## 7. Segmentation: Cellpose, or threshold + watershed
@@ -529,10 +599,11 @@ and *nuclei cytoplasm*.
 ### Structures inside each object
 
 **Structures inside each object** finds vesicles, puncta, nucleoli, filaments or membranous
-organelles inside the objects you choose. **All the pieces inside an object together form one
-object with that object's number**: the twelve vesicles inside cytoplasm 17 are one object,
-numbered 17. They therefore join nucleus 17, cell 17 and cytoplasm 17 in the Measurements
-table, and its `pieces` column still says how many there were.
+organelles inside the objects you choose. We call these structures **inclusions**. **All the
+inclusions inside an object together form one object with that object's number**: the twelve
+vesicles inside cytoplasm 17 are one object, numbered 17. They therefore join nucleus 17,
+cell 17 and cytoplasm 17 in the Measurements table, and its `inclusions` column still says
+how many there were.
 
 This builds a hierarchy. For example, to find vesicles in the cytosol only:
 
@@ -556,6 +627,19 @@ Its settings:
     about **Size** wide. With Z steps at least twice the pixel size it works plane by plane.
   - **Regions (organelles, any brighter area)**: the smoothed intensity is thresholded as it
     is, for structures larger than spots, such as membranous organelles.
+- **Method** (Spots only):
+  - **Intensity + watershed** (the default): the background subtraction, threshold and
+    watershed described here, on this computer's CPU.
+  - **Cellpose**: Cellpose finds the spots, with the model and on the computer set in
+    **Segmentation → Cellpose** (this computer, a facility server or a cluster; the line
+    **Cellpose** says which). **Spot diameter** is the typical spot diameter;
+    **Probability threshold** lower finds more (dimmer) spots. Each spot goes to the object
+    that holds most of it and is cut to that object; one with more than **Outside the
+    object** of its area outside is dropped. The threshold, smoothing and split settings
+    do not apply. The option is greyed out, with the reason in its tooltip, when Cellpose
+    cannot run (not installed here and no server chosen, or a cluster not connected).
+    **Make objects** becomes **Cancel** while Cellpose runs. Cellpose's built-in models
+    are trained on cells and nuclei; check the result on your spots.
 - **Darker than their surroundings**: look for dark structures instead, for example
   nucleoli, which are holes in a DNA (DAPI or Hoechst) stain.
 - **Foreground**: the threshold (Otsu, Li, Triangle or Manual; **None** is not allowed here).
@@ -565,16 +649,39 @@ Its settings:
   in brightness. An automatic threshold always splits an object in two, though, so an object
   with no structures still gets some. Use it only when every object has structures, or
   check the result.
-- **Smallest piece**: pieces smaller than this area or volume are dropped (noise).
-- **Smoothing**: a Gaussian blur before thresholding.
+- **Smallest inclusion**: inclusions smaller than this area or volume are dropped (noise).
+- **Split touching** (Spots and Regions): how inclusions that touch are told apart.
+  - **Watershed (distance)** (the default): a seeded watershed of the distance to the
+    inclusion's edge (as in Segmentation → Threshold + watershed) cuts touching round
+    inclusions along their neck, in 2D and in 3D (using the real voxel size).
+  - **Watershed (intensity)**: one inclusion per bright centre, for spots that are
+    brightest in the middle.
+  - **None (each connected piece)**: touching inclusions count as one (the behaviour before
+    version 0.33).
+- **Inclusion diameter**: the typical diameter of an inclusion. Seeds closer than half of
+  it are one inclusion; raise it if single inclusions are cut in two. **auto** uses the
+  median size of the connected pieces.
+- **Smoothing**: a Gaussian blur before thresholding. For small spots keep it well below
+  their size (for example 0.1 µm for spots 1 µm across): a blur as large as the spots joins
+  neighbouring spots before they can be split.
 
-The new layer is named after the objects and what was found, for example *nuclei cytoplasm
-spots*; rename it in the layer list if you like (for example *vesicles*).
+Two layers are made, named after the objects and what was found:
+
+- *nuclei cytoplasm spots*: every inclusion has the number of the object it is in, as
+  described above. Its `inclusions` column in the Measurements counts the inclusions of each
+  object, after splitting touching ones.
+- *nuclei cytoplasm spots inclusions*: every inclusion has its own number (1, 2, 3…). Its
+  Measurements table has one row per inclusion, with a `parent` column: the number of the
+  object it is in. It is not joined into **All objects**, whose rows are matched by number.
+
+Rename them in the layer list if you like (for example *vesicles*). The count uses the second
+layer while it keeps its name; renamed, the count falls back to connected pieces.
 
 > **Check the result.** Show the structures over their channel. If noise is found, raise
-> **Threshold ×**, **Smoothing** or **Smallest piece**; if structures are missed, lower
+> **Threshold ×**, **Smoothing** or **Smallest inclusion**; if structures are missed, lower
 > **Threshold ×** or try another threshold (Triangle often suits a few small bright spots).
-> Touching spots are counted as one piece.
+> If touching spots are still counted as one, lower **Smoothing** or **Inclusion diameter**;
+> if single spots are cut in two, raise **Inclusion diameter**.
 
 *Background.* The watershed transform (Vincent & Soille 1991) treats the image as a landscape
 and floods it from the seeds; cells meet where the floods meet. Growing cells from nuclei in
@@ -613,7 +720,8 @@ For each object (and time point / position) the table has:
 | `centroid Z / Y / X (µm)` | Centre of the object, in the image's coordinates |
 | `<channel> mean`, `median`, `min`, `max`, `std` | Intensity statistics of the object's voxels in each channel |
 | `<channel> sum` | Integrated intensity (sum over the object's voxels) |
-| `pieces` | Layers from **Structures inside each object** only: the number of separate pieces (e.g. vesicles) that make up the object |
+| `parent` | Layers of inclusions numbered one by one (*… inclusions*) only: the number of the object each inclusion is in |
+| `inclusions` | Layers from **Structures inside each object** only: the number of separate inclusions (e.g. vesicles) that make up the object. Called `pieces` before version 0.33; older workspaces are renamed when they open |
 
 **Interpreting intensities.** Intensity measurements are only as good as the acquisition
 (Waters 2009):
@@ -1168,6 +1276,11 @@ computer has none, the facility may provide one:
 - **GPU cluster (Slurm, e.g. NSF ACCESS)**: add the cluster with **Clusters…**, then choose
   it under **Run on** and click **Connect**. **Submit batch job** runs a whole series as one
   job, and you can close napari while it runs. See [docs/cluster.md](https://github.com/CU-IBIF/Napari_Cellpose/blob/main/docs/cluster.md).
+- **Processing on a server or cluster**: the Processing section's **Run on** lists the same
+  servers and clusters (a cluster once Segmentation has connected to it). The image is sent
+  one position at a time; the server checks the pipeline against its own list of steps and
+  sends back the processed layers. The server must be version 0.37 or later; an older one,
+  or an image larger than the server accepts, is reported before anything is sent.
 
 ---
 

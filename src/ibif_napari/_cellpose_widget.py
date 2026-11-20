@@ -39,12 +39,77 @@ SCOPE_ALL = "Every time point / position"
 NO_NUCLEI = "(none)"
 WHOLE_IMAGE = "(whole image)"
 THIS_COMPUTER = "This computer"
+_widgets = {}  # id(viewer) -> the viewer's Cellpose panel (weak reference)
+
+
+class CellposeBackend:
+    """Where and how to run Cellpose for another panel (Secondary objects -> spots), as
+    the Segmentation section's Cellpose tab is set: its process (this computer, a server
+    or a cluster session), model and GPU choice."""
+
+    def __init__(self, process, where, model, gpu, remote):
+        self.process, self.where, self.model, self.gpu, self.remote = process, where, model, gpu, remote
+
+    def load(self):
+        """Generator: download (here) and load the model; yields progress messages."""
+        if not self.remote:
+            yield from _cellpose.ensure_weights(self.model)
+        yield from self.process.load(self.model, self.gpu)
+
+    def describe(self):
+        return f"model '{self.model}' on {self.where}" + (" (GPU)" if self.gpu else "")
+
+
+def remote_targets(viewer):
+    """{name: (make the process, or None; why not)} of where other panels (Processing) can
+    run besides this computer: the saved servers, and the cluster profiles, usable once
+    Segmentation → Cellpose has connected to them."""
+    from ._cluster import load_profiles
+
+    out = {}
+    for s in load_servers():
+        out[s["name"]] = (lambda s=s: RemoteProcess(s["url"], s["token"], name=s["name"],
+                                                    cafile=s.get("cafile")), None)
+    ref = _widgets.get(id(viewer))
+    w = ref() if ref is not None else None
+    sessions = w._sessions if (w is not None and w.viewer is viewer) else {}
+    for p in load_profiles():
+        name = f"{p.name} (cluster)"
+        session = sessions.get(name)
+        out[name] = ((lambda session=session: session.process), None) if session is not None else (
+            None, f"Connect to {name} in Segmentation → Cellpose first; the processing runs in that job.")
+    return out
+
+
+def cellpose_backend(viewer):
+    """(CellposeBackend, None), or (None, why Cellpose cannot run), for `viewer`: as its
+    Segmentation -> Cellpose tab is set, or this computer's Cellpose without that tab."""
+    ref = _widgets.get(id(viewer))
+    w = ref() if ref is not None else None
+    if w is not None and w.viewer is viewer:
+        where = w.run_on.currentText() or THIS_COMPUTER
+        if w.process is None:
+            return None, f"Connect to {where} in Segmentation → Cellpose first."
+        if not w.remote and not w._local_available:
+            return None, ("Cellpose is not installed on this computer: choose a server under "
+                          "Segmentation → Cellpose → Run on.")
+        model = w.model.currentText() or (None if w.remote else _cellpose.default_model())
+        if not model:
+            return None, "Choose a Cellpose model in Segmentation → Cellpose."
+        return CellposeBackend(w.process, where, model, bool(w.gpu.isChecked()) and not w.remote, w.remote), None
+    if _cellpose.cellpose_major() is None:
+        return None, "Cellpose is not installed on this computer."
+    return CellposeBackend(get_process(), THIS_COMPUTER, _cellpose.default_model(),
+                           _cellpose.gpu_available(), False), None
 
 
 class CellposeWidget(QWidget):
     def __init__(self, napari_viewer):
         super().__init__()
         self.viewer = napari_viewer
+        import weakref
+
+        _widgets[id(napari_viewer)] = weakref.ref(self)
         self._worker = None
         self._preload_worker = None
         self._cancelling = False

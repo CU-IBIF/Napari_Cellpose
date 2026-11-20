@@ -138,3 +138,12 @@ def test_tab_region(viewer, qtbot):
     out = next(l for l in viewer.layers if l.name.startswith("nuclei threshold") and "region" in l.name)
     assert out.data.max() == 1 and out.data.shape == (40, 40)
     assert list(out.translate) == [70 * 0.5, 100 * 0.5]
+
+
+def test_objects_a_pixel_apart_keep_their_own_seeds():
+    """Seeds of objects one pixel apart must not join into one marker (which made the
+    watershed give both objects one number)."""
+    image = np.zeros((12, 16), np.float32)
+    image[6:8, 3:5] = image[6:8, 6:8] = 1.0  # small squares with a 1 px gap: seeds next to it
+    labels, _ = _classic.segment(image, smooth=0, split="distance", min_size=1)
+    assert labels.max() == 2 and labels[6, 3] != labels[6, 7]

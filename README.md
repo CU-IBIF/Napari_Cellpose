@@ -16,7 +16,7 @@ Cellpose from a [facility GPU server](docs/facility-server.md) or a
   a chooser listing each image and its size. Tick the ones to open, or double-click one.
   Images of the same size can optionally be stacked onto the position slider.
 - **One panel with icon buttons** on the right of the window switches between the
-  sections, in this order: Configuration, Segmentation, Secondary objects,
+  sections, in this order: Configuration, Processing, Segmentation, Secondary objects,
   Measurements, Cytometry, Filament tracing and Save workspace. Hover over a button for
   its name and what it does. It opens on Configuration, and goes back to it when a
   workspace is loaded.
@@ -24,6 +24,10 @@ Cellpose from a [facility GPU server](docs/facility-server.md) or a
   s/min and Z in µm. It also has channel on/off switches, a 2D/3D view toggle, a max
   projection over Z, and "Extract current time/position", which copies the current
   volume out as new layers.
+- **Processing**: an ordered pipeline of corrections run before segmentation, built
+  from a library of steps (stack registration over time or Z; illumination correction
+  and deconvolution coming soon), each with its settings. It makes new
+  `<channel> [processed]` layers, and is saved with the workspace or as JSON.
 - **Painting labels in the 3D view** works on any labels layer (napari's own brush in 3D
   only re-paints existing labels). The *3D brush* setting in Configuration picks
   how:
@@ -54,8 +58,11 @@ Cellpose from a [facility GPU server](docs/facility-server.md) or a
   Triangle / manual foreground, optionally limited to a maximum distance), with an
   optional cytoplasm layer (cell minus nucleus); *Structures inside each object* finds
   spots (vesicles, puncta, nucleoli), filaments or bright regions (organelles), bright or
-  dark, inside each object, with all the pieces inside object 17 forming object 17 (so
-  nuclei -> cytoplasm -> vesicles link by number, and the measurements count the pieces).
+  dark, inside each object (the *inclusions*), with all the inclusions inside object 17
+  forming object 17 (so nuclei -> cytoplasm -> vesicles link by number, and the
+  measurements count the inclusions). Touching inclusions are split by a 2D / 3D
+  watershed, and a second layer numbers them one by one with their object as `parent`.
+  Spots can also be found by Cellpose, wherever the Cellpose tab runs it.
   Every new object keeps its seed's label number; distances are in µm using the real
   voxel size, so 3D stacks work too.
 - **Measurements**: tick objects layers (e.g. nuclei, cells, cytoplasm) and channels,

@@ -22,6 +22,17 @@ Generated from `src/ibif_napari/vv/requirements.py` (`ibif-napari-vv requirement
 | VV-SEC-02 | Secondary objects | Rings and rims have the set gap and width | Secondary objects section: Ring, Rim | verification |
 | VV-SEC-03 | Secondary objects | Whole cells grown from nuclei match the true cells | Secondary objects section: Whole cells from these seeds (Cytoplasm, Membranes), Also add cytoplasm | validation |
 | VV-SEC-04 | Secondary objects | Whole cells from a membrane stain stay within their membranes | Secondary objects section: Whole cells from these seeds, Channel shows: Membranes | validation |
+| VV-SEC-05 | Secondary objects | Touching inclusions are split by the watershed | Secondary objects section: Structures inside each object, Find: Spots, Split touching: Watershed (distance); the '<objects> spots inclusions' layer | validation |
+| VV-SEC-06 | Secondary objects | Every inclusion is linked to the one object it is in | Secondary objects section: Structures inside each object (both layers); Measurements section: parent and inclusions columns | verification |
+| VV-SEC-07 | Secondary objects | Spots found by Cellpose | Secondary objects section: Structures inside each object, Find: Spots, Method: Cellpose | validation |
+| VV-PROC-01 | Processing | The pipeline runs its steps in order on a copy | Processing section: Pipeline, Run pipeline | verification |
+| VV-PROC-02 | Processing | Stack registration recovers known shifts | Processing section: Stack registration, Correct along T / Z, Transform: Translation | validation |
+| VV-PROC-03 | Processing | Stack registration recovers known rotations | Processing section: Stack registration, Transform: Rigid (translation + rotation) | validation |
+| VV-PROC-04 | Processing | Registration moves every channel alike and leaves still frames alone | Processing section: Stack registration (Reference channel); Registration results: Apply to | verification |
+| VV-PROC-05 | Processing | Affine and non-rigid registration undo deformation | Processing section: Stack registration, Transform: Affine / Non-rigid (after rigid) | validation |
+| VV-PROC-06 | Processing | Registration takes the drift out of segmented cell tracks | Processing section: Stack registration + Segmentation (Threshold + watershed) + Measurements | validation |
+| VV-PROC-07 | Processing | Registration keeps intensities | Processing section: Stack registration, Interpolation: Linear | verification |
+| VV-PROC-08 | Processing | A pipeline gives the same result on a server | Processing section: Run on (a server or a connected cluster) | verification |
 | VV-MEAS-01 | Measurements | Object size in µm² / µm³ | Measurements section: area / volume, equivalent diameter | verification |
 | VV-MEAS-02 | Measurements | Object centroids in µm | Measurements section: centroid Z/Y/X (µm), click a row to go to the object | verification |
 | VV-MEAS-03 | Measurements | Intensity statistics per object | Measurements section: <channel> mean / median / min / max / std / sum | validation |
@@ -288,6 +299,160 @@ Generated from `src/ibif_napari/vv/requirements.py` (`ibif-napari-vv requirement
 - a cell left without its nucleus: at most 0.05 of its inside taken by other cells
 
 *scenes: `cells_2d`, `cells_3d`*
+
+## VV-SEC-05: Touching inclusions are split by the watershed
+
+**Requirement.** Structures inside each object shall tell touching inclusions apart with a seeded watershed (on by default), in 2D and in 3D stacks with anisotropic voxels, and number them one by one.
+
+**Feature.** Secondary objects section: Structures inside each object, Find: Spots, Split touching: Watershed (distance); the '<objects> spots inclusions' layer
+
+**Method.** Test on synthetic cells holding 1-3 spots (radius 0.4-0.5 µm) and, in about half of them, a pair of spots pressed together (4 scenes in 2D at 0.1 µm pixels, 4 in 3D at 0.3 x 0.1 x 0.1 µm, SNR 8), with Otsu, Size 1.5 µm and Smoothing 0.1 µm. The same is run without a split and with the intensity watershed (shown, not a criterion).
+
+**Acceptance criteria.**
+
+- mean F1 at IoU 0.5 >= 0.95, and >= 0.9 in every scene, in 2D and 3D
+- inclusions counted exactly in a mean share >= 0.85 of the cells
+- F1 at least 0.05 higher than without a split (mean of the scenes)
+
+## VV-SEC-06: Every inclusion is linked to the one object it is in
+
+**Requirement.** Each inclusion numbered one by one shall lie inside a single object; the layer numbered by object shall hold the same pixels with the object's number; the measurements shall give each inclusion the number of its object ('parent') and each object the number of its inclusions ('inclusions').
+
+**Feature.** Secondary objects section: Structures inside each object (both layers); Measurements section: parent and inclusions columns
+
+**Method.** Test on the VV-SEC-05 scenes, with every split method, against an independent count.
+
+**Acceptance criteria.**
+
+- inclusions spanning more than one object: 0
+- pixels where the two layers disagree: 0
+- inclusions whose 'parent' differs from the object they are in: 0
+- objects whose 'inclusions' differs from the independent count: 0
+
+## VV-SEC-07: Spots found by Cellpose
+
+**Requirement.** Structures inside each object shall find spots with Cellpose (the default built-in model, where Segmentation → Cellpose runs) and give each spot to the object it lies in.
+
+**Feature.** Secondary objects section: Structures inside each object, Find: Spots, Method: Cellpose
+
+**Method.** Test on the VV-SEC-05 scenes (4 in 2D, 1 in 3D; SNR 8) with real Cellpose on the CPU, the panel's settings (spot diameter 0.9 µm, probability threshold 0, at most 50 % outside the object). Intensity + watershed on the same scenes is shown for comparison.
+
+**Acceptance criteria.**
+
+- mean F1 at IoU 0.5 >= 0.8 in 2D and in 3D
+- every spot kept lies in a single object
+
+*needs: cellpose*
+
+## VV-PROC-01: The pipeline runs its steps in order on a copy
+
+**Requirement.** The Processing pipeline shall run its enabled steps in order, each on the result of the one before, skip disabled steps, leave the input unchanged and record every step with its settings.
+
+**Feature.** Processing section: Pipeline, Run pipeline
+
+**Method.** Test: two registration steps (along T, then along Z) on a moving 3D time-lapse, run as a pipeline and one after the other by hand; the same with the second step disabled.
+
+**Acceptance criteria.**
+
+- pipeline result equals the steps run by hand (largest difference) == 0
+- with the second step disabled, the result equals the first step alone
+- input changed: 0 voxels
+- steps recorded, in order, with their settings
+
+## VV-PROC-02: Stack registration recovers known shifts
+
+**Requirement.** Stack registration (Translation) shall undo the drift of a time-lapse (2D and 3D) and of the planes of a Z stack to a fraction of a pixel.
+
+**Feature.** Processing section: Stack registration, Correct along T / Z, Transform: Translation
+
+**Method.** Test on synthetic moving samples with a known movement (shifts up to 15 px, 1.5 planes in Z; 4 scenes of 8 frames each in 2D at SNR 8 and SNR 4, 2 of 4 Z stacks in 3D, 2 Z stacks whose planes drift). The residual is the RMS distance between what each registered frame and the reference read at each pixel, from the scene's truth.
+
+**Acceptance criteria.**
+
+- 2D, SNR 8: mean residual <= 0.1 px
+- 2D, SNR 4 (smoothing 0.5 µm): mean residual <= 0.25 px
+- 3D: mean residual <= 0.15 px
+- along Z: mean residual between neighbouring planes <= 0.25 px
+
+## VV-PROC-03: Stack registration recovers known rotations
+
+**Requirement.** Stack registration (Rigid) shall undo rotations of up to 10° in the YX plane, with shifts.
+
+**Feature.** Processing section: Stack registration, Transform: Rigid (translation + rotation)
+
+**Method.** Test on synthetic moving samples rotated by up to ±10° (2D, 3 scenes of 6 frames) and ±6° (3D, 1 scene of 4 frames), SNR 8.
+
+**Acceptance criteria.**
+
+- largest rotation error <= 0.2°
+- mean residual <= 0.3 px
+
+## VV-PROC-04: Registration moves every channel alike and leaves still frames alone
+
+**Requirement.** The transform measured on the reference channel shall be applied unchanged to every channel; frames that did not move shall not be moved; labels moved by a registration shall keep their numbers.
+
+**Feature.** Processing section: Stack registration (Reference channel); Registration results: Apply to
+
+**Method.** Test: a two-channel time-lapse (the second channel a different image); a series of identical frames; a labels layer moved with the records of a registration.
+
+**Acceptance criteria.**
+
+- second channel vs the same transforms applied by hand: largest difference == 0
+- identical frames: largest shift found <= 0.02 px
+- labels moved: new label numbers == 0, and each label's size within 10 %
+
+## VV-PROC-05: Affine and non-rigid registration undo deformation
+
+**Requirement.** Stack registration shall undo a change of scale (Affine) and a smooth local warp of the tissue on top of drift (Non-rigid, rigid first then a smooth warp, as in IMART).
+
+**Feature.** Processing section: Stack registration, Transform: Affine / Non-rigid (after rigid)
+
+**Method.** Test on synthetic moving samples: magnified by up to ±4 % with rotations up to 4° and shifts (3 scenes of 5 frames); warped by a smooth breathing-like field of up to 3 px on top of shifts (3 scenes of 5 frames, and one 3D scene of 3 frames). SNR 8, default settings.
+
+**Acceptance criteria.**
+
+- affine: mean residual <= 0.25 px
+- non-rigid: mean residual <= 0.5 px (2D and 3D)
+- non-rigid residual / rigid-only residual <= 0.4
+
+## VV-PROC-06: Registration takes the drift out of segmented cell tracks
+
+**Requirement.** Segmenting a drifting time-lapse after Stack registration shall give cell positions that stay put, as the cells do.
+
+**Feature.** Processing section: Stack registration + Segmentation (Threshold + watershed) + Measurements
+
+**Method.** Test: a synthetic nuclei scene whose field drifts (random walk, up to 6 µm), 8 time points; nuclei segmented in each frame with Threshold + watershed, matched frame to frame, before and after registration.
+
+**Acceptance criteria.**
+
+- share of the track jitter (RMS centroid movement) removed >= 0.8
+- the first frame's nuclei are found again in the other frames as often after registration as before (within 5 %)
+
+## VV-PROC-07: Registration keeps intensities
+
+**Requirement.** Stack registration (linear interpolation) shall not change the intensities it moves.
+
+**Feature.** Processing section: Stack registration, Interpolation: Linear
+
+**Method.** Test: the VV-PROC-02 2D scenes (SNR 8); mean intensity inside the field, away from the edges uncovered by the movement, of each registered frame vs the reference frame.
+
+**Acceptance criteria.**
+
+- largest relative difference <= 0.01
+
+## VV-PROC-08: A pipeline gives the same result on a server
+
+**Requirement.** A Processing pipeline run on ibif-napari-server (a facility server, or a cluster job, which runs the same server) shall give the same images and records as on this computer.
+
+**Feature.** Processing section: Run on (a server or a connected cluster)
+
+**Method.** Test: an ibif-napari-server started here (HTTP on localhost); a two-channel time-lapse with two positions (sent one position at a time) registered locally and on the server.
+
+**Acceptance criteria.**
+
+- largest difference between the images == 0
+- records identical
+- positions sent separately and put back in place
 
 ## VV-MEAS-01: Object size in µm² / µm³
 

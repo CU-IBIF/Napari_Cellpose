@@ -37,6 +37,28 @@ LIMITS = {
     "unseeded_taken": 0.05,  # share of a cell without a seed that other cells may take
     "membrane_spill": 0.10,  # share of grown voxels outside their true cell and its membrane
     "membrane_size_ratio": 1.5,  # largest grown cell / its true cell
+    # Inclusions (synthetic spots, some touching; 4 scenes each in 2D and 3D, smoothing
+    # 0.1 µm; seeds 0-5 measure F1 0.98-1.0 and 89-100 % of cells counted exactly)
+    "incl_f1": 0.95,  # mean F1 at IoU 0.5 of the inclusions numbered one by one
+    "incl_f1_low": 0.90,  # lowest scene
+    "incl_count": 0.85,  # mean share of cells whose inclusions are counted exactly (seeds 0-3: 3D 0.92)
+    "incl_gain": 0.05,  # mean F1 gained over no split (connected pieces)
+    # Spots found by Cellpose (default built-in model, CPU): a draft, to be set from the
+    # first runs as the other limits were
+    "cp_spot_f1": 0.80,  # mean F1 at IoU 0.5, 2D and 3D
+    # Stack registration (synthetic moving samples; residual = RMS distance, in pixels,
+    # between what a registered frame and the reference read at each pixel). Seeds 0-3
+    # measure 0.03 (SNR 8), 0.09 (SNR 4), 0.05 (3D), 0.06 (rigid); along Z 0.14 per plane.
+    "reg_rms_snr8": 0.10, "reg_rms_snr4": 0.25, "reg_rms_3d": 0.15,
+    "reg_z_step": 0.25,  # along Z: mean residual between neighbouring registered planes
+    "reg_angle_deg": 0.2, "reg_rms_rigid": 0.30,
+    "reg_identity_px": 0.02,  # a frame that did not move: largest shift found
+    "reg_intensity_rel": 0.01,  # mean intensity of the field, registered vs reference
+    "reg_jitter_cut": 0.80,  # share of the drift in cell tracks that registration removes
+    # Affine (zoom up to 4 %, rotation, shift) and non-rigid (smooth warp up to 3 px on top
+    # of drift); seeds 0-2 measure affine 0.11 px (rigid 0.96), non-rigid 0.33 px (rigid 1.3)
+    "reg_rms_affine": 0.25, "reg_rms_nonrigid": 0.50,
+    "reg_nonrigid_share": 0.40,  # non-rigid residual / rigid-only residual
     # Measurements
     "exact_rel": 1e-9,
     "analytic_size_rel": 0.10,  # median |voxel size - ellipsoid size| / ellipsoid size
@@ -242,6 +264,129 @@ REQUIREMENTS = [
          "a cell left without its nucleus: at most {unseeded_taken} of its inside taken by other cells"],
         scenes=["cells_2d", "cells_3d"]),
     # ---- measurements ---------------------------------------------------------------------
+    Requirement(
+        "VV-SEC-05", "Secondary objects", "Touching inclusions are split by the watershed",
+        "Structures inside each object shall tell touching inclusions apart with a seeded "
+        "watershed (on by default), in 2D and in 3D stacks with anisotropic voxels, and number "
+        "them one by one.",
+        "Secondary objects section: Structures inside each object, Find: Spots, Split touching: "
+        "Watershed (distance); the '<objects> spots inclusions' layer",
+        "Test on synthetic cells holding 1-3 spots (radius 0.4-0.5 µm) and, in about half of "
+        "them, a pair of spots pressed together (4 scenes in 2D at 0.1 µm pixels, 4 in 3D at "
+        "0.3 x 0.1 x 0.1 µm, SNR 8), with Otsu, Size 1.5 µm and Smoothing 0.1 µm. The same is run "
+        "without a split and with the intensity watershed (shown, not a criterion).",
+        ["mean F1 at IoU 0.5 >= {incl_f1}, and >= {incl_f1_low} in every scene, in 2D and 3D",
+         "inclusions counted exactly in a mean share >= {incl_count} of the cells",
+         "F1 at least {incl_gain} higher than without a split (mean of the scenes)"]),
+    Requirement(
+        "VV-SEC-06", "Secondary objects", "Every inclusion is linked to the one object it is in",
+        "Each inclusion numbered one by one shall lie inside a single object; the layer numbered "
+        "by object shall hold the same pixels with the object's number; the measurements shall give "
+        "each inclusion the number of its object ('parent') and each object the number of its "
+        "inclusions ('inclusions').",
+        "Secondary objects section: Structures inside each object (both layers); Measurements "
+        "section: parent and inclusions columns",
+        "Test on the VV-SEC-05 scenes, with every split method, against an independent count.",
+        ["inclusions spanning more than one object: 0",
+         "pixels where the two layers disagree: 0",
+         "inclusions whose 'parent' differs from the object they are in: 0",
+         "objects whose 'inclusions' differs from the independent count: 0"],
+        kind="verification"),
+    Requirement(
+        "VV-SEC-07", "Secondary objects", "Spots found by Cellpose",
+        "Structures inside each object shall find spots with Cellpose (the default built-in "
+        "model, where Segmentation → Cellpose runs) and give each spot to the object it lies in.",
+        "Secondary objects section: Structures inside each object, Find: Spots, Method: Cellpose",
+        "Test on the VV-SEC-05 scenes (4 in 2D, 1 in 3D; SNR 8) with real Cellpose on the CPU, the "
+        "panel's settings (spot diameter 0.9 µm, probability threshold 0, at most 50 % outside the "
+        "object). Intensity + watershed on the same scenes is shown for comparison.",
+        ["mean F1 at IoU 0.5 >= {cp_spot_f1} in 2D and in 3D",
+         "every spot kept lies in a single object"],
+        needs=["cellpose"]),
+    # ---- processing ----------------------------------------------------------------------
+    Requirement(
+        "VV-PROC-01", "Processing", "The pipeline runs its steps in order on a copy",
+        "The Processing pipeline shall run its enabled steps in order, each on the result of the "
+        "one before, skip disabled steps, leave the input unchanged and record every step with its "
+        "settings.",
+        "Processing section: Pipeline, Run pipeline",
+        "Test: two registration steps (along T, then along Z) on a moving 3D time-lapse, run as a "
+        "pipeline and one after the other by hand; the same with the second step disabled.",
+        ["pipeline result equals the steps run by hand (largest difference) == 0",
+         "with the second step disabled, the result equals the first step alone",
+         "input changed: 0 voxels", "steps recorded, in order, with their settings"],
+        kind="verification"),
+    Requirement(
+        "VV-PROC-02", "Processing", "Stack registration recovers known shifts",
+        "Stack registration (Translation) shall undo the drift of a time-lapse (2D and 3D) and of "
+        "the planes of a Z stack to a fraction of a pixel.",
+        "Processing section: Stack registration, Correct along T / Z, Transform: Translation",
+        "Test on synthetic moving samples with a known movement (shifts up to 15 px, 1.5 planes in "
+        "Z; 4 scenes of 8 frames each in 2D at SNR 8 and SNR 4, 2 of 4 Z stacks in 3D, 2 Z stacks "
+        "whose planes drift). The residual is the RMS distance between what each registered frame "
+        "and the reference read at each pixel, from the scene's truth.",
+        ["2D, SNR 8: mean residual <= {reg_rms_snr8} px", "2D, SNR 4 (smoothing 0.5 µm): mean residual "
+         "<= {reg_rms_snr4} px", "3D: mean residual <= {reg_rms_3d} px",
+         "along Z: mean residual between neighbouring planes <= {reg_z_step} px"]),
+    Requirement(
+        "VV-PROC-03", "Processing", "Stack registration recovers known rotations",
+        "Stack registration (Rigid) shall undo rotations of up to 10° in the YX plane, with shifts.",
+        "Processing section: Stack registration, Transform: Rigid (translation + rotation)",
+        "Test on synthetic moving samples rotated by up to ±10° (2D, 3 scenes of 6 frames) and ±6° "
+        "(3D, 1 scene of 4 frames), SNR 8.",
+        ["largest rotation error <= {reg_angle_deg}°", "mean residual <= {reg_rms_rigid} px"]),
+    Requirement(
+        "VV-PROC-04", "Processing", "Registration moves every channel alike and leaves still frames alone",
+        "The transform measured on the reference channel shall be applied unchanged to every channel; "
+        "frames that did not move shall not be moved; labels moved by a registration shall keep "
+        "their numbers.",
+        "Processing section: Stack registration (Reference channel); Registration results: Apply to",
+        "Test: a two-channel time-lapse (the second channel a different image); a series of "
+        "identical frames; a labels layer moved with the records of a registration.",
+        ["second channel vs the same transforms applied by hand: largest difference == 0",
+         "identical frames: largest shift found <= {reg_identity_px} px",
+         "labels moved: new label numbers == 0, and each label's size within 10 %"],
+        kind="verification"),
+    Requirement(
+        "VV-PROC-05", "Processing", "Affine and non-rigid registration undo deformation",
+        "Stack registration shall undo a change of scale (Affine) and a smooth local warp of the "
+        "tissue on top of drift (Non-rigid, rigid first then a smooth warp, as in IMART).",
+        "Processing section: Stack registration, Transform: Affine / Non-rigid (after rigid)",
+        "Test on synthetic moving samples: magnified by up to ±4 % with rotations up to 4° and "
+        "shifts (3 scenes of 5 frames); warped by a smooth breathing-like field of up to 3 px on top "
+        "of shifts (3 scenes of 5 frames, and one 3D scene of 3 frames). SNR 8, default settings.",
+        ["affine: mean residual <= {reg_rms_affine} px",
+         "non-rigid: mean residual <= {reg_rms_nonrigid} px (2D and 3D)",
+         "non-rigid residual / rigid-only residual <= {reg_nonrigid_share}"]),
+    Requirement(
+        "VV-PROC-06", "Processing", "Registration takes the drift out of segmented cell tracks",
+        "Segmenting a drifting time-lapse after Stack registration shall give cell positions that "
+        "stay put, as the cells do.",
+        "Processing section: Stack registration + Segmentation (Threshold + watershed) + Measurements",
+        "Test: a synthetic nuclei scene whose field drifts (random walk, up to 6 µm), 8 time points; "
+        "nuclei segmented in each frame with Threshold + watershed, matched frame to frame, before "
+        "and after registration.",
+        ["share of the track jitter (RMS centroid movement) removed >= {reg_jitter_cut}",
+         "the first frame's nuclei are found again in the other frames as often after registration "
+         "as before (within 5 %)"]),
+    Requirement(
+        "VV-PROC-07", "Processing", "Registration keeps intensities",
+        "Stack registration (linear interpolation) shall not change the intensities it moves.",
+        "Processing section: Stack registration, Interpolation: Linear",
+        "Test: the VV-PROC-02 2D scenes (SNR 8); mean intensity inside the field, away from the "
+        "edges uncovered by the movement, of each registered frame vs the reference frame.",
+        ["largest relative difference <= {reg_intensity_rel}"],
+        kind="verification"),
+    Requirement(
+        "VV-PROC-08", "Processing", "A pipeline gives the same result on a server",
+        "A Processing pipeline run on ibif-napari-server (a facility server, or a cluster job, "
+        "which runs the same server) shall give the same images and records as on this computer.",
+        "Processing section: Run on (a server or a connected cluster)",
+        "Test: an ibif-napari-server started here (HTTP on localhost); a two-channel time-lapse "
+        "with two positions (sent one position at a time) registered locally and on the server.",
+        ["largest difference between the images == 0", "records identical", "positions sent "
+         "separately and put back in place"],
+        kind="verification"),
     Requirement(
         "VV-MEAS-01", "Measurements", "Object size in µm² / µm³",
         "The measured area or volume shall equal the voxel count times the voxel size, and "

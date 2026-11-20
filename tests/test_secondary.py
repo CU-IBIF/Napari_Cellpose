@@ -4,7 +4,7 @@ from scipy import ndimage as ndi
 
 from ibif_napari._secondary import (
     combine_channels,
-    count_pieces,
+    count_inclusions,
     cytoplasm,
     expand,
     foreground,
@@ -221,7 +221,7 @@ def test_structures_spots_take_their_objects_number():
     assert (found[found > 0] == cells[found > 0]).all()  # each piece has its cell's number
     assert not found[outside].any() and not found[cells == 0].any()
     assert iou(found > 0, truth) > 0.8
-    assert count_pieces(found) == {1: 3, 2: 1}
+    assert count_inclusions(found) == {1: 3, 2: 1}
 
 
 def test_structures_dark_nucleoli_in_a_dna_stain():
@@ -236,7 +236,7 @@ def test_structures_dark_nucleoli_in_a_dna_stain():
         found, _ = structures(nuclei, img, kind=kind, size=4, dark=True, smooth=0)
         assert (found[found > 0] == nuclei[found > 0]).all()
         assert iou(found > 0, nucleoli) > 0.7, kind
-        assert count_pieces(found) == {1: 2, 2: 1}, kind
+        assert count_inclusions(found) == {1: 2, 2: 1}, kind
 
 
 def test_structures_filaments():
@@ -251,7 +251,7 @@ def test_structures_filaments():
     assert (found[found > 0] == cells[found > 0]).all()
     assert (found[line] > 0).mean() > 0.9
     assert (found > 0).sum() < 3 * line.sum()  # thin, not a blob
-    assert count_pieces(found) == {1: 1, 2: 1}
+    assert count_inclusions(found) == {1: 1, 2: 1}
     # 3D with long Z voxels: the ridge filter runs per plane.
     cells3 = np.stack([cells] * 3)
     found3, _ = structures(cells3, np.stack([img] * 3), spacing=(2.0, 0.5, 0.5), kind="filaments",
@@ -299,3 +299,123 @@ def test_structures_input_checks():
         structures(cells, img, threshold="manual")
     assert not structures(np.zeros_like(cells), img)[0].any()
     assert not structures(cells, img)[0].any()  # a flat channel has no structures
+
+
+# ---- inclusions: touching ones told apart (watershed) -------------------------------------
+
+def _balls(shape, centres, radius, spacing):
+    """Mask of balls (radius in µm) at `centres` (pixel coordinates), with per-axis spacing."""
+    grids = np.indices(shape).astype(float)
+    mask = np.zeros(shape, bool)
+    for c in centres:
+        d2 = sum(((g - ci) * s) ** 2 for g, ci, s in zip(grids, c, spacing))
+        mask |= d2 <= radius ** 2
+    return mask
+
+
+def test_touching_inclusions_are_split_by_the_watershed():
+    from ibif_napari._secondary import split_inclusions
+
+    mask = _balls((40, 40), [(20, 14), (20, 25)], 6.0, (1, 1))  # two discs that overlap a little
+    assert ndi.label(mask)[1] == 1
+    parents = mask.astype(np.uint16) * 3
+    assert split_inclusions(parents, spacing=(1, 1), split="none").max() == 1
+    split = split_inclusions(parents, spacing=(1, 1))  # default: distance
+    assert split.max() == 2 and ((split > 0) == mask).all()
+    assert split[20, 14] != split[20, 25]
+    # A diameter much larger than the discs merges their seeds (of unequal discs: equal
+    # peaks are both kept, as in Segmentation -> Threshold + watershed).
+    uneven = _balls((40, 40), [(20, 14), (20, 25)], 6.0, (1, 1)) | _balls((40, 40), [(20, 14)], 7.0, (1, 1))
+    uneven = uneven.astype(np.uint16)
+    assert split_inclusions(uneven, spacing=(1, 1)).max() == 2
+    assert split_inclusions(uneven, spacing=(1, 1), diameter=40).max() == 1
+
+
+def test_touching_inclusions_in_an_anisotropic_stack():
+    from ibif_napari._secondary import split_inclusions
+
+    spacing = (2.0, 0.5, 0.5)  # Z steps 4x the pixel size
+    mask = _balls((9, 40, 50), [(4, 20, 17), (4, 20, 31)], 3.8, spacing)
+    assert ndi.label(mask)[1] == 1
+    split = split_inclusions(mask.astype(np.uint16), spacing=spacing)
+    assert split.max() == 2 and split[4, 20, 17] != split[4, 20, 31]
+
+
+def test_split_by_intensity_finds_one_inclusion_per_bright_centre():
+    from ibif_napari._secondary import split_inclusions
+
+    yy, xx = np.indices((30, 40))
+    image = np.exp(-((yy - 15) ** 2 + (xx - 14) ** 2) / 18.0) + np.exp(-((yy - 15) ** 2 + (xx - 24) ** 2) / 18.0)
+    mask = image > 0.2
+    assert ndi.label(mask)[1] == 1
+    split = split_inclusions(mask.astype(np.uint8), image, split="intensity")
+    assert split.max() == 2 and split[15, 14] != split[15, 24]
+    with pytest.raises(ValueError, match="needs the image"):
+        split_inclusions(mask.astype(np.uint8), None, split="intensity")
+
+
+def test_an_inclusion_never_spans_two_objects():
+    from ibif_napari._secondary import split_inclusions
+
+    parents = np.zeros((20, 30), np.uint16)
+    parents[:, :15] = 1
+    parents[:, 15:] = 2
+    structures = np.zeros_like(parents)
+    structures[8:12, 12:18] = parents[8:12, 12:18]  # one blob across the border of 1 and 2
+    for how in ("none", "distance", "intensity"):
+        single = split_inclusions(structures, structures.astype(float), split=how)
+        assert single.max() == 2, how
+        for i in (1, 2):
+            assert len(np.unique(parents[single == i])) == 1, how  # each in one object
+
+
+def test_structures_return_the_inclusions_one_by_one():
+    cells = np.zeros((40, 60), np.uint16)
+    cells[2:38, 2:29] = 1
+    cells[2:38, 31:58] = 2
+    image = np.zeros(cells.shape, np.float32)
+    image[_balls(cells.shape, [(20, 10), (20, 17)], 4.2, (1, 1))] = 1.0  # two touching spots in cell 1
+    image[_balls(cells.shape, [(20, 45)], 3.0, (1, 1))] = 1.0  # one in cell 2
+    image[5, 40] = 1.0  # a 1-px speck in cell 2
+    found, used, single = structures(cells, image, kind="regions", min_size=4, return_inclusions=True)
+    assert single.dtype == np.uint32 and single.max() == 3  # the speck is dropped
+    assert found[5, 40] == 0 and ((found > 0) == (single > 0)).all()
+    assert count_inclusions(found) == {1: 1, 2: 1}  # connected pieces: the touching pair is one
+    from ibif_napari._measure import count_per_object
+
+    assert count_per_object(found, single) == {1: 2, 2: 1}
+    _, _, none = structures(cells, image, kind="regions", min_size=4, split="none", return_inclusions=True)
+    assert none.max() == 2
+    # Filaments are never split.
+    _, _, lines = structures(cells, image, kind="filaments", size=1.0, return_inclusions=True)
+    assert lines.max() == len(np.unique(ndi.label(lines > 0, structure=np.ones((3, 3)))[0])) - 1
+    with pytest.raises(ValueError, match="unknown split"):
+        structures(cells, image, split="sideways")
+
+
+def test_spots_found_on_their_own_are_assigned_to_their_object():
+    from ibif_napari._secondary import assign_to_parents
+
+    cells = np.zeros((20, 40), np.uint16)
+    cells[:, :20] = 1
+    cells[:, 20:] = 2
+    cells[:, 38:] = 0  # background on the right
+    spots = np.zeros_like(cells)
+    spots[2:6, 2:6] = 5  # inside cell 1
+    spots[8:12, 17:22] = 6  # across the border: 3 columns in cell 1, 2 in cell 2
+    spots[14:18, 36:40] = 7  # half outside the cells (2 columns in cell 2)
+    spots[15:18, 10] = 8  # a sliver of 3 px in cell 1
+    by_object, single = assign_to_parents(cells, spots, spacing=(1, 1))
+    assert single.dtype == np.uint32 and single.max() == 4
+    assert (by_object[2:6, 2:6] == 1).all()
+    assert (by_object[8:12, 17:20] == 1).all() and not by_object[8:12, 20:22].any()  # cut to its owner
+    assert (by_object[14:18, 36:38] == 2).all() and not by_object[14:18, 38:].any()  # half out: kept
+    for i in range(1, 5):  # one object per inclusion
+        assert len(np.unique(cells[single == i])) == 1
+    assert ((single > 0) == (by_object > 0)).all()
+    # Stricter: a spot with any part outside its object is dropped; small ones too.
+    by_object, single = assign_to_parents(cells, spots, max_outside=0.0, min_size=4)
+    assert single.max() == 1 and (by_object[2:6, 2:6] == 1).all()
+    assert assign_to_parents(cells, np.zeros_like(cells))[1].max() == 0
+    with pytest.raises(ValueError, match="differ in size"):
+        assign_to_parents(cells, spots[:10])

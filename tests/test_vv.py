@@ -119,8 +119,8 @@ def test_suite_with_a_perfect_segmentation_passes_everything(quick_truth, tmp_pa
     statuses = {e["id"]: e["status"] for e in summary["results"]}
     allowed = {"PASS"}
     for e in summary["results"]:
-        if e["status"] == "NOT RUN":  # e.g. pylibCZIrw not installed here
-            assert e["id"] in ("VV-IO-01", "VV-IO-02"), e
+        if e["status"] == "NOT RUN":  # e.g. pylibCZIrw or Cellpose (spots) not installed here
+            assert e["id"] in ("VV-IO-01", "VV-IO-02", "VV-SEC-07"), e
             allowed.add("NOT RUN")
     assert set(statuses.values()) <= allowed, {k: v for k, v in statuses.items() if v != "PASS"}
     html, md = build(tmp_path / "res")
@@ -191,3 +191,33 @@ def test_broken_cellpose_install_is_reported_not_raised(monkeypatch):
     ok, why = CellposeBackend().available()
     assert not ok and "torchvision::nms" in why
     assert CellposeBackend().describe()["backend"] == "cellpose"
+
+
+def test_cellpose_spots_check_runs_with_a_stand_in(monkeypatch):
+    """VV-SEC-07 needs real Cellpose (run in CI); here its code runs on a stand-in that
+    finds the bright connected areas, with the panel's settings."""
+    from types import SimpleNamespace
+
+    from scipy import ndimage as ndi
+
+    from ibif_napari import _cellpose
+    from ibif_napari.vv import checks
+    from ibif_napari.vv.requirements import BY_ID, LIMITS
+
+    calls = []
+
+    def segment(image, nuclei=None, **params):
+        calls.append(params)
+        return ndi.label(ndi.gaussian_filter(image, 1) > 0.45)[0]
+
+    monkeypatch.setattr(_cellpose, "segment", segment)
+    monkeypatch.setattr(_cellpose, "default_model", lambda: "stand-in")
+    monkeypatch.setattr(checks, "CELLPOSE_SPOT_SCENES", {2: (0,), 3: (0,)})
+    res = checks.Result(BY_ID["VV-SEC-07"])
+    checks.CHECKS["VV-SEC-07"](SimpleNamespace(limits=LIMITS), res)
+    res.finish()
+    assert res.status in ("PASS", "FAIL") and len(res.criteria) == 3
+    assert next(c for c in res.criteria if c["name"].startswith("spots spanning"))["passed"]
+    assert calls[0]["model"] == "stand-in" and calls[0]["diameter"] == pytest.approx(9.0)
+    assert calls[1]["do_3D"] and calls[1]["anisotropy"] == pytest.approx(3.0)
+    assert list(res.tables["cellpose spots"]["scene"]) == ["2D seed 0", "3D seed 0"]

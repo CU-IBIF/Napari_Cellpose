@@ -376,3 +376,221 @@ def generate_all(out, quick=False, specs=None):
     manifest = {"quick": quick, "scenes": [f.name for f in folders]}
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2))
     return folders
+
+
+# ---- inclusions (spots inside cells) ---------------------------------------------------------
+
+
+@dataclass
+class InclusionScene:
+    """Spots inside cells, some of them touching, with their truth.
+
+    cells: parent objects (1...n); spots: truth inclusions numbered one by one; parent:
+    {spot: cell}; image: blurred spots on a dim cytoplasm, with Gaussian noise;
+    touching: number of touching pairs; spacing (µm) and radius (µm) of the spots."""
+
+    cells: np.ndarray
+    spots: np.ndarray
+    parent: dict
+    image: np.ndarray
+    spacing: tuple
+    radius: float
+    touching: int
+
+
+def inclusion_scene(ndim=2, seed=0, snr=8.0, grid=3, touch_share=0.5):
+    """A grid of `grid` x `grid` square cells; each holds 1-3 round spots (radius 0.4-0.5 µm)
+    placed well apart, and about `touch_share` of the cells also a pair of spots pressed
+    together (centres 1.6-1.85 radii apart, so they touch along a neck). 2D at 0.1 µm
+    pixels, or 3D at 0.3 x 0.1 x 0.1 µm (Z steps 3x the pixel size), each spot (pair) at
+    its own depth. Overlapping voxels go to the nearer spot centre. The image is the spots
+    (1.0) on cytoplasm (0.15), blurred by a 0.05 µm PSF, with noise of sigma 1 / `snr`."""
+    rng = np.random.default_rng(seed)
+    spacing = (0.1, 0.1) if ndim == 2 else (0.3, 0.1, 0.1)
+    side, gap = 70, 6  # cell size and gap, pixels (XY)
+    n_xy = grid * (side + gap) + gap
+    shape = (n_xy, n_xy) if ndim == 2 else (16, n_xy, n_xy)
+    cells = np.zeros(shape, np.uint16)
+    corners = {}
+    for k, (i, j) in enumerate(np.ndindex(grid, grid), start=1):
+        y0, x0 = gap + i * (side + gap), gap + j * (side + gap)
+        cells[..., y0:y0 + side, x0:x0 + side] = k
+        corners[k] = (y0, x0)
+    depth = (shape[0] - 1) * spacing[0] if ndim == 3 else 0.0
+
+    def z_of():  # a depth at least 0.6 µm inside the stack
+        return float(rng.uniform(0.6, depth - 0.6)) if ndim == 3 else None
+
+    placed = []  # (centre (µm, Z Y X or Y X), radius, cell)
+    touching = 0
+    for k, (y0, x0) in corners.items():
+        lo = np.array([y0, x0]) * 0.1 + 0.8
+        hi = np.array([y0 + side - 1, x0 + side - 1]) * 0.1 - 0.8
+        mine = []
+
+        def free(c, mine=mine):
+            return all(np.hypot(*(c - m)) > 1.5 for m in mine)
+
+        if rng.random() < touch_share:
+            r1, r2 = rng.uniform(0.4, 0.5, 2)
+            for _ in range(100):
+                c1 = rng.uniform(lo + 0.6, hi - 0.6)
+                angle = rng.uniform(0, 2 * np.pi)
+                c2 = c1 + rng.uniform(1.6, 1.85) * max(r1, r2) * np.array([np.sin(angle), np.cos(angle)])
+                if np.all((c2 >= lo) & (c2 <= hi)) and free(c1) and free(c2):
+                    z = z_of()
+                    for c, r in ((c1, r1), (c2, r2)):
+                        mine.append(c)
+                        placed.append((np.r_[z, c] if ndim == 3 else c, r, k))
+                    touching += 1
+                    break
+        for _ in range(int(rng.integers(1, 4))):
+            r = rng.uniform(0.4, 0.5)
+            for _ in range(100):
+                c = rng.uniform(lo, hi)
+                if free(c):
+                    mine.append(c)
+                    placed.append((np.r_[z_of(), c] if ndim == 3 else c, r, k))
+                    break
+    mesh = np.meshgrid(*[np.arange(n) * s for n, s in zip(shape, spacing)], indexing="ij", sparse=True)
+    best = np.full(shape, np.inf)
+    spots = np.zeros(shape, np.uint32)
+    for n, (c, r, _) in enumerate(placed, start=1):
+        d = np.sqrt(sum((m - ci) ** 2 for m, ci in zip(mesh, c))) / r  # in radii
+        take = (d <= 1.0) & (d < best)
+        spots[take] = n
+        best = np.where(take, d, best)
+    phantom = np.where(cells > 0, 0.15, 0.0) + (spots > 0) * 0.85
+    image = ndi.gaussian_filter(phantom, sigma=[0.05 / s for s in spacing])
+    image = (image + rng.normal(0, 1.0 / snr, shape)).astype(np.float32)
+    return InclusionScene(cells, spots, {n: k for n, (_, _, k) in enumerate(placed, start=1)}, image,
+                          spacing, 0.45, touching)
+
+
+# ---- movement (stack registration) ----------------------------------------------------------
+
+
+@dataclass
+class MotionScene:
+    """Frames of a textured sample that moves (and warps) by a known amount.
+
+    frames: (N, Y, X) or (N, Z, Y, X) along T, or a (Z, Y, X) stack whose planes drift
+    along Z; spacing (µm per pixel of a frame); truth: per frame, the rotation (degrees,
+    YX), shift (pixels, ZYX / YX) and warp amplitude (pixels). `source(k, coords)` gives,
+    for pixel coordinates of frame k (shape (n, ...)), where they come from in the sample
+    (the motion-free canvas): registration is perfect when the registered frame k reads,
+    at every pixel, what the reference frame reads there."""
+
+    frames: np.ndarray
+    spacing: tuple
+    truth: list
+    offset: np.ndarray  # where pixel 0 of a frame is in the sample, per axis
+    centre: np.ndarray
+    along: str
+    ideal: np.ndarray
+
+    def source(self, k, coords):
+        coords = np.asarray(coords, float)
+        t = self.truth[k]
+        n = coords.shape[0]
+        q = coords + self.offset.reshape((n,) + (1,) * (coords.ndim - 1))
+        shift = np.asarray(t["shift"], float).reshape((n,) + (1,) * (coords.ndim - 1))
+        c = self.centre.reshape((n,) + (1,) * (coords.ndim - 1))
+        d = q - c - shift
+        a = np.deg2rad(-t["angle"])
+        y, x = d[-2], d[-1]
+        ry, rx = np.cos(a) * y - np.sin(a) * x, np.sin(a) * y + np.cos(a) * x
+        zoom = t.get("zoom", 1.0)  # the content is magnified by `zoom` in YX
+        out = np.concatenate([d[:-2], ry[None] / zoom, rx[None] / zoom]) + c
+        if t["warp"]:
+            out = out - _warp_field(q, t["warp"], t["phase"])
+        return out
+
+
+def _warp_field(q, amplitude, phase):
+    """A smooth displacement (pixels) like tissue moving with breathing: a slow wave across
+    the field, larger in the middle."""
+    y, x = q[-2], q[-1]
+    dy = amplitude * np.sin(2 * np.pi * x / 160.0 + phase) * np.exp(-((y - 100) / 120.0) ** 2)
+    dx = 0.6 * amplitude * np.cos(2 * np.pi * y / 140.0 + phase)
+    zeros = [np.zeros_like(y)] * (q.shape[0] - 2)
+    return np.stack(zeros + [dy, dx])
+
+
+def _sample(seed, shape, spacing):
+    """A motion-free sample: cell-like blobs on a textured background, with structure at
+    several scales so every frame can be registered."""
+    rng = np.random.default_rng(seed)
+    background = ndi.gaussian_filter(rng.random(shape), [4.0 / s * spacing[-1] for s in spacing])
+    background = (background - background.min()) / (np.ptp(background) or 1)
+    blobs = np.zeros(shape)
+    n = int(np.prod(shape) / 900)
+    for _ in range(n):
+        blobs[tuple(rng.integers(0, s) for s in shape)] = rng.uniform(1.0, 3.0)
+    blobs = ndi.gaussian_filter(blobs, [2.5 * spacing[-1] / s for s in spacing])
+    return 0.3 * background + blobs / (blobs.max() or 1)
+
+
+def motion_scene(ndim=2, along="T", n=8, seed=0, snr=8.0, max_shift=15.0, max_angle=0.0, warp=0.0,
+                 size=160, depth=12, max_zoom=0.0):
+    """Frames with known movement. Along T: `n` frames (2D, or 3D Z stacks of `depth`
+    planes at 2 x 0.5 x 0.5 µm with a Z shift too), each moved by a random shift up to
+    `max_shift` pixels (in Z up to 1.5 planes), rotated up to `max_angle` degrees in YX,
+    magnified in YX by up to 1 ± `max_zoom` (focus or tissue swelling: an affine change),
+    and warped smoothly by up to `warp` pixels; the first frame does not move. Along Z: a
+    3D stack whose planes drift in YX like a random walk (steps up to `max_shift` / 4,
+    plane 0 fixed). Gaussian noise gives the signal-to-noise ratio `snr` (mean signal /
+    sigma). The frames are read from a larger motion-free sample with cubic interpolation,
+    so the movement comes in from outside the frame like a real field of view."""
+    rng = np.random.default_rng(seed)
+    margin = int(np.ceil(max_shift + abs(max_angle) / 45 * size + 2 * warp + max_zoom * size)) + 8
+    if along == "Z":
+        spacing = (1.0, 0.5, 0.5)
+        shape = (depth, size + 2 * margin, size + 2 * margin)
+    elif ndim == 3:
+        spacing = (2.0, 0.5, 0.5)
+        shape = (depth + 2 * 4, size + 2 * margin, size + 2 * margin)
+    else:
+        spacing = (0.5, 0.5)
+        shape = (size + 2 * margin,) * 2
+    sample = _sample(seed, shape, spacing)
+    centre = (np.asarray(shape, float) - 1) / 2
+    truth = []
+    if along == "Z":
+        walk = np.cumsum(rng.uniform(-max_shift / 4, max_shift / 4, (depth, 2)), axis=0)
+        walk -= walk[0]
+        scene = MotionScene(None, spacing, [], np.array([margin, margin], float), centre[1:], "Z", sample)
+        planes = []
+        for z in range(depth):
+            t = {"angle": 0.0, "shift": tuple(walk[z]), "warp": 0.0, "phase": 0.0}
+            scene.truth.append(t)
+            coords = np.indices((size, size)).astype(float)
+            src = scene.source(z, coords)
+            planes.append(ndi.map_coordinates(sample[z], src, order=3, mode="nearest"))
+        frames = np.stack(planes)
+    else:
+        nd = len(shape)
+        out_shape = (depth,) * (nd == 3) + (size, size)
+        offset = np.array(([4] if nd == 3 else []) + [margin, margin], float)
+        scene = MotionScene(None, spacing, truth, offset, centre, "T", sample)
+        frames = []
+        for k in range(n):
+            if k == 0:
+                shift, angle, amp, phase = np.zeros(nd), 0.0, 0.0, 0.0
+            else:
+                shift = rng.uniform(-max_shift, max_shift, nd)
+                if nd == 3:
+                    shift[0] = rng.uniform(-1.5, 1.5)
+                angle = float(rng.uniform(-max_angle, max_angle)) if max_angle else 0.0
+                amp = float(rng.uniform(0.5, 1.0) * warp) if warp else 0.0
+                phase = float(rng.uniform(0, 2 * np.pi))
+            zoom = float(1 + rng.uniform(-max_zoom, max_zoom)) if (k and max_zoom) else 1.0
+            truth.append({"angle": angle, "shift": tuple(float(s) for s in shift), "warp": amp, "phase": phase,
+                          "zoom": zoom})
+            coords = np.indices(out_shape).astype(float)
+            frames.append(ndi.map_coordinates(sample, scene.source(k, coords), order=3, mode="nearest"))
+        frames = np.stack(frames)
+    signal = float(np.mean(frames))
+    frames = frames + rng.normal(0, signal / snr, frames.shape)
+    scene.frames = frames.astype(np.float32)
+    return scene

@@ -419,3 +419,23 @@ def test_panel_batch_submit_and_fetch(panel, profile, qtbot, tmp_path, monkeypat
     assert tif.exists() and _batch.load_records()[0].fetched == str(tif)
     assert "Saved" in dlg.message.text()
     dlg.close()
+
+
+def test_processing_pipeline_runs_in_the_cluster_job(profile, tmp_path):
+    """A Processing pipeline sent through the cluster job's tunnel gives what it gives here."""
+    from ibif_napari._processing import Pipeline, Stack
+    from ibif_napari.vv import synth
+
+    frames = synth.motion_scene(seed=5, n=3, size=64, max_shift=4).frames
+    stack = Stack({"GFP": frames}, "TYX", {"Y": 0.5, "X": 0.5})
+    pipe = Pipeline()
+    pipe.add("registration")
+    session = ClusterSession(profile, Prompts(), tmp_path / "kh")
+    try:
+        wait(session.start(), timeout=60)
+        remote_stack, steps = wait(session.process.process(stack, pipe), timeout=120)
+    finally:
+        session.stop()
+    local = pipe.run(stack)
+    assert np.array_equal(remote_stack.channels["GFP"], local.stack.channels["GFP"])
+    assert steps[0]["records"] == local.steps[0]["records"]

@@ -25,7 +25,7 @@ LAYERS = {"nuclei": "Nuc", "nucleus": "Nuc", "cells": "Cell", "cell": "Cell", "c
           "vesicles": "Ves", "nucleoli": "Ncl"}
 SIZES = [(re.compile(r"^volume \((.+)\)$"), "vol"), (re.compile(r"^area \((.+)\)$"), "area"),
          (re.compile(r"^equivalent diameter \((.+)\)$"), "diam"),
-         (re.compile(r"^centroid ([ZYX]) \((.+)\)$"), None), (re.compile(r"^pieces$"), "pcs"),
+         (re.compile(r"^centroid ([ZYX]) \((.+)\)$"), None), (re.compile(r"^inclusions$"), "incl"),
          (re.compile(r"^voxels$"), "vox")]
 ELLIPSIS = "…"
 

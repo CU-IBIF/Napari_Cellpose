@@ -110,6 +110,46 @@ class RemoteProcess:
         with np.load(io.BytesIO(data), allow_pickle=False) as npz:
             return npz["labels"]
 
+    def process(self, stack, pipeline):
+        """Run a Processing pipeline on the server; returns (stack, steps) like a local run
+        (`Pipeline.run`). The image goes one position at a time. Refuses before sending
+        anything when the server cannot run pipelines (older than 0.37) or a part is
+        larger than it accepts."""
+        from ._processing import remote
+
+        yield f"Connecting to {self.name}…"
+        info = self.status()
+        caps = info.get("processing")
+        if info.get("server") != "ibif-napari-server" or not caps:
+            raise RemoteError(f"{self.name} cannot run processing pipelines (it runs ibif-napari-server "
+                              f"{info.get('version') or '?'}; 0.37 or later is needed): update it, or run "
+                              f"on this computer")
+        missing = sorted({s.key for s in pipeline if s.enabled} - set(caps.get("steps") or []))
+        if missing:
+            raise RemoteError(f"{self.name} does not have the step(s) {', '.join(missing)}: update it")
+        parts = remote.series(stack)
+        limit = float(info.get("max_mb") or 0) * 2**20
+        for index, label in parts:
+            size = sum(np.asarray(a[index]).nbytes for a in stack.channels.values())
+            if limit and size > limit:
+                where = f" (one position is {size / 2**20:.0f} MB)" if label else ""
+                raise RemoteError(
+                    f"the image is too large for {self.name}: it accepts {limit / 2**20:.0f} MB per upload"
+                    f"{where}. Process fewer channels or the current position, or run on this computer")
+        done = []
+        for n, (index, label) in enumerate(parts, start=1):
+            body = remote.encode_request(remote.sub_stack(stack, index), pipeline)
+            part = f" (position {n} of {len(parts)})" if len(parts) > 1 else ""
+            yield f"Sending {len(body) / 1e6:.1f} MB to {self.name}{part}…"
+            job_id = yield from self._run(body, "application/octet-stream", None, keep=True)
+            try:
+                data = self._request("GET", f"/jobs/{job_id}/result", timeout=max(self.timeout, 300))
+            finally:
+                self._job = None
+            channels, steps = remote.decode_result(data)
+            done.append((index, label, channels, steps))
+        return remote.merge(stack, done)
+
     def _run(self, body, content_type, done_message, keep=False):
         self._cancelled = False
         reply = self._request("POST", "/jobs", body, content_type, timeout=max(self.timeout, 300))

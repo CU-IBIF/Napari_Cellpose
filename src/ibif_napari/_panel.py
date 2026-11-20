@@ -1,6 +1,6 @@
 """The IBIF napari panel: a row of icon buttons that switches between the sections.
 
-Configuration · Segmentation · Secondary objects · Measurements · Cytometry · Filament
+Configuration · Processing · Segmentation · Secondary objects · Measurements · Cytometry · Filament
 tracing · Save workspace. Each button's name and description are in its tooltip; the
 current section's name is shown above it. 
 The panel opens on Configuration, and goes back to it when a workspace is loaded.
@@ -47,6 +47,10 @@ SECTIONS = (
     Section("configuration", "Configuration",
             "Time, position and Z sliders, channels, 2D/3D view, projections and the 3D brush",
             "._dims_widget:DimensionsWidget"),
+    Section("processing", "Processing",
+            "Correct the image before segmenting it: an ordered pipeline of steps such as stack "
+            "registration (illumination correction and deconvolution coming soon)",
+            "._processing_widget:ProcessingWidget"),
     Section("segmentation", "Segmentation",
             "Cellpose segmentation in 2D or 3D, on this computer, a facility server or a cluster; "
             "or a classical threshold + watershed on the CPU (no GPU needed)",

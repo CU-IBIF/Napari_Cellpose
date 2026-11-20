@@ -10,9 +10,11 @@ Cellpose process that keeps the model loaded (so Cancel stops a run at once).
 Protocol (HTTP, every request carries "Authorization: Bearer <token>"):
     GET    /status            server, Cellpose and GPU versions, queue length
     POST   /jobs              JSON {"op": "load", "model": ...} or an .npz upload with
-                              "image", optional "nuclei" and "params" (JSON as uint8)
+                              "image", optional "nuclei" and "params" (JSON as uint8),
+                              or a Processing pipeline: channels and a "manifest"
+                              (see ibif_napari._processing.remote)
     GET    /jobs/<id>         {"state", "message", "position", "error"}
-    GET    /jobs/<id>/result  .npz with "labels"
+    GET    /jobs/<id>/result  .npz with "labels" (or the processed channels)
     DELETE /jobs/<id>         cancel (queued or running)
 """
 from __future__ import annotations
@@ -127,8 +129,9 @@ class Users:
 
 
 class Job:
-    def __init__(self, user, op, model, image=None, nuclei=None, params=None):
+    def __init__(self, user, op, model, image=None, nuclei=None, params=None, payload=None):
         self.id = uuid.uuid4().hex
+        self.payload = payload  # a Processing pipeline and its image
         self.user = user
         self.op = op
         self.model = model
@@ -144,7 +147,7 @@ class Job:
 
     def finish(self, state, message, error=None):
         self.state, self.message, self.error = state, message, error
-        self.image = self.nuclei = None
+        self.image = self.nuclei = self.payload = None
         self.finished_at = time.monotonic()
 
 
@@ -283,6 +286,8 @@ class CellposeServer:
             return stop.value
 
     def _run(self, job):
+        if job.op == "process":
+            return self._run_pipeline(job)
         job.state = "loading"
         self._drive(job, self._prepare(job.model))
         self._drive(job, self.process.load(job.model, self.gpu))
@@ -299,6 +304,22 @@ class CellposeServer:
         buf = io.BytesIO()
         np.savez_compressed(buf, labels=np.asarray(labels))
         job.result = buf.getvalue()
+        job.finish("done", f"Done in {time.monotonic() - start:.1f} s on {self.device_name()}")
+        log.info("%s job %s done (%s)", job.user, job.id[:8], job.message)
+
+    def _run_pipeline(self, job):
+        from ._processing.remote import encode_result
+
+        job.state = "running"
+        stack, pipeline = job.payload
+        shape = "×".join(map(str, stack.shape))
+        titles = ", ".join(s.spec.title for s in pipeline if s.enabled)
+        job.message = f"Processing {shape} ({len(stack.channels)} channel(s)): {titles}"
+        start = time.monotonic()
+        from ._processing.remote import payload
+
+        channels, steps = self._drive(job, self.process.call("process", *payload(stack, pipeline)))
+        job.result = encode_result(channels, steps)
         job.finish("done", f"Done in {time.monotonic() - start:.1f} s on {self.device_name()}")
         log.info("%s job %s done (%s)", job.user, job.id[:8], job.message)
 
@@ -354,18 +375,33 @@ class CellposeServer:
             "models": self.models(),
             "queued": len(self.queue),
             "busy": self.current is not None,
+            "max_mb": self.max_bytes / 2**20,
+            "processing": self._processing_info(),
         }
+
+    @staticmethod
+    def _processing_info():
+        """The Processing steps this server can run (absent on servers before 0.37)."""
+        from . import _processing
+
+        return {"registry": _processing.REGISTRY_VERSION,
+                "steps": [s.key for s in _processing.library() if s.available]}
 
 
 # ---- HTTP --------------------------------------------------------------------------
 
 
-def _decode_upload(body, max_bytes):
+def _read_npz(body):
     try:
         with np.load(io.BytesIO(body), allow_pickle=False) as npz:
-            arrays = {k: npz[k] for k in npz.files}
+            return {k: npz[k] for k in npz.files}
     except Exception as e:
         raise RequestError(HTTPStatus.BAD_REQUEST, f"could not read the upload: {e}") from None
+
+
+def _decode_upload(arrays, max_bytes):
+    if isinstance(arrays, (bytes, bytearray)):
+        arrays = _read_npz(arrays)
     if "image" not in arrays or "params" not in arrays:
         raise RequestError(HTTPStatus.BAD_REQUEST, "the upload needs 'image' and 'params'")
     try:
@@ -495,9 +531,21 @@ class Handler(BaseHTTPRequestHandler):
                 raise RequestError(HTTPStatus.BAD_REQUEST, "unknown op")
             job = Job(user, "load", self.app.resolve_model(req.get("model")))
         else:
-            image, nuclei, params = _decode_upload(body, self.app.max_bytes)
-            model = self.app.resolve_model(params.pop("model", None))
-            job = Job(user, "segment", model, image, nuclei, params)
+            arrays = _read_npz(body)
+            from ._processing import remote
+
+            if remote.is_request(arrays):
+                try:
+                    stack, pipeline = remote.check_request(arrays, self.app.max_bytes)
+                except ValueError as e:
+                    status = HTTPStatus.REQUEST_ENTITY_TOO_LARGE if getattr(e, "too_large", False) \
+                        else HTTPStatus.BAD_REQUEST
+                    raise RequestError(status, str(e)) from None
+                job = Job(user, "process", None, payload=(stack, pipeline))
+            else:
+                image, nuclei, params = _decode_upload(arrays, self.app.max_bytes)
+                model = self.app.resolve_model(params.pop("model", None))
+                job = Job(user, "segment", model, image, nuclei, params)
         self.app.submit(job)
         self._send(HTTPStatus.ACCEPTED, {"id": job.id, "position": self.app.position(job)})
 
