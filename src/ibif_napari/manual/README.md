@@ -557,6 +557,19 @@ Its settings:
     about **Size** wide. With Z steps at least twice the pixel size it works plane by plane.
   - **Regions (organelles, any brighter area)**: the smoothed intensity is thresholded as it
     is, for structures larger than spots, such as membranous organelles.
+- **Method** (Spots only):
+  - **Intensity + watershed** (the default): the background subtraction, threshold and
+    watershed described here, on this computer's CPU.
+  - **Cellpose**: Cellpose finds the spots, with the model and on the computer set in
+    **Segmentation → Cellpose** (this computer, a facility server or a cluster; the line
+    **Cellpose** says which). **Spot diameter** is the typical spot diameter;
+    **Probability threshold** lower finds more (dimmer) spots. Each spot goes to the object
+    that holds most of it and is cut to that object; one with more than **Outside the
+    object** of its area outside is dropped. The threshold, smoothing and split settings
+    do not apply. The option is greyed out, with the reason in its tooltip, when Cellpose
+    cannot run (not installed here and no server chosen, or a cluster not connected).
+    **Make objects** becomes **Cancel** while Cellpose runs. Cellpose's built-in models
+    are trained on cells and nuclei; check the result on your spots.
 - **Darker than their surroundings**: look for dark structures instead, for example
   nucleoli, which are holes in a DNA (DAPI or Hoechst) stain.
 - **Foreground**: the threshold (Otsu, Li, Triangle or Manual; **None** is not allowed here).

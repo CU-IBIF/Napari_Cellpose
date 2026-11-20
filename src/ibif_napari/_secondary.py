@@ -331,6 +331,61 @@ def structures(parents, image, spacing=None, kind="spots", size=1.0, threshold="
     return out, used
 
 
+def cellpose_spot_params(spacing, diameter, model, gpu=False, cellprob=0.0):
+    """The Cellpose settings for spots (Structures inside each object, Method: Cellpose):
+    `diameter` (µm) as pixels; true 3D flows in a stack, with its anisotropy; masks of
+    3 pixels or more (the panel's own minimum size is applied afterwards)."""
+    spacing = tuple(float(s) for s in spacing)
+    is_3d = len(spacing) == 3
+    return dict(model=model, gpu=bool(gpu), do_3D=is_3d,
+                anisotropy=spacing[0] / spacing[-1] if is_3d else None,
+                diameter=float(diameter) / spacing[-1], flow_threshold=0.4,
+                cellprob_threshold=float(cellprob), stitch_threshold=0.0, min_size=3)
+
+
+def assign_to_parents(parents, found, spacing=None, max_outside=0.5, min_size=0.0):
+    """Objects found on their own (e.g. Cellpose spots: 1...n, 0 = background) as
+    inclusions of `parents`. Each goes to the object holding most of its pixels and is
+    cut to that object, so it lies in one object only. One with more than `max_outside`
+    (0-1) of its pixels outside that object is dropped, as is one smaller than `min_size`
+    (µm² / µm³ with `spacing`) once cut.
+
+    Returns (inclusions numbered by their object, inclusions numbered one by one 1...N
+    (uint32)), as `structures(..., return_inclusions=True)` does."""
+    from skimage.segmentation import relabel_sequential
+
+    parents = np.asarray(parents)
+    found = np.asarray(found)
+    if found.shape != parents.shape:
+        raise ValueError(f"the spots ({found.shape}) and the objects ({parents.shape}) differ in size")
+    sp = _spacing(parents, spacing)
+    empty = (np.zeros_like(parents), np.zeros(parents.shape, np.uint32))
+    spot = found > 0
+    if not spot.any():
+        return empty
+    ids = found[spot].astype(np.int64)
+    owners = parents[spot].astype(np.int64)
+    sizes = np.bincount(ids)
+    # Pixels of each spot in each object: the object with the most pixels owns it.
+    inside = owners > 0
+    pairs, counts = np.unique(np.stack([ids[inside], owners[inside]]), axis=1, return_counts=True)
+    owner = np.zeros(sizes.size, np.int64)
+    best = np.zeros(sizes.size, np.int64)
+    for (i, p), c in zip(pairs.T, counts):
+        if c > best[i] or (c == best[i] and p < owner[i]):
+            owner[i], best[i] = p, c
+    keep = (owner > 0) & (best >= (1.0 - max_outside) * sizes - 1e-9)
+    if min_size:
+        keep &= best * float(np.prod(sp)) >= min_size
+    keep[0] = False
+    kept = np.zeros(parents.shape, bool)
+    kept[spot] = keep[ids] & (owners == owner[ids])  # cut to the owner
+    if not kept.any():
+        return empty
+    single = relabel_sequential(np.where(kept, found.astype(np.int64), 0))[0].astype(np.uint32)
+    return np.where(kept, parents, 0).astype(parents.dtype, copy=False), single
+
+
 def split_inclusions(structures, image=None, spacing=None, split="distance", diameter=0.0):
     """The inclusions of `structures` (labelled with the number of the object they are
     in) numbered one by one, 1...N (uint32). Each inclusion lies inside a single object.

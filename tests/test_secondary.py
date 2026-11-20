@@ -391,3 +391,31 @@ def test_structures_return_the_inclusions_one_by_one():
     assert lines.max() == len(np.unique(ndi.label(lines > 0, structure=np.ones((3, 3)))[0])) - 1
     with pytest.raises(ValueError, match="unknown split"):
         structures(cells, image, split="sideways")
+
+
+def test_spots_found_on_their_own_are_assigned_to_their_object():
+    from ibif_napari._secondary import assign_to_parents
+
+    cells = np.zeros((20, 40), np.uint16)
+    cells[:, :20] = 1
+    cells[:, 20:] = 2
+    cells[:, 38:] = 0  # background on the right
+    spots = np.zeros_like(cells)
+    spots[2:6, 2:6] = 5  # inside cell 1
+    spots[8:12, 17:22] = 6  # across the border: 3 columns in cell 1, 2 in cell 2
+    spots[14:18, 36:40] = 7  # half outside the cells (2 columns in cell 2)
+    spots[15:18, 10] = 8  # a sliver of 3 px in cell 1
+    by_object, single = assign_to_parents(cells, spots, spacing=(1, 1))
+    assert single.dtype == np.uint32 and single.max() == 4
+    assert (by_object[2:6, 2:6] == 1).all()
+    assert (by_object[8:12, 17:20] == 1).all() and not by_object[8:12, 20:22].any()  # cut to its owner
+    assert (by_object[14:18, 36:38] == 2).all() and not by_object[14:18, 38:].any()  # half out: kept
+    for i in range(1, 5):  # one object per inclusion
+        assert len(np.unique(cells[single == i])) == 1
+    assert ((single > 0) == (by_object > 0)).all()
+    # Stricter: a spot with any part outside its object is dropped; small ones too.
+    by_object, single = assign_to_parents(cells, spots, max_outside=0.0, min_size=4)
+    assert single.max() == 1 and (by_object[2:6, 2:6] == 1).all()
+    assert assign_to_parents(cells, np.zeros_like(cells))[1].max() == 0
+    with pytest.raises(ValueError, match="differ in size"):
+        assign_to_parents(cells, spots[:10])

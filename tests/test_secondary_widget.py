@@ -154,3 +154,134 @@ def test_panel_structures_inside_each_object(qtbot):
     per = measure_layer(v, single)
     assert list(per.columns[:3]) == ["T", "label", "parent"] and "inclusions" not in per.columns
     assert sorted(per[per["T"] == 0]["parent"]) == [1, 1, 2]
+
+
+class FakeCellposeProcess:
+    """Stands in for the Cellpose process: 'finds' the connected bright areas. `hold`
+    keeps a call waiting until cancelled."""
+
+    local = True
+
+    def __init__(self, hold=False):
+        self.calls, self.loaded, self.hold, self.cancelled = [], [], hold, False
+
+    def load(self, name, gpu=False):
+        self.loaded.append((name, gpu))
+        yield f"Loading Cellpose model '{name}'…"
+
+    def call(self, op, image, nuclei=None, **params):
+        from scipy import ndimage as ndi
+
+        from ibif_napari._process import Cancelled
+
+        self.calls.append((op, image.shape, params))
+        while self.hold:
+            if self.cancelled:
+                raise Cancelled()
+            yield None
+        return ndi.label(image > 0.5)[0].astype(np.uint16)
+
+    def cancel(self):
+        self.cancelled = True
+
+
+def _spots_viewer():
+    v = make_viewer()
+    spots = np.zeros((2, 3, 40, 60), np.float32)
+    spots[:, 1, 19:21, 13:15] = spots[:, 1, 19:21, 16:18] = 1.0  # 2 spots in nucleus 1 (x=15)
+    spots[:, 1, 19:21, 33:35] = 1.0  # 1 in nucleus 2 (x=33)
+    spots[:, 1, 6:8, 3:5] = 1.0  # 1 outside the nuclei
+    v.add_image(spots, name="Spots", scale=(1, 2, 0.5, 0.5))
+    return v
+
+
+def _use_cellpose(w):
+    w.method.setCurrentText(STRUCTURES)
+    w.structure.setCurrentText("Spots (vesicles, puncta, nucleoli)")
+    w.channels.findItems("Spots", Qt.MatchExactly)[0].setCheckState(Qt.Checked)
+
+
+def test_spots_by_cellpose_unavailable(qtbot, monkeypatch):
+    from ibif_napari import _cellpose_widget
+    from ibif_napari._secondary_widget import CELLPOSE, INTENSITY_WATERSHED, SPOT_METHODS
+
+    monkeypatch.setattr(_cellpose_widget, "cellpose_backend",
+                        lambda viewer: (None, "Cellpose is not installed on this computer."))
+    w = SecondaryWidget(_spots_viewer())
+    qtbot.addWidget(w)
+    _use_cellpose(w)
+    assert w.finder.isVisibleTo(w) and w.finder.currentText() == INTENSITY_WATERSHED  # the default
+    item = w.finder.model().item(SPOT_METHODS.index(CELLPOSE))
+    assert not item.isEnabled() and "not installed" in item.toolTip()
+    w.structure.setCurrentText("Regions (organelles, any brighter area)")
+    assert not w.finder.isVisibleTo(w)  # Cellpose is for spots only
+
+
+def test_spots_by_cellpose(qtbot, monkeypatch):
+    from ibif_napari import _cellpose_widget
+    from ibif_napari._cellpose_widget import CellposeBackend
+    from ibif_napari._measure import measure_layer
+    from ibif_napari._secondary_widget import CELLPOSE
+
+    process = FakeCellposeProcess()
+    backend = CellposeBackend(process, "Facility GPU", "cpsam", False, True)
+    monkeypatch.setattr(_cellpose_widget, "cellpose_backend", lambda viewer: (backend, None))
+    v = _spots_viewer()
+    w = SecondaryWidget(v)
+    qtbot.addWidget(w)
+    _use_cellpose(w)
+    w.finder.setCurrentText(CELLPOSE)
+    assert "model 'cpsam' on Facility GPU" in w.cellpose_info.text()
+    for hidden in (w.threshold, w.split, w.smooth, w.per_object, w.dark):
+        assert not hidden.isVisibleTo(w)
+    for shown in (w.size, w.cellprob, w.max_outside, w.min_size):
+        assert shown.isVisibleTo(w)
+    assert w._rows[w.size].text() == "Spot diameter"
+    w.size.setValue(1.0)
+    w.cellprob.setValue(-1.0)
+    run(w, qtbot)
+    assert process.loaded == [("cpsam", False)]
+    op, shape, params = process.calls[0]
+    assert op == "segment" and len(process.calls) == 2  # one per time point
+    assert shape[0] == 3 and shape[1] < 30  # Z kept; cropped to the nuclei
+    assert params["diameter"] == pytest.approx(2.0) and params["do_3D"] and params["anisotropy"] == 4
+    assert params["cellprob_threshold"] == -1.0 and params["model"] == "cpsam"
+    layer, single = v.layers["nuclei spots"], v.layers["nuclei spots inclusions"]
+    assert layer.metadata["ibif_found_by"] == "Cellpose, model 'cpsam' on Facility GPU"
+    assert [len(np.unique(single.data[t])) - 1 for t in range(2)] == [3, 3]  # the spot outside: dropped
+    assert list(measure_layer(v, layer)["inclusions"]) == [2, 1, 2, 1]
+    assert "Found by Cellpose" in w.status.text()
+
+
+def test_spots_by_cellpose_cancel(qtbot, monkeypatch):
+    from ibif_napari import _cellpose_widget
+    from ibif_napari._cellpose_widget import CellposeBackend
+    from ibif_napari._secondary_widget import CELLPOSE
+
+    process = FakeCellposeProcess(hold=True)
+    monkeypatch.setattr(_cellpose_widget, "cellpose_backend",
+                        lambda viewer: (CellposeBackend(process, "This computer", "cpsam", False, False), None))
+    monkeypatch.setattr(_cellpose_widget._cellpose, "ensure_weights", lambda name: iter(()))
+    v = _spots_viewer()
+    w = SecondaryWidget(v)
+    qtbot.addWidget(w)
+    _use_cellpose(w)
+    w.finder.setCurrentText(CELLPOSE)
+    n = len(v.layers)
+    w.run()
+    qtbot.waitUntil(lambda: bool(process.calls), timeout=10000)
+    assert w.run_btn.text() == "Cancel"
+    w.run()  # Cancel
+    qtbot.waitUntil(lambda: w._worker is None, timeout=10000)
+    assert process.cancelled and len(v.layers) == n and w.status.text() == "Cancelled."
+    assert w.run_btn.text() == "Make objects"
+
+
+def test_cellpose_backend_without_the_cellpose_tab(monkeypatch):
+    from napari.components import ViewerModel
+
+    from ibif_napari import _cellpose_widget
+
+    monkeypatch.setattr(_cellpose_widget._cellpose, "cellpose_major", lambda: None)
+    backend, why = _cellpose_widget.cellpose_backend(ViewerModel())
+    assert backend is None and "not installed" in why

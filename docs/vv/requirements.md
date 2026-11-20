@@ -24,6 +24,7 @@ Generated from `src/ibif_napari/vv/requirements.py` (`ibif-napari-vv requirement
 | VV-SEC-04 | Secondary objects | Whole cells from a membrane stain stay within their membranes | Secondary objects section: Whole cells from these seeds, Channel shows: Membranes | validation |
 | VV-SEC-05 | Secondary objects | Touching inclusions are split by the watershed | Secondary objects section: Structures inside each object, Find: Spots, Split touching: Watershed (distance); the '<objects> spots inclusions' layer | validation |
 | VV-SEC-06 | Secondary objects | Every inclusion is linked to the one object it is in | Secondary objects section: Structures inside each object (both layers); Measurements section: parent and inclusions columns | verification |
+| VV-SEC-07 | Secondary objects | Spots found by Cellpose | Secondary objects section: Structures inside each object, Find: Spots, Method: Cellpose | validation |
 | VV-MEAS-01 | Measurements | Object size in µm² / µm³ | Measurements section: area / volume, equivalent diameter | verification |
 | VV-MEAS-02 | Measurements | Object centroids in µm | Measurements section: centroid Z/Y/X (µm), click a row to go to the object | verification |
 | VV-MEAS-03 | Measurements | Intensity statistics per object | Measurements section: <channel> mean / median / min / max / std / sum | validation |
@@ -319,6 +320,21 @@ Generated from `src/ibif_napari/vv/requirements.py` (`ibif-napari-vv requirement
 - pixels where the two layers disagree: 0
 - inclusions whose 'parent' differs from the object they are in: 0
 - objects whose 'inclusions' differs from the independent count: 0
+
+## VV-SEC-07: Spots found by Cellpose
+
+**Requirement.** Structures inside each object shall find spots with Cellpose (the default built-in model, where Segmentation → Cellpose runs) and give each spot to the object it lies in.
+
+**Feature.** Secondary objects section: Structures inside each object, Find: Spots, Method: Cellpose
+
+**Method.** Test on the VV-SEC-05 scenes (4 in 2D, 1 in 3D; SNR 8) with real Cellpose on the CPU, the panel's settings (spot diameter 0.9 µm, probability threshold 0, at most 50 % outside the object). Intensity + watershed on the same scenes is shown for comparison.
+
+**Acceptance criteria.**
+
+- mean F1 at IoU 0.5 >= 0.8 in 2D and in 3D
+- every spot kept lies in a single object
+
+*needs: cellpose*
 
 ## VV-MEAS-01: Object size in µm² / µm³
 

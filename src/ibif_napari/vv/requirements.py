@@ -43,6 +43,9 @@ LIMITS = {
     "incl_f1_low": 0.90,  # lowest scene
     "incl_count": 0.85,  # mean share of cells whose inclusions are counted exactly (seeds 0-3: 3D 0.92)
     "incl_gain": 0.05,  # mean F1 gained over no split (connected pieces)
+    # Spots found by Cellpose (default built-in model, CPU): a draft, to be set from the
+    # first runs as the other limits were
+    "cp_spot_f1": 0.80,  # mean F1 at IoU 0.5, 2D and 3D
     # Measurements
     "exact_rel": 1e-9,
     "analytic_size_rel": 0.10,  # median |voxel size - ellipsoid size| / ellipsoid size
@@ -276,6 +279,17 @@ REQUIREMENTS = [
          "inclusions whose 'parent' differs from the object they are in: 0",
          "objects whose 'inclusions' differs from the independent count: 0"],
         kind="verification"),
+    Requirement(
+        "VV-SEC-07", "Secondary objects", "Spots found by Cellpose",
+        "Structures inside each object shall find spots with Cellpose (the default built-in "
+        "model, where Segmentation → Cellpose runs) and give each spot to the object it lies in.",
+        "Secondary objects section: Structures inside each object, Find: Spots, Method: Cellpose",
+        "Test on the VV-SEC-05 scenes (4 in 2D, 1 in 3D; SNR 8) with real Cellpose on the CPU, the "
+        "panel's settings (spot diameter 0.9 µm, probability threshold 0, at most 50 % outside the "
+        "object). Intensity + watershed on the same scenes is shown for comparison.",
+        ["mean F1 at IoU 0.5 >= {cp_spot_f1} in 2D and in 3D",
+         "every spot kept lies in a single object"],
+        needs=["cellpose"]),
     Requirement(
         "VV-MEAS-01", "Measurements", "Object size in µm² / µm³",
         "The measured area or volume shall equal the voxel count times the voxel size, and "

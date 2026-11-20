@@ -177,6 +177,12 @@ def _missing(ctx, req):
     for need in req.needs:
         if need == "segmentation" and not ctx.backend_ok:
             return f"segmentation back-end '{ctx.backend.name}' not available: {ctx.backend_why}"
+        if need == "cellpose":
+            from .backends import CellposeBackend
+
+            ok, why = CellposeBackend().available()
+            if not ok:
+                return f"Cellpose not available: {why}"
         if need == "napari" and find_spec("napari") is None:
             return "napari is not installed"
         if need == "czi" and (find_spec("pylibCZIrw") is None or find_spec("bioio_czi") is None):
@@ -741,6 +747,51 @@ def _inclusions(ctx, res):
         f"watershed {table['F1 intensity'].mean():.3f}); {table['counted exactly distance'].mean():.0%} of "
         f"the cells have their spots counted exactly (no split "
         f"{table['counted exactly none'].mean():.0%}). Settings: Otsu, Size 1.5 µm, Smoothing 0.1 µm.")
+
+
+CELLPOSE_SPOT_SCENES = {2: (0, 1, 2, 3), 3: (0,)}
+
+
+@check("VV-SEC-07")
+def _cellpose_spots(ctx, res):
+    from .. import _cellpose, _secondary
+
+    model = _cellpose.default_model()
+    rows, spanning = [], 0
+    for ndim, seeds in CELLPOSE_SPOT_SCENES.items():
+        for seed in seeds:
+            sc = synth.inclusion_scene(ndim, seed)
+            image = _secondary.combine_channels([sc.image])  # as the panel does
+            box = ndi.find_objects((sc.cells > 0).astype(np.uint8))[0]
+            params = _secondary.cellpose_spot_params(sc.spacing, 2 * sc.radius, model)
+            start = time.time()
+            masks = np.zeros(sc.cells.shape, np.uint32)
+            masks[box] = _cellpose.segment(np.ascontiguousarray(image[box]), None, **params)
+            seconds = time.time() - start
+            found, single = _secondary.assign_to_parents(sc.cells, masks, sc.spacing, 0.5)
+            spanning += sum(len(np.unique(sc.cells[single == i])) != 1 for i in range(1, int(single.max()) + 1))
+            m = metrics.match(sc.spots, single)
+            _, _, classic = _secondary.structures(sc.cells, sc.image, sc.spacing, min_size=0.05 if ndim == 2
+                                                  else 0.02, return_inclusions=True, **INCLUSION_SETTINGS)
+            rows.append({"scene": f"{ndim}D seed {seed}", "dims": ndim, "spots": len(sc.parent),
+                         "touching pairs": sc.touching, "found": int(single.max()), "F1 Cellpose": m["f1@0.5"],
+                         "mean IoU": m["mean_iou"], "merges": m["merges"], "splits": m["splits"],
+                         "F1 intensity + watershed": metrics.match(sc.spots, classic)["f1@0.5"],
+                         "seconds": seconds})
+            if seed == seeds[0]:
+                res.figures.append((f"{ndim}D: truth spots and Cellpose's",
+                                    seg_figure(sc.image, sc.spots, single, f"Cellpose spots {ndim}D seed {seed}")))
+    table = pd.DataFrame(rows)
+    for ndim in sorted(CELLPOSE_SPOT_SCENES):
+        res.check(f"{ndim}D: mean F1 at IoU 0.5", table[table["dims"] == ndim]["F1 Cellpose"].mean(), ">=",
+                  ctx.limits["cp_spot_f1"])
+    res.check("spots spanning more than one object", spanning, "==", 0, "{:.0f}")
+    res.tables["cellpose spots"] = table
+    res.metrics = {r["scene"]: {k: v for k, v in r.items() if k != "scene"} for r in rows}
+    res.evidence.append(
+        f"Cellpose model '{model}' on {len(rows)} scenes ({table['spots'].sum()} spots): mean F1 "
+        f"{table['F1 Cellpose'].mean():.3f} (intensity + watershed {table['F1 intensity + watershed'].mean():.3f}), "
+        f"{table['seconds'].sum():.0f} s of Cellpose in all.")
 
 
 @check("VV-SEC-06")
