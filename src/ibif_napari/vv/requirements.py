@@ -378,6 +378,16 @@ REQUIREMENTS = [
         ["largest relative difference <= {reg_intensity_rel}"],
         kind="verification"),
     Requirement(
+        "VV-PROC-08", "Processing", "A pipeline gives the same result on a server",
+        "A Processing pipeline run on ibif-napari-server (a facility server, or a cluster job, "
+        "which runs the same server) shall give the same images and records as on this computer.",
+        "Processing section: Run on (a server or a connected cluster)",
+        "Test: an ibif-napari-server started here (HTTP on localhost); a two-channel time-lapse "
+        "with two positions (sent one position at a time) registered locally and on the server.",
+        ["largest difference between the images == 0", "records identical", "positions sent "
+         "separately and put back in place"],
+        kind="verification"),
+    Requirement(
         "VV-MEAS-01", "Measurements", "Object size in µm² / µm³",
         "The measured area or volume shall equal the voxel count times the voxel size, and "
         "agree with the true shape's analytic size.",

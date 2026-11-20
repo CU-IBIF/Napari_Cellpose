@@ -32,6 +32,7 @@ Generated from `src/ibif_napari/vv/requirements.py` (`ibif-napari-vv requirement
 | VV-PROC-05 | Processing | Affine and non-rigid registration undo deformation | Processing section: Stack registration, Transform: Affine / Non-rigid (after rigid) | validation |
 | VV-PROC-06 | Processing | Registration takes the drift out of segmented cell tracks | Processing section: Stack registration + Segmentation (Threshold + watershed) + Measurements | validation |
 | VV-PROC-07 | Processing | Registration keeps intensities | Processing section: Stack registration, Interpolation: Linear | verification |
+| VV-PROC-08 | Processing | A pipeline gives the same result on a server | Processing section: Run on (a server or a connected cluster) | verification |
 | VV-MEAS-01 | Measurements | Object size in µm² / µm³ | Measurements section: area / volume, equivalent diameter | verification |
 | VV-MEAS-02 | Measurements | Object centroids in µm | Measurements section: centroid Z/Y/X (µm), click a row to go to the object | verification |
 | VV-MEAS-03 | Measurements | Intensity statistics per object | Measurements section: <channel> mean / median / min / max / std / sum | validation |
@@ -438,6 +439,20 @@ Generated from `src/ibif_napari/vv/requirements.py` (`ibif-napari-vv requirement
 **Acceptance criteria.**
 
 - largest relative difference <= 0.01
+
+## VV-PROC-08: A pipeline gives the same result on a server
+
+**Requirement.** A Processing pipeline run on ibif-napari-server (a facility server, or a cluster job, which runs the same server) shall give the same images and records as on this computer.
+
+**Feature.** Processing section: Run on (a server or a connected cluster)
+
+**Method.** Test: an ibif-napari-server started here (HTTP on localhost); a two-channel time-lapse with two positions (sent one position at a time) registered locally and on the server.
+
+**Acceptance criteria.**
+
+- largest difference between the images == 0
+- records identical
+- positions sent separately and put back in place
 
 ## VV-MEAS-01: Object size in µm² / µm³
 

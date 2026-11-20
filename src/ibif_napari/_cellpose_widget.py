@@ -60,6 +60,27 @@ class CellposeBackend:
         return f"model '{self.model}' on {self.where}" + (" (GPU)" if self.gpu else "")
 
 
+def remote_targets(viewer):
+    """{name: (make the process, or None; why not)} of where other panels (Processing) can
+    run besides this computer: the saved servers, and the cluster profiles, usable once
+    Segmentation → Cellpose has connected to them."""
+    from ._cluster import load_profiles
+
+    out = {}
+    for s in load_servers():
+        out[s["name"]] = (lambda s=s: RemoteProcess(s["url"], s["token"], name=s["name"],
+                                                    cafile=s.get("cafile")), None)
+    ref = _widgets.get(id(viewer))
+    w = ref() if ref is not None else None
+    sessions = w._sessions if (w is not None and w.viewer is viewer) else {}
+    for p in load_profiles():
+        name = f"{p.name} (cluster)"
+        session = sessions.get(name)
+        out[name] = ((lambda session=session: session.process), None) if session is not None else (
+            None, f"Connect to {name} in Segmentation → Cellpose first; the processing runs in that job.")
+    return out
+
+
 def cellpose_backend(viewer):
     """(CellposeBackend, None), or (None, why Cellpose cannot run), for `viewer`: as its
     Segmentation -> Cellpose tab is set, or this computer's Cellpose without that tab."""

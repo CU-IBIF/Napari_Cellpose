@@ -1049,6 +1049,57 @@ def _reg_deformation(ctx, res):
         f"{np.mean(rigid_w):.3f}), in 2D and 3D.")
 
 
+@check("VV-PROC-08")
+def _reg_server(ctx, res):
+    import tempfile
+    import threading
+
+    from .._process import wait
+    from .._processing import Pipeline, Stack
+    from .._remote import RemoteProcess
+    from .._server import CellposeServer, Users, make_http_server
+
+    frames = synth.motion_scene(seed=14, n=3, size=96, max_shift=6).frames
+    data = np.stack([frames, np.roll(frames, 5, axis=-1)])  # two positions
+    stack = Stack({"GFP": data, "DAPI": (data * 2).astype(np.float32)}, "PTYX", {"Y": 0.5, "X": 0.5}, "GFP")
+    pipe = Pipeline()
+    pipe.add("registration", {"model": "Rigid (translation + rotation)"})
+    local = pipe.run(stack)
+    with tempfile.TemporaryDirectory() as tmp:
+        users = Users(Path(tmp) / "users.json")
+        token = users.add("vv")
+        app = CellposeServer(users, gpu=False, model_names=lambda: [], prepare=lambda name: iter(()))
+        httpd = make_http_server(app, "127.0.0.1", 0)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            client = RemoteProcess(f"http://127.0.0.1:{httpd.server_address[1]}", token, name="local server")
+            uploads = []
+            post = client._request
+
+            def counting(method, path, *a, **kw):
+                if method == "POST":
+                    uploads.append(path)
+                return post(method, path, *a, **kw)
+
+            client._request = counting
+            remote_stack, steps = wait(client.process(stack, pipe), timeout=600)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            app.close()
+    diff = max(float(np.max(np.abs(remote_stack.channels[n] - local.stack.channels[n]))) for n in stack.channels)
+    key = lambda r: (r["P"], r["T"])  # noqa: E731
+    same = sorted(steps[0]["records"], key=key) == sorted(local.steps[0]["records"], key=key)
+    res.check("largest difference between the images", diff, "==", 0.0)
+    res.check("records identical", same, "is", True)
+    res.check("uploads (one per position)", len(uploads), "==", 2, "{:.0f}")
+    res.evidence.append(
+        f"A rigid registration of a two-channel, two-position time-lapse {data.shape} run on an "
+        f"ibif-napari-server gave exactly the local result (largest difference {diff:g}) and the same "
+        f"records, in {len(uploads)} uploads (one per position).")
+
+
 @check("VV-PROC-06")
 def _reg_tracks(ctx, res):
     from .. import _classic

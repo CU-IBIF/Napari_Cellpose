@@ -302,7 +302,9 @@ after the other, top to bottom.
    to skip it without removing it; **Remove** deletes it.
 5. Select a step in the pipeline to see and change its settings in **Step settings** below.
    Selecting a routine in the library shows what it does and its default settings.
-6. Click **Run pipeline** (it becomes **Cancel** while it runs). Each channel gets a new
+6. Choose where it runs under **Run on**: this computer, a facility server, or a cluster job
+   connected in Segmentation (see section 13), then click **Run pipeline** (it becomes
+   **Cancel** while it runs). Each channel gets a new
    layer, `<channel> [processed]`; the original layers are not changed, so you can compare
    them. Segment the processed layers as usual.
 
@@ -1274,6 +1276,11 @@ computer has none, the facility may provide one:
 - **GPU cluster (Slurm, e.g. NSF ACCESS)**: add the cluster with **Clusters…**, then choose
   it under **Run on** and click **Connect**. **Submit batch job** runs a whole series as one
   job, and you can close napari while it runs. See [docs/cluster.md](https://github.com/CU-IBIF/Napari_Cellpose/blob/main/docs/cluster.md).
+- **Processing on a server or cluster**: the Processing section's **Run on** lists the same
+  servers and clusters (a cluster once Segmentation has connected to it). The image is sent
+  one position at a time; the server checks the pipeline against its own list of steps and
+  sends back the processed layers. The server must be version 0.37 or later; an older one,
+  or an image larger than the server accepts, is reported before anything is sent.
 
 ---
 

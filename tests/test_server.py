@@ -203,3 +203,189 @@ def test_servers_dialog(server, qtbot, tmp_path):
     assert not dlg.test() and "not accepted" in dlg.result.text()
     dlg._remove()
     assert load_servers(path) == []
+
+
+# ---- Processing pipelines on the server ------------------------------------------------------
+
+def _pipeline(**params):
+    from ibif_napari._processing import Pipeline
+
+    pipe = Pipeline()
+    pipe.add("registration", params)
+    return pipe
+
+
+def _moving_stack(positions=0):
+    from ibif_napari._processing import Stack
+    from ibif_napari.vv import synth
+
+    frames = synth.motion_scene(seed=4, n=3, size=96, max_shift=6).frames
+    if positions:
+        data = np.stack([np.roll(frames, p, axis=-1) for p in range(positions)])
+        return Stack({"GFP": data, "DAPI": data * 2}, "PTYX", {"Y": 0.5, "X": 0.5}, "GFP")
+    return Stack({"GFP": frames, "DAPI": (frames * 2).astype(np.float32)}, "TYX", {"Y": 0.5, "X": 0.5}, "GFP")
+
+
+def test_pipeline_runs_on_the_server_as_it_does_here(server):
+    app, url, tokens, _ = server
+    stack = _moving_stack()
+    pipe = _pipeline()
+    local = pipe.run(stack)
+    c = client(url, tokens["alice"])
+    messages = []
+    gen = c.process(stack, pipe)
+    try:
+        while True:
+            m = next(gen)
+            if m:
+                messages.append(m)
+    except StopIteration as stop:
+        remote_stack, steps = stop.value
+    assert any(m.startswith("Processing 3×96×96 (2 channel(s)): Stack registration") for m in messages)
+    for name in ("GFP", "DAPI"):
+        assert np.array_equal(remote_stack.channels[name], local.stack.channels[name])
+    assert steps[0]["records"] == local.steps[0]["records"] and steps[0]["summary"] == local.steps[0]["summary"]
+    info = c.status()
+    assert "registration" in info["processing"]["steps"] and "illumination" not in info["processing"]["steps"]
+
+
+def test_positions_are_sent_one_at_a_time(server):
+    from ibif_napari._processing import Pipeline
+
+    _, url, tokens, _ = server
+    stack = _moving_stack(positions=2)
+    pipe = _pipeline()
+    local = pipe.run(stack)
+    c = client(url, tokens["alice"])
+    remote_stack, steps = wait(c.process(stack, pipe), timeout=120)
+    assert np.array_equal(remote_stack.channels["DAPI"], local.stack.channels["DAPI"])
+    key = lambda r: (r["P"], r["T"])  # noqa: E731
+    assert sorted(steps[0]["records"], key=key) == sorted(local.steps[0]["records"], key=key)
+    assert steps[0]["summary"].startswith("2 positions: ")
+    assert isinstance(Pipeline, type)
+
+
+def test_bad_pipelines_are_refused(server):
+    from ibif_napari._processing import remote
+
+    _, url, tokens, _ = server
+    c = client(url, tokens["alice"])
+    stack = _moving_stack()
+
+    def post(pipeline_dict):
+        body = remote.encode_request(stack, pipeline_dict)
+        return c._request("POST", "/jobs", body, "application/octet-stream")
+
+    with pytest.raises(RemoteError, match="unknown processing step 'os.system'"):
+        post({"steps": [{"key": "os.system", "params": {"cmd": "rm -rf /"}}]})
+    with pytest.raises(RemoteError, match="coming soon"):
+        post({"steps": [{"key": "deconvolution"}]})
+    with pytest.raises(RemoteError, match="unknown setting"):
+        post({"steps": [{"key": "registration", "params": {"evil": 1}}]})
+    with pytest.raises(RemoteError, match="is not one of"):
+        post({"steps": [{"key": "registration", "params": {"model": "__import__"}}]})
+    with pytest.raises(RemoteError, match="no enabled steps"):
+        post({"steps": [{"key": "registration", "enabled": False}]})
+    import io
+
+    def raw(manifest, **arrays):
+        buf = io.BytesIO()
+        np.savez(buf, manifest=np.frombuffer(json.dumps(manifest).encode(), np.uint8), **arrays)
+        return c._request("POST", "/jobs", buf.getvalue(), "application/octet-stream")
+
+    good = {"op": "process", "channels": ["A"], "axes": "TYX", "spacing": {}, "reference": "A",
+            "pipeline": _pipeline().to_dict()}
+    frames = np.zeros((2, 8, 8), np.float32)
+    with pytest.raises(RemoteError, match="bad axes"):
+        raw({**good, "axes": "TQX"}, channel_0=frames)
+    with pytest.raises(RemoteError, match="channel 'A' must be a numeric array with axes TYX"):
+        raw(good, channel_0=frames[0])
+    with pytest.raises(RemoteError, match="channel 'B' is missing"):
+        raw({**good, "channels": ["A", "B"]}, channel_0=frames)
+    with pytest.raises(RemoteError, match="bad voxel size"):
+        raw({**good, "spacing": {"Y": -1}}, channel_0=frames)
+    assert raw(good, channel_0=frames)["id"]
+
+
+def test_old_server_and_too_large_are_caught_before_sending(server, monkeypatch):
+    app, url, tokens, _ = server
+    c = client(url, tokens["alice"])
+    stack = _moving_stack()
+    status = app.status
+    monkeypatch.setattr(app, "status", lambda: {k: v for k, v in status().items() if k != "processing"})
+    with pytest.raises(RemoteError, match="cannot run processing pipelines .* 0.37 or later"):
+        wait(c.process(stack, _pipeline()))
+    monkeypatch.setattr(app, "status", lambda: {**status(), "max_mb": 0.01})
+    with pytest.raises(RemoteError, match="too large for facility-gpu: it accepts 0 MB"):
+        wait(c.process(stack, _pipeline()))
+    assert app.jobs == {}  # nothing was sent
+    # The server refuses too, should a client not check.
+    from ibif_napari._processing import remote
+
+    app.max_bytes = 1000
+    with pytest.raises(RemoteError, match="too large"):
+        c._request("POST", "/jobs", remote.encode_request(stack, _pipeline()), "application/octet-stream")
+    zeros = remote.sub_stack(stack, (slice(None),) * 3)
+    zeros.channels = {n: np.zeros_like(a) for n, a in zeros.channels.items()}  # compresses well
+    app.max_bytes = 20000  # the upload fits, the image (221 kB) does not
+    with pytest.raises(RemoteError, match="larger than this server accepts"):
+        c._request("POST", "/jobs", remote.encode_request(zeros, _pipeline()), "application/octet-stream")
+
+
+def test_cancel_a_pipeline_on_the_server(server):
+    from ibif_napari._processing import Stack
+
+    app, url, tokens, _ = server
+    c = client(url, tokens["alice"])
+    rng = np.random.default_rng(0)
+    big = Stack({"A": rng.random((12, 20, 160, 160)).astype(np.float32)}, "TZYX", {"Z": 1, "Y": .5, "X": .5})
+    gen = c.process(big, _pipeline(model="Non-rigid (after rigid)"))
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        m = next(gen)
+        if m and m.startswith("Processing"):
+            break
+    c.cancel()
+    with pytest.raises(Cancelled):
+        while True:
+            next(gen)
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline and any(j.state not in ("cancelled",) for j in app.jobs.values()):
+        time.sleep(0.1)
+    assert [j.state for j in app.jobs.values()] == ["cancelled"]
+
+
+def test_processing_panel_runs_on_a_server(server, qtbot, monkeypatch):
+    pytest.importorskip("napari")
+    from napari.components import ViewerModel
+
+    from ibif_napari import _cellpose_widget
+    from ibif_napari._processing import session
+    from ibif_napari._processing_widget import ProcessingWidget
+
+    _, url, tokens, _ = server
+    monkeypatch.setattr(_cellpose_widget, "remote_targets", lambda viewer: {
+        "facility-gpu": (lambda: client(url, tokens["alice"]), None),
+        "HPC (cluster)": (None, "Connect to HPC (cluster) in Segmentation → Cellpose first."),
+    })
+    v = ViewerModel()
+    stack = _moving_stack()
+    for name, data in stack.channels.items():
+        v.add_image(data, name=name, scale=(1, 0.5, 0.5), metadata={"ibif_axes": "TYX"})
+    session.set_pipeline(v, _pipeline(), notify=False)
+    w = ProcessingWidget(v)
+    qtbot.addWidget(w)
+    assert [w.run_on.itemText(i) for i in range(w.run_on.count())] == ["This computer", "facility-gpu",
+                                                                        "HPC (cluster)"]
+    w.check_channels(["GFP", "DAPI"])
+    w.reference.setCurrentText("GFP")
+    w.run_on.setCurrentText("HPC (cluster)")
+    w.run()
+    assert "Connect to HPC (cluster)" in w.status.text() and w._worker is None
+    w.run_on.setCurrentText("facility-gpu")
+    w.run()
+    qtbot.waitUntil(lambda: w._worker is None, timeout=60000)
+    assert "on facility-gpu" in w.status.text(), w.status.text()
+    local = _pipeline().run(stack)
+    assert np.array_equal(v.layers["DAPI [processed]"].data, local.stack.channels["DAPI"])
+    assert v.layers["GFP [processed]"].metadata["ibif_processing"][0]["records"] == local.steps[0]["records"]

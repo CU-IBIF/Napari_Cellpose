@@ -135,7 +135,9 @@ class ProcessingWidget(QWidget):
         layout.addLayout(run_form)
         self.run_on = QComboBox()
         self.run_on.addItem(THIS_COMPUTER)
-        self.run_on.setToolTip("Where the pipeline runs")
+        self.run_on.setToolTip("Where the pipeline runs: this computer, a facility server, or a cluster "
+                               "job connected in Segmentation → Cellpose (servers are added there, "
+                               "under Servers…)")
         run_form.addRow("Run on", self.run_on)
         self.run_btn = QPushButton("Run pipeline")
         self.run_btn.clicked.connect(self.run)
@@ -169,7 +171,9 @@ class ProcessingWidget(QWidget):
         layout.addWidget(self.results_box)
         layout.addStretch(1)
 
+        self._remote = None  # the server process while a remote run goes on
         self._fill_library()
+        self._refresh_run_on()
         self._show_pipeline()
         self._show_step(None)
         for ev in (self.viewer.layers.events.inserted, self.viewer.layers.events.removed,
@@ -202,6 +206,23 @@ class ProcessingWidget(QWidget):
         super().showEvent(event)
         if self.library.count() != len(_processing.STEPS):
             self._fill_library()
+        self._refresh_run_on()
+
+    def _refresh_run_on(self):
+        """This computer, the saved servers and the cluster profiles."""
+        from ._cellpose_widget import remote_targets
+
+        try:
+            self._targets = remote_targets(self.viewer)
+        except Exception:  # unreadable settings: this computer still works
+            self._targets = {}
+        current = self.run_on.currentText()
+        names = [THIS_COMPUTER, *self._targets]
+        self.run_on.blockSignals(True)
+        self.run_on.clear()
+        self.run_on.addItems(names)
+        self.run_on.setCurrentText(current if current in names else THIS_COMPUTER)
+        self.run_on.blockSignals(False)
 
     def _show_pipeline(self):
         selected = self.selected_index()
@@ -504,6 +525,8 @@ class ProcessingWidget(QWidget):
     def run(self):
         if self._worker is not None:  # Cancel
             self._stop.set()
+            if self._remote is not None:
+                self._remote.cancel()
             self.status.setText("Cancelling…")
             return
         layers = self.checked_channels()
@@ -520,6 +543,13 @@ class ProcessingWidget(QWidget):
             self.status.setText(str(e))
             return
         pipeline = self.pipeline.copy()
+        where = self.run_on.currentText()
+        if where != THIS_COMPUTER:
+            make, why = self._targets.get(where, (None, f"{where} is no longer set up"))
+            if make is None:
+                self.status.setText(why)
+                return
+            return self._run_remote(make(), where, stack, pipeline, layers, index)
         stop = threading.Event()
         signals = _Progress()
         signals.changed.connect(self._on_progress)
@@ -547,6 +577,29 @@ class ProcessingWidget(QWidget):
         self.status.setText("Processing…")
         worker.start()
 
+    def _run_remote(self, process, where, stack, pipeline, layers, index):
+        stop = threading.Event()
+
+        @thread_worker
+        def work():
+            try:
+                new_stack, steps = yield from process.process(stack, pipeline)
+            except Cancelled:
+                return None
+            return _processing.Result(new_stack, steps)
+
+        worker = work()
+        worker.yielded.connect(lambda m: m and not stop.is_set() and self.status.setText(m))
+        worker.returned.connect(lambda result: self._done(result, layers, index, where))
+        worker.errored.connect(lambda e: self.status.setText(f"Processing on {where} failed: {e}"))
+        worker.finished.connect(self._finished)
+        self._worker, self._stop, self._remote = worker, stop, process
+        self.run_btn.setText("Cancel")
+        self.progress.setRange(0, 0)  # the server reports what it is doing, not how far
+        self.progress.setVisible(True)
+        self.status.setText(f"Processing on {where}…")
+        worker.start()
+
     def _on_progress(self, fraction, message):
         if self._stop is not None and self._stop.is_set():
             return
@@ -554,17 +607,19 @@ class ProcessingWidget(QWidget):
         if message:
             self.status.setText(message)
 
-    def _done(self, result, layers, index):
+    def _done(self, result, layers, index, where=THIS_COMPUTER):
         if result is None or (self._stop is not None and self._stop.is_set()):
             self.status.setText("Cancelled; no layers were added.")
             return
         added = session.add_result_layers(self.viewer, layers, result, index)
         summaries = [f"{s['title']}: {s['summary']}" if s["summary"] else s["title"] for s in result.steps]
-        self.status.setText(f"Made {', '.join(a.name for a in added)}. " + "; ".join(summaries))
+        on = f" on {where}" if where != THIS_COMPUTER else ""
+        self.status.setText(f"Made {', '.join(a.name for a in added)}{on}. " + "; ".join(summaries))
 
     def _finished(self):
-        self._worker = self._stop = None
+        self._worker = self._stop = self._remote = None
         self.run_btn.setText("Run pipeline")
+        self.progress.setRange(0, 1000)
         self.progress.setVisible(False)
         self._update_buttons()
 
