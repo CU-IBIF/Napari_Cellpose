@@ -164,6 +164,7 @@ class FakeCellposeProcess:
 
     def __init__(self, hold=False):
         self.calls, self.loaded, self.hold, self.cancelled = [], [], hold, False
+        self.images = []
 
     def load(self, name, gpu=False):
         self.loaded.append((name, gpu))
@@ -175,6 +176,7 @@ class FakeCellposeProcess:
         from ibif_napari._process import Cancelled
 
         self.calls.append((op, image.shape, params))
+        self.images.append(np.array(image))
         while self.hold:
             if self.cancelled:
                 raise Cancelled()
@@ -239,12 +241,23 @@ def test_spots_by_cellpose(qtbot, monkeypatch):
     assert w._rows[w.size].text() == "Spot diameter"
     w.size.setValue(1.0)
     w.cellprob.setValue(-1.0)
+    assert w.cp_mode.isVisibleTo(w)  # the objects are 3D
+    w._messages = []
+    from qtpy.QtWidgets import QLabel
+
+    original = QLabel.setText
+    w.status.setText = lambda text: (w._messages.append(text), original(w.status, text))[1]
     run(w, qtbot)
     assert process.loaded == [("cpsam", False)]
     op, shape, params = process.calls[0]
     assert op == "segment" and len(process.calls) == 2  # one per time point
     assert shape[0] == 3 and shape[1] < 30  # Z kept; cropped to the nuclei
-    assert params["diameter"] == pytest.approx(2.0) and params["do_3D"] and params["anisotropy"] == 4
+    # A stack: per plane and stitched by default (no stretching of Z by the anisotropy).
+    assert params["diameter"] == pytest.approx(2.0) and not params["do_3D"] and params["anisotropy"] is None
+    assert params["stitch_threshold"] > 0
+    # Cellpose is shown only the nuclei: the spot outside them is never in its image.
+    assert np.sum(process.images[0] > 0.5) == 3 * 4  # the 3 spots in the nuclei (2 x 2 px, one plane)
+    assert "Cellpose on 2 objects" in " ".join(w._messages)
     assert params["cellprob_threshold"] == -1.0 and params["model"] == "cpsam"
     layer, single = v.layers["nuclei spots"], v.layers["nuclei spots inclusions"]
     assert layer.metadata["ibif_found_by"] == "Cellpose, model 'cpsam' on Facility GPU"
@@ -285,3 +298,23 @@ def test_cellpose_backend_without_the_cellpose_tab(monkeypatch):
     monkeypatch.setattr(_cellpose_widget._cellpose, "cellpose_major", lambda: None)
     backend, why = _cellpose_widget.cellpose_backend(ViewerModel())
     assert backend is None and "not installed" in why
+
+
+def test_spots_by_cellpose_true_3d(qtbot, monkeypatch):
+    from ibif_napari import _cellpose_widget
+    from ibif_napari._cellpose_widget import CellposeBackend
+    from ibif_napari._secondary_widget import CELLPOSE
+
+    process = FakeCellposeProcess()
+    monkeypatch.setattr(_cellpose_widget, "cellpose_backend",
+                        lambda viewer: (CellposeBackend(process, "GPU", "cpsam", False, True), None))
+    v = _spots_viewer()
+    w = SecondaryWidget(v)
+    qtbot.addWidget(w)
+    _use_cellpose(w)
+    w.finder.setCurrentText(CELLPOSE)
+    w.cp_mode.setCurrentText("True 3D")
+    run(w, qtbot)
+    params = process.calls[0][2]
+    assert params["do_3D"] and params["anisotropy"] == 4 and params["stitch_threshold"] == 0
+    assert [len(np.unique(v.layers["nuclei spots inclusions"].data[t])) - 1 for t in range(2)] == [3, 3]

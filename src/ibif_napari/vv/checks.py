@@ -762,11 +762,12 @@ def _cellpose_spots(ctx, res):
         for seed in seeds:
             sc = synth.inclusion_scene(ndim, seed)
             image = _secondary.combine_channels([sc.image])  # as the panel does
-            box = ndi.find_objects((sc.cells > 0).astype(np.uint8))[0]
-            params = _secondary.cellpose_spot_params(sc.spacing, 2 * sc.radius, model)
+            params = _secondary.cellpose_spot_params(sc.spacing, 2 * sc.radius, model)  # per plane in 3D
+            # As the panel does: only the objects (and a spot's width around them) are shown.
+            plan = _secondary.CellposePlan(sc.cells, image, [max(1, int(np.ceil(2 * sc.radius / s)))
+                                                             for s in sc.spacing])
             start = time.time()
-            masks = np.zeros(sc.cells.shape, np.uint32)
-            masks[box] = _cellpose.segment(np.ascontiguousarray(image[box]), None, **params)
+            masks = plan.unpack(_cellpose.segment(np.ascontiguousarray(plan.image), None, **params), 0.5)
             seconds = time.time() - start
             found, single = _secondary.assign_to_parents(sc.cells, masks, sc.spacing, 0.5)
             spanning += sum(len(np.unique(sc.cells[single == i])) != 1 for i in range(1, int(single.max()) + 1))

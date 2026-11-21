@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import numpy as np
-from scipy import ndimage as ndi
 from napari.layers import Image, Labels
 from napari.qt.threading import thread_worker
 from qtpy.QtCore import Qt
@@ -48,6 +47,7 @@ SIZE_TIPS = {
 INTENSITY_WATERSHED = "Intensity + watershed"
 CELLPOSE = "Cellpose"
 SPOT_METHODS = (INTENSITY_WATERSHED, CELLPOSE)
+CP_MODES = {"2D per plane, stitched (faster)": "planes", "True 3D": "3d"}
 SPLITS = {
     "Watershed (distance)": "distance",
     "Watershed (intensity)": "intensity",
@@ -114,6 +114,12 @@ class SecondaryWidget(QWidget):
         self.max_outside = _spin(0, 100, 50.0, "A spot with more than this share of its area outside "
                                  "its object is dropped; the rest is cut to the object", unit="%", step=5)
         form.addRow("Outside the object", self.max_outside)
+        self.cp_mode = QComboBox()
+        self.cp_mode.addItems(list(CP_MODES))
+        self.cp_mode.setToolTip(
+            "In a Z stack: segment each plane and join the planes (much faster for small spots), or "
+            "Cellpose's true 3D flows, which stretch Z by the anisotropy and run along all three axes")
+        form.addRow("Cellpose in 3D", self.cp_mode)
         self.size = _spin(0.05, 1000, 1.0, SIZE_TIPS["spots"], step=0.1)
         form.addRow("Size", self.size)
         self.dark = QCheckBox("Darker than their surroundings (e.g. nucleoli in DAPI)")
@@ -167,7 +173,7 @@ class SecondaryWidget(QWidget):
             self.distance, self.gap, self.width, self.channels, self.kind, self.threshold,
             self.factor, self.manual, self.max_distance, self.smooth, self.add_cytoplasm,
             self.structure, self.size, self.dark, self.per_object, self.min_size, self.split,
-            self.diameter, self.finder, self.cellpose_info, self.cellprob, self.max_outside)}
+            self.diameter, self.finder, self.cellpose_info, self.cellprob, self.max_outside, self.cp_mode)}
         self.method.currentTextChanged.connect(self._update)
         self.kind.currentTextChanged.connect(self._update)
         self.structure.currentTextChanged.connect(self._update)
@@ -233,6 +239,7 @@ class SecondaryWidget(QWidget):
             and SPLITS[self.split.currentText()] != "none",
             self.finder: inner and structure == "spots",
             self.cellpose_info: cellpose, self.cellprob: cellpose, self.max_outside: cellpose,
+            self.cp_mode: cellpose and self._is_3d(),
         }
         self._rows[self.size].setText("Spot diameter" if cellpose else "Size")
         self._rows[self.channels].setText("Channels" if inner else "Cell channels")
@@ -250,6 +257,10 @@ class SecondaryWidget(QWidget):
         layer = self._layer(self.primary.currentText())
         nd = spatial_ndim(layer) if layer is not None else 2
         self.min_size.setSuffix(f" {units}³" if nd == 3 else f" {units}²")
+
+    def _is_3d(self):
+        layer = self._layer(self.primary.currentText())
+        return layer is not None and spatial_ndim(layer) == 3
 
     def _uses_cellpose(self):
         return (self.method.currentText() == STRUCTURES
@@ -327,7 +338,10 @@ class SecondaryWidget(QWidget):
                 return
             settings["cellpose"] = backend.describe()
             cp_params = _secondary.cellpose_spot_params(spacing, settings["size"], backend.model,
-                                                        backend.gpu, settings["cellprob"])
+                                                        backend.gpu, settings["cellprob"],
+                                                        CP_MODES[self.cp_mode.currentText()])
+            # Only the objects (and a spot's width around them) are shown to Cellpose.
+            margin = [max(1, int(np.ceil(settings["size"] / s))) for s in spacing]
         try:  # check alignment now, so a mismatch is reported before any work
             for c in channels:
                 aligned_image(self.viewer, c, labels, (0,) * len(lead_shape))
@@ -362,14 +376,21 @@ class SecondaryWidget(QWidget):
                     image = _secondary.combine_channels(
                         [aligned_image(viewer, c, labels, pos) for c in channels]
                     )
+                    plan = _secondary.CellposePlan(seeds, image, margin)
                     masks = np.zeros(seeds.shape, np.uint32)
-                    box = ndi.find_objects((seeds > 0).astype(np.uint8))
-                    if box and box[0] is not None:
+                    if plan.pieces:
+                        work, rescale = _secondary.cellpose_work(plan.image.shape, cp_params)
+                        yield (f"Cellpose on {len(plan.pieces)} objects: {plan.size / seeds.size:.0%} of the "
+                               f"image{' (packed)' if plan.packed else ''}, enlarged {rescale:.1f}× for "
+                               f"spots of {cp_params['diameter']:.1f} px, so it works on "
+                               f"{work / 1e6:,.0f} million voxels" + (f" (position {n + 1} of {len(positions)})"
+                                                                     if len(positions) > 1 else "") + "…")
                         try:
-                            masks[box[0]] = yield from backend.process.call(
-                                "segment", np.ascontiguousarray(image[box[0]]), None, **cp_params)
+                            found_cp = yield from backend.process.call(
+                                "segment", np.ascontiguousarray(plan.image), None, **cp_params)
                         except Cancelled:
                             return None
+                        masks = plan.unpack(found_cp, settings["max_outside"])
                     found, one_by_one = _secondary.assign_to_parents(
                         seeds, masks, spacing, settings["max_outside"], settings["min_size"])
                     out[pos] = found

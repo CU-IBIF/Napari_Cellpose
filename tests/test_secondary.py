@@ -419,3 +419,85 @@ def test_spots_found_on_their_own_are_assigned_to_their_object():
     assert assign_to_parents(cells, np.zeros_like(cells))[1].max() == 0
     with pytest.raises(ValueError, match="differ in size"):
         assign_to_parents(cells, spots[:10])
+
+
+# ---- Cellpose for spots: only the objects are shown to it ------------------------------------
+
+def _sparse_scene(shape=(300, 300), centres=((40, 40), (60, 230), (230, 70), (250, 250)), r=15):
+    parents = np.zeros(shape, np.uint16)
+    yy, xx = np.indices(shape[-2:])
+    image = np.full(shape, 0.1, np.float32)
+    for k, (cy, cx) in enumerate(centres, start=1):
+        parents[..., (yy - cy) ** 2 + (xx - cx) ** 2 <= r ** 2] = k
+        image[..., (yy - cy - 4) ** 2 + (xx - cx) ** 2 <= 6] = 1.0  # a spot in each object
+    image[..., (yy - 150) ** 2 + (xx - 150) ** 2 <= 6] = 1.0  # one outside every object
+    return parents, image
+
+
+def _cellpose_stand_in(image):
+    return ndi.label(image > 0.5)[0]
+
+
+def test_cellpose_is_shown_only_the_objects_packed():
+    from ibif_napari._secondary import CellposePlan
+
+    parents, image = _sparse_scene()
+    plan = CellposePlan(parents, image, margin=4)
+    assert plan.packed and plan.size < 0.25 * parents.size
+    assert np.sum(plan.image > 0.5) == 4 * np.sum(image[parents == 1] > 0.5)  # not the spot outside
+    found = plan.unpack(_cellpose_stand_in(plan.image))
+    assert found.max() == 4 and found[150, 150] == 0
+    for k in range(1, 5):  # each spot back in its own object, where it was
+        spot = (found > 0) & (parents == k)
+        assert spot.sum() == np.sum((image > 0.5) & (parents == k))
+    from ibif_napari._secondary import assign_to_parents
+
+    by_object, single = assign_to_parents(parents, found)
+    assert sorted(np.unique(by_object)) == [0, 1, 2, 3, 4]
+
+
+def test_cellpose_plan_in_place_when_objects_fill_the_field():
+    from ibif_napari._secondary import CellposePlan
+
+    parents = np.zeros((60, 60), np.uint16)
+    parents[2:30, 2:58], parents[31:58, 2:58] = 1, 2
+    image = np.full(parents.shape, 0.1, np.float32)
+    image[10:13, 10:13] = image[40:43, 40:43] = 1.0
+    image[0, :] = 5.0  # outside the objects, beyond the margin: hidden
+    plan = CellposePlan(parents, image, margin=1)
+    assert not plan.packed and plan.image.max() == 1.0
+    found = plan.unpack(_cellpose_stand_in(plan.image))
+    assert found.max() == 2 and found[11, 11] and found[41, 41]
+
+
+def test_cellpose_plan_3d_and_spots_mostly_outside():
+    from ibif_napari._secondary import CellposePlan
+
+    parents, image = _sparse_scene(shape=(5, 300, 300))
+    image[:, 40:44, 54:58] = 1.0  # a spot mostly outside object 1 (its edge is at x = 55)
+    plan = CellposePlan(parents, image, margin=(1, 6, 6))
+    assert plan.packed and plan.image.shape[0] == 5
+    found = plan.unpack(_cellpose_stand_in(plan.image), max_outside=0.5)
+    assert found[:, 40:44, 54:58].max() == 0  # dropped
+    kept = plan.unpack(_cellpose_stand_in(plan.image), max_outside=1.0)[:, 40:44, 54:58]
+    assert np.array_equal(kept > 0, parents[:, 40:44, 54:58] == 1)  # kept, cut to the object
+    assert CellposePlan(np.zeros((4, 4), np.uint8), np.zeros((4, 4)), 1).unpack(np.zeros((1, 1))).max() == 0
+    with pytest.raises(ValueError, match="Cellpose gave"):
+        plan.unpack(np.zeros((2, 2)))
+
+
+def test_cellpose_settings_for_spots():
+    from ibif_napari._secondary import cellpose_spot_params, cellpose_work
+
+    planes = cellpose_spot_params((1.0, 0.2, 0.2), 1.0, "cpsam")
+    assert not planes["do_3D"] and planes["stitch_threshold"] > 0 and planes["diameter"] == pytest.approx(5)
+    true3d = cellpose_spot_params((1.0, 0.2, 0.2), 1.0, "cpsam", mode="3d")
+    assert true3d["do_3D"] and true3d["anisotropy"] == pytest.approx(5) and true3d["stitch_threshold"] == 0
+    assert not cellpose_spot_params((0.2, 0.2), 1.0, "cpsam")["do_3D"]
+    # 5 px spots are enlarged 6x; true 3D also stretches Z by 5 and runs along 3 axes.
+    w_planes, rescale = cellpose_work((30, 100, 100), planes)
+    w_3d, _ = cellpose_work((30, 100, 100), true3d)
+    assert rescale == pytest.approx(6) and w_planes == pytest.approx(30 * 600 * 600)
+    assert w_3d / w_planes == pytest.approx(3 * 5 * 6)
+    with pytest.raises(ValueError):
+        cellpose_spot_params((0.2, 0.2), 1.0, "cpsam", mode="4d")

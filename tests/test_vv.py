@@ -219,5 +219,5 @@ def test_cellpose_spots_check_runs_with_a_stand_in(monkeypatch):
     assert res.status in ("PASS", "FAIL") and len(res.criteria) == 3
     assert next(c for c in res.criteria if c["name"].startswith("spots spanning"))["passed"]
     assert calls[0]["model"] == "stand-in" and calls[0]["diameter"] == pytest.approx(9.0)
-    assert calls[1]["do_3D"] and calls[1]["anisotropy"] == pytest.approx(3.0)
+    assert not calls[1]["do_3D"] and calls[1]["stitch_threshold"] > 0  # 3D: per plane, stitched
     assert list(res.tables["cellpose spots"]["scene"]) == ["2D seed 0", "3D seed 0"]

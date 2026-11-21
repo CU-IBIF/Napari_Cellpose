@@ -331,16 +331,162 @@ def structures(parents, image, spacing=None, kind="spots", size=1.0, threshold="
     return out, used
 
 
-def cellpose_spot_params(spacing, diameter, model, gpu=False, cellprob=0.0):
+SPOT_MODES = ("planes", "3d")  # a stack: 2D per plane, stitched (default), or true 3D flows
+SPOT_STITCH = 0.25  # overlap (IoU) that joins a spot's masks on neighbouring planes
+
+
+def cellpose_spot_params(spacing, diameter, model, gpu=False, cellprob=0.0, mode="planes"):
     """The Cellpose settings for spots (Structures inside each object, Method: Cellpose):
-    `diameter` (µm) as pixels; true 3D flows in a stack, with its anisotropy; masks of
-    3 pixels or more (the panel's own minimum size is applied afterwards)."""
+    `diameter` (µm) as pixels; masks of 3 pixels or more (the panel's own minimum size is
+    applied afterwards). In a stack, `mode` "planes" segments each plane and stitches the
+    planes (the default), "3d" runs true 3D flows.
+
+    Cellpose enlarges the image so that objects are about 30 pixels across (by 30 /
+    diameter), and for true 3D also stretches Z by the anisotropy and runs the network
+    along all three axes. Spots a few pixels across therefore make the image it works on
+    many times larger than for nuclei; per plane, Z is neither stretched nor run along,
+    which is far faster and suits spots, which span few planes."""
     spacing = tuple(float(s) for s in spacing)
     is_3d = len(spacing) == 3
-    return dict(model=model, gpu=bool(gpu), do_3D=is_3d,
-                anisotropy=spacing[0] / spacing[-1] if is_3d else None,
+    if mode not in SPOT_MODES:
+        raise ValueError(f"unknown mode {mode!r}")
+    true_3d = is_3d and mode == "3d"
+    return dict(model=model, gpu=bool(gpu), do_3D=true_3d,
+                anisotropy=spacing[0] / spacing[-1] if true_3d else None,
                 diameter=float(diameter) / spacing[-1], flow_threshold=0.4,
-                cellprob_threshold=float(cellprob), stitch_threshold=0.0, min_size=3)
+                cellprob_threshold=float(cellprob),
+                stitch_threshold=SPOT_STITCH if is_3d and not true_3d else 0.0, min_size=3)
+
+
+def cellpose_work(shape, params):
+    """How many voxels Cellpose works on for an image of `shape` with `params`, after its
+    rescaling (30 / diameter; and in true 3D the anisotropy, times the three axes it runs
+    along): to warn when it will be slow."""
+    rescale = 30.0 / params["diameter"] if params.get("diameter") else 1.0
+    if len(shape) == 3 and params.get("do_3D"):
+        z, y, x = shape
+        return 3 * (z * (params.get("anisotropy") or 1.0) * rescale) * (y * rescale) * (x * rescale), rescale
+    planes = shape[0] if len(shape) == 3 else 1
+    return planes * (shape[-2] * rescale) * (shape[-1] * rescale), rescale
+
+
+class CellposePlan:
+    """What Cellpose is shown when it looks for spots inside objects: only the objects.
+
+    Each object is cut out with a margin (about a spot across, so spots at its edge are
+    whole); everything farther from it is set to a flat background (the median inside the
+    objects), so Cellpose finds nothing outside the objects. When the objects cover much
+    less than their bounding box, the pieces are packed side by side into one image, so
+    Cellpose works on little more than the objects themselves, in one call. `unpack` puts
+    the spots it found back in place, each on the pixels of the object it was cut for.
+    """
+
+    def __init__(self, parents, image, margin, gap=2, pack=None):
+        parents = np.asarray(parents)
+        image = np.asarray(image, np.float32)
+        if image.shape != parents.shape:
+            raise ValueError(f"the channel ({image.shape}) and the objects ({parents.shape}) differ in size")
+        self.shape = parents.shape
+        nd = parents.ndim
+        margin = np.broadcast_to(np.asarray(margin, int), (nd,))
+        self.inside = parents > 0
+        self.fill = float(np.median(image[self.inside])) if self.inside.any() else 0.0
+        self.pieces = []  # (label, slices in the image, own mask in the piece)
+        if not self.inside.any():
+            self.image = np.zeros((1,) * nd, np.float32)
+            self.packed = False
+            return
+        near = ndi.binary_dilation(self.inside, structure=_ellipse(margin))
+        for label, sl in enumerate(ndi.find_objects(parents), start=1):
+            if sl is None:
+                continue
+            box = tuple(slice(max(0, s.start - m), min(n, s.stop + m)) for s, m, n in zip(sl, margin, self.shape))
+            self.pieces.append((label, box, parents[box] == label))
+        (whole,) = ndi.find_objects(self.inside.astype(np.uint8))
+        whole = tuple(slice(max(0, s.start - m), min(n, s.stop + m)) for s, m, n in zip(whole, margin, self.shape))
+        whole_area = np.prod([s.stop - s.start for s in whole[-2:]])
+        layout, size = _shelf_pack([tuple(s.stop - s.start for s in box[-2:]) for _, box, _ in self.pieces], gap)
+        self.packed = (len(self.pieces) > 1 and size[0] * size[1] < 0.7 * whole_area) if pack is None else pack
+        if not self.packed:
+            self.whole = whole
+            self.image = np.where(near, image, self.fill)[whole].astype(np.float32)
+            return
+        depth = max(box[0].stop - box[0].start for _, box, _ in self.pieces) if nd == 3 else None
+        canvas = np.full(((depth,) if nd == 3 else ()) + size, self.fill, np.float32)
+        self.places = []
+        for (label, box, own), (y, x) in zip(self.pieces, layout):
+            near_own = ndi.binary_dilation(own, structure=_ellipse(margin))  # own object and margin only
+            piece = np.where(near_own, image[box], self.fill)
+            region = (slice(0, piece.shape[0]),) * (nd == 3) + (slice(y, y + piece.shape[-2]),
+                                                               slice(x, x + piece.shape[-1]))
+            canvas[region] = piece
+            self.places.append(region)
+        self.image = canvas
+
+    @property
+    def size(self):
+        return self.image.size
+
+    def unpack(self, masks, max_outside=0.5):
+        """The spots Cellpose found (`masks`, for `self.image`) as labels of the whole image
+        (1...n): each spot on the pixels of the object it was found in. A spot with more
+        than `max_outside` (0-1) of itself outside that object is dropped."""
+        masks = np.asarray(masks)
+        if masks.shape != self.image.shape:
+            raise ValueError(f"Cellpose gave {masks.shape} for an image of {self.image.shape}")
+        out = np.zeros(self.shape, np.uint32)
+        if not self.pieces:
+            return out
+        if not self.packed:
+            region = np.zeros(self.shape, np.int64)
+            region[self.whole] = masks
+            return region.astype(np.uint32)  # assign_to_parents decides each spot's object
+        top = 0
+        for (label, box, own), place in zip(self.pieces, self.places):
+            m = masks[place].astype(np.int64)
+            if not m.any():
+                continue
+            ids, total = np.unique(m[m > 0], return_counts=True)
+            inside_ids, inside = np.unique(m[(m > 0) & own], return_counts=True)
+            share = dict(zip(inside_ids.tolist(), inside.tolist()))
+            keep = np.array([share.get(int(i), 0) >= (1.0 - max_outside) * n - 1e-9 for i, n in zip(ids, total)])
+            lut = np.zeros(int(m.max()) + 1, np.int64)
+            kept = ids[keep]
+            lut[kept] = np.arange(top + 1, top + 1 + len(kept))
+            top += len(kept)
+            mine = lut[m] * own
+            target = out[box]
+            target[mine > 0] = mine[mine > 0]
+        return out
+
+
+def _ellipse(radius):
+    radius = [max(0, int(r)) for r in radius]
+    if not any(radius):
+        return np.ones((1,) * len(radius), bool)
+    grids = np.ogrid[tuple(slice(-r, r + 1) for r in radius)]
+    return sum((g / max(r, 1e-9)) ** 2 for g, r in zip(grids, radius)) <= 1.0
+
+
+def _shelf_pack(sizes, gap):
+    """Positions (y, x) for rectangles of `sizes` (h, w) packed in rows ("shelves"), and
+    the size of the result, about square."""
+    if not sizes:
+        return [], (1, 1)
+    area = sum((h + gap) * (w + gap) for h, w in sizes)
+    width = max(max(w for _, w in sizes) + gap, int(np.ceil(np.sqrt(area) * 1.1)))
+    order = sorted(range(len(sizes)), key=lambda i: -sizes[i][0])
+    places = [None] * len(sizes)
+    x = y = shelf = 0
+    for i in order:
+        h, w = sizes[i]
+        if x + w > width:
+            y += shelf + gap
+            x = shelf = 0
+        places[i] = (y, x)
+        x += w + gap
+        shelf = max(shelf, h)
+    return places, (y + shelf, width)
 
 
 def assign_to_parents(parents, found, spacing=None, max_outside=0.5, min_size=0.0):

@@ -335,7 +335,7 @@ Generated from `src/ibif_napari/vv/requirements.py` (`ibif-napari-vv requirement
 
 **Feature.** Secondary objects section: Structures inside each object, Find: Spots, Method: Cellpose
 
-**Method.** Test on the VV-SEC-05 scenes (4 in 2D, 1 in 3D; SNR 8) with real Cellpose on the CPU, the panel's settings (spot diameter 0.9 µm, probability threshold 0, at most 50 % outside the object). Intensity + watershed on the same scenes is shown for comparison.
+**Method.** Test on the VV-SEC-05 scenes (4 in 2D, 1 in 3D; SNR 8) with real Cellpose on the CPU, the panel's settings (spot diameter 0.9 µm, probability threshold 0, at most 50 % outside the object, Cellpose shown only the objects, 3D per plane and stitched). Intensity + watershed on the same scenes is shown for comparison.
 
 **Acceptance criteria.**
 

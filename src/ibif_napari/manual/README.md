@@ -639,9 +639,17 @@ Its settings:
   - **Cellpose**: Cellpose finds the spots, with the model and on the computer set in
     **Segmentation → Cellpose** (this computer, a facility server or a cluster; the line
     **Cellpose** says which). **Spot diameter** is the typical spot diameter;
-    **Probability threshold** lower finds more (dimmer) spots. Each spot goes to the object
-    that holds most of it and is cut to that object; one with more than **Outside the
-    object** of its area outside is dropped. The threshold, smoothing and split settings
+    **Probability threshold** lower finds more (dimmer) spots. Cellpose is shown only the
+    objects: each is cut out with a margin of about a spot's width, everything farther away
+    is replaced by flat background, and when the objects are scattered the pieces are packed
+    side by side into one smaller image. Each spot goes to the object that holds most of it
+    and is cut to that object; one with more than **Outside the object** of its area outside
+    is dropped. **Cellpose in 3D** (Z stacks): **2D per plane, stitched** (the default) or
+    **True 3D**. Cellpose enlarges the image until objects are about 30 pixels across, so
+    spots a few pixels wide make it work on an image many times larger than for nuclei; true
+    3D also stretches Z by the anisotropy and runs along all three axes, which for spots can
+    take a hundred times longer than per plane. The status line says how many million voxels
+    Cellpose will work on before it starts. The threshold, smoothing and split settings
     do not apply. The option is greyed out, with the reason in its tooltip, when Cellpose
     cannot run (not installed here and no server chosen, or a cluster not connected).
     **Make objects** becomes **Cancel** while Cellpose runs. Cellpose's built-in models
@@ -1404,6 +1412,7 @@ ibif-napari-vv all vv --backend classic
 | A cell from a membrane stain spreads into the background | Its membrane has a gap. Increase **Smoothing** or lower **Threshold ×**, and set a **Max distance** ([section 8](#8-secondary-objects-cells-cytoplasm-rings-rims-and-inclusions)). |
 | Touching inclusions counted as one | Choose **Split touching: Watershed**, lower **Inclusion diameter**, and keep **Smoothing** well below the spot size (about 0.1 µm for spots 1 µm across). |
 | Single inclusions cut in two | Raise **Inclusion diameter**, or use **Watershed (intensity)** for spots brightest in the middle. |
+| Spots by **Cellpose** take very long | Keep **Cellpose in 3D** on *2D per plane, stitched*, use a GPU or the facility server, or process the current time point first. The status line gives the size Cellpose works on: small spots are enlarged until they are about 30 pixels across. |
 | **Cellpose** is greyed out under Method (spots) | Its tooltip says why: Cellpose is not installed here and no server is chosen in Segmentation → Cellpose, or the cluster there is not connected. |
 | A registered layer still moves | Try **Rigid** or **Non-rigid**, a little **Smoothing**, or **Mean of the first frames** as reference; along Z use **Previous frame**. Frames marked *registered: False* in the transforms moved more than **Maximum shift**. |
 | Processing on a server reports it cannot run pipelines, or the image is too large | Update the server to 0.37 or later; for size, process fewer channels or the **Current position**, or run on this computer. |
